@@ -1,0 +1,32 @@
+# Local secrets and sandbox overrides
+.env.sandbox
+.env.local
+
+# Python
+projects/backend/.venv/
+projects/backend/**/__pycache__/
+projects/backend/.pytest_cache/
+*.py[cod]
+
+# Frontend dependencies and builds
+projects/frontend/node_modules/
+projects/frontend/dist/
+
+# Runtime data, uploads, databases and logs
+projects/backend/data/mongodb/
+projects/backend/data/uploads/
+projects/backend/**/*.log
+projects/frontend/*.log
+*.log
+
+# Local sandbox runtime and generated release artifacts
+.sandbox-runtime/
+.sandbox-release-*/
+hr-ats-sandbox-*.zip
+
+# Local tool/session state
+.runtime-download/
+.sdk/
+projects/.sdk/
+projects/.downloads/
+projects/epsilon/
