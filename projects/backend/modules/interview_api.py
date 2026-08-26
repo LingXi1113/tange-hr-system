@@ -8,7 +8,7 @@
 - 反馈通过→应聘记录推进"面试通过"；不通过→淘汰（必填原因）；
 - 全部动作写入 operation_logs。
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -251,7 +251,8 @@ def create_interview():
     if iv_type not in INTERVIEW_TYPES:
         raise BizError(BizCode.PARAM_INVALID, "面试类型必须是 onsite/video/phone")
     start_at = _parse_time(payload.get("start_at"), "开始时间")
-    end_at = _parse_time(payload.get("end_at"), "结束时间")
+    end_at = _parse_time(payload["end_at"], "结束时间") \
+        if payload.get("end_at") else start_at + timedelta(hours=1)
     _validate_time_window(start_at, end_at)
     template_id = payload.get("template_id")
     if template_id:

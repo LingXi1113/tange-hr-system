@@ -100,10 +100,13 @@ export function InterviewsPage() {
 
   async function handleSave() {
     const values = await form.validateFields();
+    const startAt = values.start_at as Dayjs;
+    const endAt = values.end_at as Dayjs | undefined;
     const payload = {
       ...values,
-      start_at: (values.start_at as Dayjs).format(TIME_FMT),
-      end_at: (values.end_at as Dayjs).format(TIME_FMT),
+      start_at: startAt.format(TIME_FMT),
+      // 面试时长统一按 1 小时处理，结束时间由系统自动生成。
+      end_at: (endAt?.isValid() ? endAt : startAt.add(1, 'hour')).format(TIME_FMT),
     };
     setSaving(true);
     try {
@@ -344,9 +347,12 @@ export function InterviewsPage() {
               ]} />
             </Form.Item>
           </Space>
-          <Space style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
+          <Space className="interview-time-fields" style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
             <Form.Item name="start_at" label="开始时间" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
-              <DatePicker showTime format={TIME_FMT} style={{ width: '100%' }} />
+              <DatePicker
+                showTime format={TIME_FMT} style={{ width: '100%' }}
+                onChange={(value) => form.setFieldValue('end_at', value ? value.add(1, 'hour') : undefined)}
+              />
             </Form.Item>
             <Form.Item name="end_at" label="结束时间" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
               <DatePicker showTime format={TIME_FMT} style={{ width: '100%' }} />
