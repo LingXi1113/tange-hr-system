@@ -1,6 +1,7 @@
 """候选人/应聘记录/查重/锁定期/导入导出/简历解析。"""
 import io
 
+from common.resume_parser import parse_resume_fields
 from conftest import login
 from helpers import assign, ensure_hr, make_candidate, make_job, make_template, publish_job
 
@@ -124,6 +125,18 @@ def test_resume_parse_upload_prefills_before_candidate_creation(client):
 
     # 预解析只使用临时文件，不应在候选人创建前产生孤立附件。
     assert client.get("/api/candidates").get_json()["data"]["total"] == 0
+
+
+def test_resume_parser_handles_common_name_layouts():
+    fields = parse_resume_fields(
+        "姓名：张三\n手机：138 0011 2233\n邮箱：zhang@example.com\n城市：杭州",
+    )
+    assert fields["name"] == "张三"
+    assert fields["phone"] == "13800112233"
+    assert fields["city"] == "杭州"
+
+    fields = parse_resume_fields("个人简历\n李四")
+    assert fields["name"] == "李四"
 
 
 def test_resume_profile_can_be_maintained(client):
