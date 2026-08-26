@@ -27,6 +27,12 @@ MAJOR_LABEL_RE = re.compile(
     r"(?:专业|主修|研究方向|所学专业|专业方向)\s*[：:]\s*([^\r\n]{2,40})",
     flags=re.IGNORECASE,
 )
+SECTION_HEADINGS = {
+    "个人优势", "个人信息", "个人简介", "个人简历", "简历", "求职意向", "联系方式",
+    "教育经历", "教育背景", "工作经历", "项目经历", "实习经历", "技能特长", "专业技能",
+    "自我评价", "证书奖励", "荣誉奖项", "兴趣爱好", "语言能力", "校园经历", "基本信息",
+    "resume", "curriculum vitae", "cv",
+}
 
 
 class OcrService:
@@ -150,7 +156,19 @@ def _extract_education(text: str) -> list[dict]:
     return unique
 
 
-def parse_resume_fields(text: str) -> dict:
+def _name_from_filename(filename: str) -> str:
+    if not filename:
+        return ""
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    # 常见简历命名：姓名_职位_城市、姓名-学校-学历、姓名1120。
+    matched = re.match(r"([\u4e00-\u9fa5·]{2,6})", stem)
+    if not matched:
+        return ""
+    candidate = matched.group(1).strip("·")
+    return "" if candidate in SECTION_HEADINGS else candidate
+
+
+def parse_resume_fields(text: str, filename: str = "") -> dict:
     """Extract name, contacts and education; city is intentionally omitted."""
     fields = {"name": "", "phone": "", "email": "", "city": "", "education": []}
     if not text:
@@ -189,10 +207,12 @@ def parse_resume_fields(text: str) -> dict:
             fields["name"] = name_match.group(0).strip()
 
     if not fields["name"]:
-        ignored = {"个人简历", "个人信息", "简历", "resume", "curriculum vitae", "cv"}
+        fields["name"] = _name_from_filename(filename)
+
+    if not fields["name"]:
         for line in (line.strip() for line in text.splitlines() if line.strip()):
             candidate = re.sub(r"\s+", " ", line).strip(" ：:，,;；")
-            if candidate.lower() in ignored or len(candidate) > 20:
+            if candidate.lower() in SECTION_HEADINGS or len(candidate) > 20:
                 continue
             if re.fullmatch(r"[\u4e00-\u9fa5·]{2,6}", candidate) or re.fullmatch(
                 r"[A-Za-z][A-Za-z .'-]{1,30}", candidate,
@@ -204,7 +224,7 @@ def parse_resume_fields(text: str) -> dict:
     return fields
 
 
-def parse_resume_file(file_path: str):
+def parse_resume_file(file_path: str, original_filename: str = ""):
     """Return (fields, parse_status): system=parsed, failed=manual review."""
     ext = os.path.splitext(file_path)[1].lower()
     empty = {"name": "", "phone": "", "email": "", "city": "", "education": []}
@@ -213,7 +233,7 @@ def parse_resume_file(file_path: str):
     text = extract_text(file_path)
     if not text or not text.strip():
         return empty, "failed"
-    fields = parse_resume_fields(text)
+    fields = parse_resume_fields(text, original_filename)
     if not any([fields["name"], fields["phone"], fields["email"], fields["education"]]):
         return fields, "failed"
     return fields, "system"

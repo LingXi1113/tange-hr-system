@@ -29,7 +29,7 @@ def auto_parse_attachment(app, attachment_id: int, candidate_id: int):
     status = "failed"
     try:
         local_path, is_tmp = resolve_local(app, attachment.get("file_path", ""))
-        fields, status = parse_resume_file(local_path)
+        fields, status = parse_resume_file(local_path, attachment.get("file_name", ""))
     except Exception:
         logger.exception("公开投递简历自动解析失败 attachment_id=%s candidate_id=%s",
                          attachment_id, candidate_id)

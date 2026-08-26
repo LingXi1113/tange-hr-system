@@ -146,6 +146,12 @@ def test_resume_parser_handles_common_name_layouts():
     fields = parse_resume_fields("个人简历\n李四")
     assert fields["name"] == "李四"
 
+    fields = parse_resume_fields(
+        "个人优势\n手机：138 0011 2233\n邮箱：ju@example.com",
+        "鞠建宗_销售专员SZ_男_其他_2年[from新人薪事].pdf",
+    )
+    assert fields["name"] == "鞠建宗"
+
 
 def test_resume_profile_can_be_maintained(client):
     ensure_hr(client)

@@ -466,7 +466,7 @@ def resume_parse_upload():
         file.save(temp_path)
         if os.path.getsize(temp_path) > 10 * 1024 * 1024:
             raise BizError(BizCode.PARAM_INVALID, "简历文件不能超过 10MB")
-        fields, status = parse_resume_file(temp_path)
+        fields, status = parse_resume_file(temp_path, file.filename)
     finally:
         if temp_path:
             try:
@@ -523,7 +523,7 @@ def resume_parse():
         raise BizError(BizCode.NOT_FOUND, "附件不存在")
     local_path, is_tmp = resolve_local(current_app, att.get("file_path", ""))
     try:
-        fields, status = parse_resume_file(local_path)
+        fields, status = parse_resume_file(local_path, att.get("file_name", ""))
     finally:
         if is_tmp:
             from common.file_service import get_storage
