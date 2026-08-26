@@ -113,7 +113,13 @@ export async function parseResumeUpload(file: File) {
   return unwrap<{
     file_name: string;
     parse_status: 'system' | 'failed';
-    fields: { name: string; phone: string; email: string; city: string };
+    fields: {
+      name: string;
+      phone: string;
+      email: string;
+      city: string;
+      education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+    };
     message: string;
   }>(resp);
 }
@@ -130,5 +136,15 @@ export async function uploadResume(file: File, candidateId?: number) {
 
 export async function parseResume(attachmentId: number) {
   const resp = await http.post('/api/resume/parse', { attachment_id: attachmentId });
-  return unwrap<{ parse_status: string; fields: Record<string, string>; message: string }>(resp);
+  return unwrap<{
+    parse_status: string;
+    fields: {
+      name?: string;
+      phone?: string;
+      email?: string;
+      city?: string;
+      education?: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+    };
+    message: string;
+  }>(resp);
 }

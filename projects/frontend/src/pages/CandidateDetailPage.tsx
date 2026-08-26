@@ -181,7 +181,7 @@ export function CandidateDetailPage() {
                         name: fields.name || detail.name,
                         phone: fields.phone || detail.phone,
                         email: fields.email || detail.email,
-                        city: fields.city || detail.city,
+                        education: fields.education?.length ? fields.education : detail.education,
                       });
                     } else {
                       Modal.info({

@@ -133,7 +133,15 @@ def test_resume_parser_handles_common_name_layouts():
     )
     assert fields["name"] == "张三"
     assert fields["phone"] == "13800112233"
-    assert fields["city"] == "杭州"
+    assert fields["city"] == ""
+
+    education = parse_resume_fields(
+        "教育经历\n2018年9月 - 2022年6月\n清华大学\n专业：计算机科学与技术\n本科",
+    )["education"]
+    assert education and education[0]["school"] == "清华大学"
+    assert education[0]["major"] == "计算机科学与技术"
+    assert education[0]["degree"] == "本科"
+    assert education[0]["graduate_at"] == "2022-06"
 
     fields = parse_resume_fields("个人简历\n李四")
     assert fields["name"] == "李四"

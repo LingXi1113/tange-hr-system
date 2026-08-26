@@ -1,6 +1,9 @@
-"""简历解析服务：PDF/Word 文本抽取 + 字段启发式解析；图片 OCR 预留接口。
+"""Resume text extraction and conservative structured parsing.
 
-解析结果为结构化草稿，HR 必须可人工修改；解析失败不阻断候选人创建。
+The parser follows the useful parts of orgatAI/resume-parse-python:
+extract PDF text with a layout-aware parser first, then associate nearby
+dates, schools, degrees and majors into education records. It is deliberately
+conservative: results are drafts and must remain editable by HR.
 """
 import logging
 import os
@@ -11,19 +14,53 @@ PDF_EXTS = {".pdf"}
 WORD_EXTS = {".docx", ".doc"}
 logger = logging.getLogger(__name__)
 
+DEGREE_RE = re.compile(
+    r"博士后|博士研究生|博士在读|工商管理硕士|工程硕士|专业硕士|在职研究生|硕士研究生|研究生|本科|大专|高职|中专|高中|初中|博士|硕士|学士|MBA|EMBA",
+)
+SCHOOL_RE = re.compile(
+    r"[\u4e00-\u9fffA-Za-z0-9·()（）&.\-]{2,50}(?:大学|学院|学校|分校|电大)",
+)
+DATE_RE = re.compile(
+    r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:\d{1,2}\s*月?)?|(?:至今|现在)",
+)
+MAJOR_LABEL_RE = re.compile(
+    r"(?:专业|主修|研究方向|所学专业|专业方向)\s*[：:]\s*([^\r\n]{2,40})",
+    flags=re.IGNORECASE,
+)
+
 
 class OcrService:
-    """图片简历 OCR 预留接口：当前环境无 OCR 能力，统一返回 None 转人工录入。"""
+    """Image OCR hook; the current deployment does not bundle an OCR engine."""
 
     def recognize(self, file_path: str):  # noqa: D102
         return None
 
 
 def _extract_pdf(file_path: str) -> str:
-    from pypdf import PdfReader
+    """Extract PDF text with layout analysis, falling back to pypdf."""
+    text = ""
+    try:
+        from pdfminer.high_level import extract_text
+        from pdfminer.layout import LAParams
 
-    reader = PdfReader(file_path)
-    return "\n".join((page.extract_text() or "") for page in reader.pages)
+        text = extract_text(
+            file_path,
+            laparams=LAParams(char_margin=2.0, line_margin=0.4, word_margin=0.1),
+        ) or ""
+    except Exception:
+        logger.exception("PDFMiner 文本提取失败 extension=pdf")
+
+    if text.strip():
+        return text
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:
+        logger.exception("pypdf 文本提取失败 extension=pdf")
+        return ""
 
 
 def _extract_docx(file_path: str) -> str:
@@ -43,23 +80,83 @@ def extract_text(file_path: str):
         if ext in IMAGE_EXTS:
             return OcrService().recognize(file_path)
     except Exception:
-        # 解析失败允许转人工，但不能丢失原因；只记录扩展名，避免日志写入简历内容。
         logger.exception("简历文本提取失败 extension=%s", ext)
         return None
     return None
 
 
+def _normalize_date(value: str) -> str:
+    value = re.sub(r"\s+", "", value)
+    if value in {"至今", "现在"}:
+        return "至今"
+    matched = re.match(r"((?:19|20)\d{2})[年./-]?(\d{1,2})?", value)
+    if not matched:
+        return value
+    year, month = matched.groups()
+    return f"{year}-{int(month):02d}" if month else year
+
+
+def _clean_school(value: str) -> str:
+    value = re.sub(r"^(?:教育经历|教育背景|毕业院校|学校)\s*[：:，,]?", "", value)
+    return value.strip(" ：:，,;；|·")
+
+
+def _pick_degree(text: str) -> str:
+    matches = DEGREE_RE.findall(text)
+    if not matches:
+        return ""
+    return sorted(matches, key=lambda item: (-len(item), text.find(item)))[0]
+
+
+def _pick_major(text: str) -> str:
+    matched = MAJOR_LABEL_RE.search(text)
+    if not matched:
+        return ""
+    return re.split(r"(?:学历|学位|学校|毕业时间)\s*[：:]", matched.group(1))[0].strip(" ：:，,;；|")
+
+
+def _extract_education(text: str) -> list[dict]:
+    """Associate nearby date/degree/major tokens with each school."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    records = []
+    for index, line in enumerate(lines):
+        schools = SCHOOL_RE.findall(line)
+        if not schools:
+            continue
+        start = max(index - 2, 0)
+        end = min(index + 3, len(lines))
+        context = "\n".join(lines[start:end])
+        dates = [_normalize_date(item) for item in DATE_RE.findall(context)]
+        degree = _pick_degree(context)
+        major = _pick_major(context)
+        for school in schools:
+            school = _clean_school(school)
+            if not school:
+                continue
+            records.append({
+                "school": school,
+                "major": major,
+                "degree": degree,
+                "graduate_at": dates[-1] if dates else "",
+            })
+
+    unique = []
+    seen = set()
+    for record in records:
+        key = tuple(record.values())
+        if key not in seen:
+            seen.add(key)
+            unique.append(record)
+    return unique
+
+
 def parse_resume_fields(text: str) -> dict:
-    """启发式抽取基础字段（草稿，允许人工修改）。"""
-    fields = {"name": "", "phone": "", "email": "", "city": ""}
+    """Extract name, contacts and education; city is intentionally omitted."""
+    fields = {"name": "", "phone": "", "email": "", "city": "", "education": []}
     if not text:
         return fields
 
-    # PDF 文本层经常在中文字符或手机号中插入空格，保留原文的同时准备一个
-    # 紧凑副本用于标签匹配，避免把“姓 名”误判为普通文本。
     compact = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
-    compact = re.sub(r"(?<=\d)[\s-]+(?=\d)", "", compact)
-
     phone = re.search(r"1[3-9](?:[\s-]*\d){9}", text)
     if phone:
         fields["phone"] = re.sub(r"\D", "", phone.group(0))
@@ -74,14 +171,13 @@ def parse_resume_fields(text: str) -> dict:
     ]
     name_value = ""
     for pattern in name_patterns:
-        matched = re.search(pattern, text, flags=re.IGNORECASE)
-        if not matched:
-            matched = re.search(pattern, compact, flags=re.IGNORECASE)
+        matched = re.search(pattern, text, flags=re.IGNORECASE) or re.search(
+            pattern, compact, flags=re.IGNORECASE,
+        )
         if matched:
             name_value = matched.group(1)
             break
     if name_value:
-        # 处理同一行连续出现“姓名：张三 手机：...”的简历排版。
         name_value = re.split(
             r"(?:性别|手机(?:号码)?|电话|邮箱|电子邮箱|城市|所在地|现居)\s*[：:]",
             name_value,
@@ -92,7 +188,6 @@ def parse_resume_fields(text: str) -> dict:
         if name_match:
             fields["name"] = name_match.group(0).strip()
 
-    # 没有姓名标签时，尝试使用简历文本的前几行作为姓名，避免把“个人简历”等标题当成姓名。
     if not fields["name"]:
         ignored = {"个人简历", "个人信息", "简历", "resume", "curriculum vitae", "cv"}
         for line in (line.strip() for line in text.splitlines() if line.strip()):
@@ -105,21 +200,20 @@ def parse_resume_fields(text: str) -> dict:
                 fields["name"] = candidate
                 break
 
-    city = re.search(r"(?:城市|所在地|现居)\s*[：:]\s*([\u4e00-\u9fa5]{2,8})", compact)
-    if city:
-        fields["city"] = city.group(1).strip()
+    fields["education"] = _extract_education(text)
     return fields
 
 
 def parse_resume_file(file_path: str):
-    """返回 (fields, parse_status)：system=解析成功 / failed=转人工。"""
+    """Return (fields, parse_status): system=parsed, failed=manual review."""
     ext = os.path.splitext(file_path)[1].lower()
+    empty = {"name": "", "phone": "", "email": "", "city": "", "education": []}
     if ext in IMAGE_EXTS:
-        return {"name": "", "phone": "", "email": "", "city": ""}, "failed"
+        return empty, "failed"
     text = extract_text(file_path)
     if not text or not text.strip():
-        return {"name": "", "phone": "", "email": "", "city": ""}, "failed"
+        return empty, "failed"
     fields = parse_resume_fields(text)
-    if not any(fields.values()):
+    if not any([fields["name"], fields["phone"], fields["email"], fields["education"]]):
         return fields, "failed"
     return fields, "system"

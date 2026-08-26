@@ -97,6 +97,12 @@ export async function applyPublicJob(token: string, form: FormData) {
     candidate_id: number;
     application_id: number;
     resume_parse_status: '' | 'system' | 'failed';
-    resume_fields: { name: string; phone: string; email: string; city: string };
+    resume_fields: {
+      name: string;
+      phone: string;
+      email: string;
+      city: string;
+      education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+    };
   }>(resp);
 }

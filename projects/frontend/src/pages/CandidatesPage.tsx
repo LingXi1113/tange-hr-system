@@ -94,12 +94,12 @@ export function CandidatesPage() {
       const result = await parseResumeUpload(file);
       setResumeParse(result);
       if (result.parse_status === 'system') {
-        const current = form.getFieldsValue();
+        const current = form.getFieldsValue(true);
         form.setFieldsValue({
           name: result.fields.name || current.name,
           phone: result.fields.phone || current.phone,
           email: result.fields.email || current.email,
-          city: result.fields.city || current.city,
+          education: result.fields.education || current.education || [],
         });
         msg.success('简历解析完成，请核对自动填充的信息');
       } else {
@@ -114,7 +114,11 @@ export function CandidatesPage() {
 
   async function handleCreate() {
     const values = await form.validateFields();
-    const result = await saveCandidate(null, values);
+    const payload = {
+      ...values,
+      education: resumeParse?.fields.education ?? values.education ?? [],
+    };
+    const result = await saveCandidate(null, payload);
     if (result.duplicated && result.duplicates?.length) {
       Modal.confirm({
         title: '查重提示：已存在相似候选人',
@@ -126,7 +130,7 @@ export function CandidatesPage() {
           navigate(`/candidates/${result.duplicates![0].id}`);
         },
         onCancel: async () => {
-          const forced = await saveCandidate(null, { ...values, force: 1 });
+          const forced = await saveCandidate(null, { ...payload, force: 1 });
           if (forced.candidate?.id) await attachResume(forced.candidate.id);
           msg.success('已新建候选人');
           closeCreateDrawer();
@@ -291,7 +295,12 @@ export function CandidatesPage() {
                 type={resumeParse.parse_status === 'system' ? 'success' : 'warning'}
                 showIcon
                 message={resumeParse.message}
-                description={`姓名：${resumeParse.fields.name || '-'}；手机：${resumeParse.fields.phone || '-'}；邮箱：${resumeParse.fields.email || '-'}；城市：${resumeParse.fields.city || '-'}`}
+                description={(
+                  <div>
+                    <div>姓名：{resumeParse.fields.name || '-'}；手机：{resumeParse.fields.phone || '-'}；邮箱：{resumeParse.fields.email || '-'}</div>
+                    <div style={{ marginTop: 4 }}>教育经历：{resumeParse.fields.education?.length || 0} 条（保存后可在候选人详情中维护）</div>
+                  </div>
+                )}
               />
             )}
           </Form.Item>
