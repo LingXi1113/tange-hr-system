@@ -27,12 +27,36 @@ MAJOR_LABEL_RE = re.compile(
     r"(?:专业|主修|研究方向|所学专业|专业方向)\s*[：:]\s*([^\r\n]{2,40})",
     flags=re.IGNORECASE,
 )
+GENDER_LABEL_RE = re.compile(
+    r"(?:\u6027\u522b|gender|sex)\s*[\uFF1A:,\uFF0C\s]\s*(\u7537|\u5973|male|female|m|f)",
+    flags=re.IGNORECASE,
+)
+DATE_TOKEN = r"(?:19|20)\d{2}\s*(?:[\u5E74./-]\s*\d{1,2}\s*\u6708?)?"
+WORK_PERIOD_RE = re.compile(
+    rf"(?P<start>{DATE_TOKEN})\s*(?:[-~\uFF5E\u2014\u2013]|\u81F3|\u5230)\s*"
+    rf"(?P<end>{DATE_TOKEN}|\u81F3\u4ECA|\u73B0\u5728|\u76EE\u524D)",
+    flags=re.IGNORECASE,
+)
+WORK_SECTION_HEADINGS = {
+    "\u5DE5\u4F5C\u7ECF\u5386", "\u5DE5\u4F5C\u7ECF\u9A8C", "\u804C\u4E1A\u7ECF\u5386", "\u5DE5\u4F5C\u5C65\u5386", "\u4EFB\u804C\u7ECF\u5386", "employment",
+    "work experience", "professional experience", "career history",
+}
 SECTION_HEADINGS = {
     "个人优势", "个人信息", "个人简介", "个人简历", "简历", "求职意向", "联系方式",
     "教育经历", "教育背景", "工作经历", "项目经历", "实习经历", "技能特长", "专业技能",
     "自我评价", "证书奖励", "荣誉奖项", "兴趣爱好", "语言能力", "校园经历", "基本信息",
     "resume", "curriculum vitae", "cv",
 }
+# Keep the section vocabulary Unicode-safe even when a legacy source file was
+# checked out with a non-UTF-8 console encoding.
+SECTION_HEADINGS = {
+    "\u4E2A\u4EBA\u4F18\u52BF", "\u4E2A\u4EBA\u4FE1\u606F", "\u4E2A\u4EBA\u7B80\u4ECB", "\u4E2A\u4EBA\u7B80\u5386", "\u7B80\u5386",
+    "\u6C42\u804C\u610F\u5411", "\u8054\u7CFB\u65B9\u5F0F", "\u6559\u80B2\u7ECF\u5386", "\u6559\u80B2\u80CC\u666F",
+    "\u5DE5\u4F5C\u7ECF\u5386", "\u9879\u76EE\u7ECF\u5386", "\u5B9E\u4E60\u7ECF\u5386", "\u6280\u80FD\u7279\u957F", "\u4E13\u4E1A\u6280\u80FD",
+    "\u81EA\u6211\u8BC4\u4EF7", "\u8BC1\u4E66\u5956\u52B1", "\u8363\u8A89\u5956\u9879", "\u5174\u8DA3\u7231\u597D", "\u8BED\u8A00\u80FD\u529B",
+    "\u6821\u56ED\u7ECF\u5386", "\u57FA\u672C\u4FE1\u606F", "resume", "curriculum vitae", "cv",
+}
+ALL_SECTION_HEADINGS = SECTION_HEADINGS | WORK_SECTION_HEADINGS
 
 
 class OcrService:
@@ -168,11 +192,175 @@ def _name_from_filename(filename: str) -> str:
     return "" if candidate in SECTION_HEADINGS else candidate
 
 
+def _normalize_gender(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"\u7537", "male", "m"}:
+        return "\u7537"
+    if value in {"\u5973", "female", "f"}:
+        return "\u5973"
+    return ""
+
+
+def _extract_gender(text: str, filename: str = "") -> str:
+    compact = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    for source in (text, compact):
+        matched = GENDER_LABEL_RE.search(source)
+        if matched:
+            return _normalize_gender(matched.group(1))
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip(" \uFF1A:，,;；|-")
+        matched = re.fullmatch(
+            r"(?:\u6027\u522b|gender|sex)\s*(?:[\uFF1A:]\s*)?(\u7537|\u5973|male|female|m|f)",
+            line,
+            re.I,
+        )
+        if matched:
+            return _normalize_gender(matched.group(1))
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    matched = re.search(r"(?:^|[_\-\s])([\u7537\u5973])(?:[_\-\s]|$)", stem)
+    return matched.group(1) if matched else ""
+
+
+def _normalize_work_date(value: str) -> str:
+    value = re.sub(r"\s+", "", value)
+    if value in {"\u81F3\u4ECA", "\u73B0\u5728", "\u76EE\u524D"}:
+        return "\u81F3\u4ECA"
+    matched = re.match(r"((?:19|20)\d{2})[\u5E74./-]?(\d{1,2})?", value)
+    if not matched:
+        return value
+    year, month = matched.groups()
+    return f"{year}-{int(month):02d}" if month else year
+
+
+def _work_period(line: str):
+    matched = WORK_PERIOD_RE.search(line)
+    if not matched:
+        return None
+    return (
+        _normalize_work_date(matched.group("start")),
+        _normalize_work_date(matched.group("end")),
+        matched,
+    )
+
+
+def _strip_work_metadata(value: str) -> str:
+    value = WORK_PERIOD_RE.sub("", value)
+    value = re.sub(
+        r"(?:\u5DE5\u4F5C\u65F6\u95F4|\u4EFB\u804C\u65F6\u95F4|\u8D77\u6B62\u65F6\u95F4|\u516C\u53F8\u540D\u79F0|\u516C\u53F8|\u5355\u4F4D|\u96C7\u4E3B|\u804C\u4F4D|\u5C97\u4F4D|\u804C\u52A1)\s*[\uFF1A:]\s*",
+        "",
+        value,
+    )
+    return value.strip(" \uFF1A:，,;；|/\\-—~～")
+
+
+def _is_section_heading(line: str) -> bool:
+    normalized = re.sub(r"[\uFF1A:\s]+$", "", line.strip()).lower()
+    return normalized in ALL_SECTION_HEADINGS
+
+
+def _extract_work_experience(text: str) -> list[dict]:
+    """Extract company, position and dates from common work-history layouts."""
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    sections = []
+    for index, line in enumerate(lines):
+        normalized = re.sub(r"[\uFF1A:\s]+$", "", line).lower()
+        if normalized in WORK_SECTION_HEADINGS:
+            end = len(lines)
+            for next_index in range(index + 1, len(lines)):
+                if _is_section_heading(lines[next_index]) and lines[next_index].lower() not in WORK_SECTION_HEADINGS:
+                    end = next_index
+                    break
+            sections.append(lines[index + 1:end])
+    if not sections:
+        sections = [lines]
+
+    records = []
+    for section in sections:
+        for index, line in enumerate(section):
+            period = _work_period(line)
+            if not period:
+                continue
+            start, end, matched = period
+            residual = _strip_work_metadata(line[:matched.start()] + " " + line[matched.end():])
+            context = []
+            if residual:
+                context.append(residual)
+            following = []
+            for next_line in section[index + 1:index + 5]:
+                if _work_period(next_line) or _is_section_heading(next_line):
+                    break
+                following.append(next_line)
+            if following:
+                context.extend(following)
+            elif not residual and index >= 2:
+                context.extend(section[max(0, index - 2):index])
+
+            company = ""
+            position = ""
+            plain_candidates = []
+            for context_line in context:
+                company_match = re.search(
+                    r"(?:\u516C\u53F8\u540D\u79F0|\u516C\u53F8|\u5355\u4F4D|\u96C7\u4E3B)\s*[\uFF1A:]\s*([^|｜;；]+)",
+                    context_line,
+                    re.I,
+                )
+                position_match = re.search(
+                    r"(?:\u804C\u4F4D|\u5C97\u4F4D|\u804C\u52A1)\s*[\uFF1A:]\s*([^|｜;；]+)",
+                    context_line,
+                    re.I,
+                )
+                if company_match and not company:
+                    company = _strip_work_metadata(company_match.group(1))
+                if position_match and not position:
+                    position = _strip_work_metadata(position_match.group(1))
+                cleaned = _strip_work_metadata(context_line)
+                if not cleaned or _is_section_heading(cleaned):
+                    continue
+                parts = [part.strip() for part in re.split(r"[|｜]", cleaned) if part.strip()]
+                plain_candidates.extend(parts or [cleaned])
+
+            plain_candidates = [
+                candidate for candidate in plain_candidates
+                if len(candidate) <= 80 and not re.fullmatch(
+                    r"[\d\s./\u5E74\u6708\u65E5\u81F3\u4ECA\u73B0\u5728\u76EE\u524D~～—–\-]+",
+                    candidate,
+                )
+            ]
+            if not company and plain_candidates:
+                company = plain_candidates[0]
+            if not position and len(plain_candidates) > 1:
+                position = plain_candidates[1]
+            if company == position:
+                position = ""
+            desc = plain_candidates[2:] if len(plain_candidates) > 2 else []
+            if company or position:
+                records.append({
+                    "company": company,
+                    "position": position,
+                    "start": start,
+                    "end": end,
+                    "desc": " ".join(desc)[:500],
+                })
+
+    unique = []
+    seen = set()
+    for record in records:
+        key = tuple(record.values())
+        if key not in seen:
+            seen.add(key)
+            unique.append(record)
+    return unique
+
+
 def parse_resume_fields(text: str, filename: str = "") -> dict:
     """Extract name, contacts and education; city is intentionally omitted."""
     fields = {"name": "", "phone": "", "email": "", "city": "", "education": []}
     if not text:
+        fields.update({"gender": "", "work_experience": []})
         return fields
+    fields.update({"gender": "", "work_experience": []})
 
     compact = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
     phone = re.search(r"1[3-9](?:[\s-]*\d){9}", text)
@@ -181,6 +369,7 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
     email = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)
     if email:
         fields["email"] = email.group(0)
+    fields["gender"] = _extract_gender(text, filename)
 
     name_patterns = [
         r"(?:姓\s*名|名字|候选人|应聘者)\s*[：:]\s*([^\r\n]{2,30})",
@@ -221,6 +410,7 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
                 break
 
     fields["education"] = _extract_education(text)
+    fields["work_experience"] = _extract_work_experience(text)
     return fields
 
 
@@ -228,12 +418,16 @@ def parse_resume_file(file_path: str, original_filename: str = ""):
     """Return (fields, parse_status): system=parsed, failed=manual review."""
     ext = os.path.splitext(file_path)[1].lower()
     empty = {"name": "", "phone": "", "email": "", "city": "", "education": []}
+    empty.update({"gender": "", "work_experience": []})
     if ext in IMAGE_EXTS:
         return empty, "failed"
     text = extract_text(file_path)
     if not text or not text.strip():
         return empty, "failed"
     fields = parse_resume_fields(text, original_filename)
-    if not any([fields["name"], fields["phone"], fields["email"], fields["education"]]):
+    if not any([
+        fields["name"], fields["gender"], fields["phone"], fields["email"],
+        fields["education"], fields["work_experience"],
+    ]):
         return fields, "failed"
     return fields, "system"

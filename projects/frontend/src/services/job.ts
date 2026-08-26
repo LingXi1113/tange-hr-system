@@ -99,10 +99,12 @@ export async function applyPublicJob(token: string, form: FormData) {
     resume_parse_status: '' | 'system' | 'failed';
     resume_fields: {
       name: string;
+      gender: string;
       phone: string;
       email: string;
       city: string;
       education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+      work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
     };
   }>(resp);
 }

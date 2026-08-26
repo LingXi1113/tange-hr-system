@@ -115,10 +115,12 @@ export async function parseResumeUpload(file: File) {
     parse_status: 'system' | 'failed';
     fields: {
       name: string;
+      gender: string;
       phone: string;
       email: string;
       city: string;
       education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+      work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
     };
     message: string;
   }>(resp);
@@ -140,10 +142,12 @@ export async function parseResume(attachmentId: number) {
     parse_status: string;
     fields: {
       name?: string;
+      gender?: string;
       phone?: string;
       email?: string;
       city?: string;
       education?: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
+      work_experience?: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
     };
     message: string;
   }>(resp);

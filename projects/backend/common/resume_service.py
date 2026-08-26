@@ -9,7 +9,10 @@ from common.resume_parser import parse_resume_file
 
 logger = logging.getLogger(__name__)
 
-EMPTY_FIELDS = {"name": "", "phone": "", "email": "", "city": "", "education": []}
+EMPTY_FIELDS = {
+    "name": "", "gender": "", "phone": "", "email": "", "city": "",
+    "education": [], "work_experience": [],
+}
 
 
 def auto_parse_attachment(app, attachment_id: int, candidate_id: int):

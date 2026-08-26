@@ -179,9 +179,11 @@ export function CandidateDetailPage() {
                     if (canManage) {
                       openResumeEditor({
                         name: fields.name || detail.name,
+                        gender: fields.gender || detail.gender,
                         phone: fields.phone || detail.phone,
                         email: fields.email || detail.email,
                         education: fields.education?.length ? fields.education : detail.education,
+                        work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
                       });
                     } else {
                       Modal.info({

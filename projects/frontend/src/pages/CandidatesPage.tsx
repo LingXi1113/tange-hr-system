@@ -97,9 +97,11 @@ export function CandidatesPage() {
         const current = form.getFieldsValue(true);
         form.setFieldsValue({
           name: result.fields.name || current.name,
+          gender: result.fields.gender || current.gender,
           phone: result.fields.phone || current.phone,
           email: result.fields.email || current.email,
           education: result.fields.education || current.education || [],
+          work_experience: result.fields.work_experience || current.work_experience || [],
         });
         msg.success('简历解析完成，请核对自动填充的信息');
       } else {
@@ -116,7 +118,9 @@ export function CandidatesPage() {
     const values = await form.validateFields();
     const payload = {
       ...values,
-      education: resumeParse?.fields.education ?? values.education ?? [],
+      gender: values.gender || resumeParse?.fields.gender || '',
+      education: values.education?.length ? values.education : resumeParse?.fields.education ?? [],
+      work_experience: values.work_experience?.length ? values.work_experience : resumeParse?.fields.work_experience ?? [],
     };
     const result = await saveCandidate(null, payload);
     if (result.duplicated && result.duplicates?.length) {
@@ -297,8 +301,10 @@ export function CandidatesPage() {
                 message={resumeParse.message}
                 description={(
                   <div>
+                    <div>{'\u6027\u522b'}：{resumeParse.fields.gender || '-'}</div>
                     <div>姓名：{resumeParse.fields.name || '-'}；手机：{resumeParse.fields.phone || '-'}；邮箱：{resumeParse.fields.email || '-'}</div>
                     <div style={{ marginTop: 4 }}>教育经历：{resumeParse.fields.education?.length || 0} 条（保存后可在候选人详情中维护）</div>
+                    <div style={{ marginTop: 4 }}>{'\u5DE5\u4F5C\u7ECF\u5386'}：{resumeParse.fields.work_experience?.length || 0} 条（保存后可在候选人详情中维护）</div>
                   </div>
                 )}
               />

@@ -153,6 +153,22 @@ def test_resume_parser_handles_common_name_layouts():
     assert fields["name"] == "鞠建宗"
 
 
+def test_resume_parser_extracts_gender_and_work_history():
+    text = (
+        "\u59d3\u540d\uff1a\u5f20\u4e09\n"
+        "\u6027\u522b\uff1a\u7537\n"
+        "\u5de5\u4f5c\u7ecf\u5386\n"
+        "2020.03-2022.06\n\u676d\u5dde\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8\n\u9500\u552e\u4e13\u5458\n"
+        "2022.07-\u81f3\u4eca\n\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a\n\u9500\u552e\u7ecf\u7406\n"
+    )
+    fields = parse_resume_fields(text, "\u5f20\u4e09_\u9500\u552e\u4e13\u5458_\u7537.pdf")
+    assert fields["gender"] == "\u7537"
+    assert fields["work_experience"] == [
+        {"company": "\u676d\u5dde\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8", "position": "\u9500\u552e\u4e13\u5458", "start": "2020-03", "end": "2022-06", "desc": ""},
+        {"company": "\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a", "position": "\u9500\u552e\u7ecf\u7406", "start": "2022-07", "end": "\u81f3\u4eca", "desc": ""},
+    ]
+
+
 def test_resume_profile_can_be_maintained(client):
     ensure_hr(client)
     cid = make_candidate(client, phone="13955556667", email="maintain@example.com")
