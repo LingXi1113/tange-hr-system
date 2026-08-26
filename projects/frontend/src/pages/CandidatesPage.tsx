@@ -150,6 +150,13 @@ export function CandidatesPage() {
   }
 
   const columns = [
+    {
+      title: '\u9636\u6BB5', dataIndex: 'current_stage', width: 100,
+      render: (v: string) => ({
+        pending_screen: '\u5F85\u7B5B\u9009', new_resume: '\u5F85\u7B5B\u9009',
+        hr_screen_passed: 'HR\u7B5B\u9009',
+      } as Record<string, string>)[v] ?? v ?? '\u5F85\u7B5B\u9009',
+    },
     { title: '姓名', dataIndex: 'name', render: (v: string, r: CandidateRow) => <a onClick={() => navigate(`/candidates/${r.id}`)}>{v}</a> },
     { title: '手机号', dataIndex: 'phone', width: 130 },
     { title: '邮箱', dataIndex: 'email', width: 180 },

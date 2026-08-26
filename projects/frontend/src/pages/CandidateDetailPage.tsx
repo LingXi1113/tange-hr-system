@@ -361,7 +361,7 @@ export function CandidateDetailPage() {
               ) : null
             }
           >
-            <StageProgress currentStage={selectedApplication?.current_stage ?? ''} transitions={transitions} />
+            <StageProgress currentStage={selectedApplication?.current_stage ?? 'pending_screen'} transitions={transitions} />
             {false && transitions.length ? (
               <Timeline
                 items={transitions.map((t) => ({

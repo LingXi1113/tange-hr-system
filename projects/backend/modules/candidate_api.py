@@ -25,6 +25,7 @@ from common.flow import (
     active_lock_for_candidate,
     application_to_dict,
     create_application,
+    job_stage_sequence,
     lock_info_for_candidate,
 )
 from common.logstore import write_log
@@ -85,6 +86,7 @@ def _candidate_row(c: dict, mask: bool) -> dict:
         }
     else:
         data["latest_application"] = None
+    data["current_stage"] = app.get("current_stage", "") if app else "pending_screen"
     data["lock"] = lock_info_for_candidate(c["_id"])
     return data
 
@@ -112,8 +114,16 @@ def list_candidates():
             if args.get("job_id"):
                 app_query["job_id"] = int(args["job_id"])
             if args.get("stage"):
-                app_query["current_stage"] = args["stage"]
+                requested_stage = args["stage"]
+                if requested_stage == "pending_screen":
+                    app_query["current_stage"] = {"$in": ["pending_screen", "new_resume"]}
+                else:
+                    app_query["current_stage"] = requested_stage
             if col("applications").find_one(app_query):
+                filtered.append(c)
+            elif args.get("stage") == "pending_screen" and not args.get("job_id") \
+                    and not col("applications").find_one({"candidate_id": c["_id"]}):
+                # No application means the candidate is still waiting for HR screening.
                 filtered.append(c)
         items = filtered
     if args.get("locked") == "1":
@@ -148,6 +158,7 @@ def get_candidate(cid: int):
             APP_IN_PROGRESS, APP_PENDING_ONBOARD,
         ) else None
         data["applications"].append(d)
+    data["current_stage"] = apps[0].get("current_stage", "") if apps else "pending_screen"
     biz_ids = [str(cid)] + [str(a["_id"]) for a in apps]
     logs = list(col("operation_logs").find({
         "biz_type": {"$in": ["candidate", "application"]}, "biz_id": {"$in": biz_ids},
@@ -297,9 +308,18 @@ def assign_job(cid: int):
     job = get_by_id("jobs", int(payload.get("job_id") or 0))
     if job is None:
         raise BizError(BizCode.PARAM_INVALID, "职位不存在")
-    app_doc = create_application(c, job, source=payload.get("source", "manual"),
-                                 operator_id=g.current_user.user_id,
-                                 operator_name=g.current_user.name)
+    # A manual HR assignment is the HR screening action itself. Legacy custom
+    # templates without the v1.1 HR stage keep their original entry stage.
+    configured_stages = {stage.stage_key for stage in job_stage_sequence(job)}
+    assigned_stage = "hr_screen_passed" if "hr_screen_passed" in configured_stages else "new_resume"
+    app_doc = create_application(
+        c, job, source=payload.get("source", "manual"),
+        operator_id=g.current_user.user_id,
+        operator_name=g.current_user.name,
+        initial_stage=assigned_stage,
+        initial_lock_days=7,
+        initial_reason="HR分配职位并进入HR筛选",
+    )
     return ok(application_to_dict(app_doc))
 
 

@@ -187,9 +187,13 @@ def active_lock_for_candidate(candidate_id: int, session=None):
     }, session=session)
 
 
-def start_stage_lock(application_doc: dict, session=None):
+def start_stage_lock(application_doc: dict, session=None, lock_days_override=None):
     job_doc = get_by_id("jobs", application_doc["job_id"], session=session)
     days = stage_lock_days(job_doc or {}, application_doc["current_stage"])
+    if lock_days_override is not None:
+        days = int(lock_days_override)
+        if days < 0:
+            raise ValueError("lock_days_override must be non-negative")
     if days <= 0:
         return None
     now = _now()
@@ -252,7 +256,10 @@ def check_duplicate_application(candidate_id: int, job_id: int, session=None):
 
 def create_application(candidate_doc: dict, job_doc: dict, source: str,
                        operator_id: str = "", operator_name: str = "",
-                       extra: dict = None, session=None):
+                       extra: dict = None, session=None,
+                       initial_stage: str = "new_resume",
+                       initial_lock_days=None,
+                       initial_reason: str = "进入流程"):
     """新建应聘记录：校验接收状态、锁定期、重复投递；写入流转记录并开始锁定。"""
     ensure_core_indexes()
     check_job_accepting(job_doc)
@@ -269,7 +276,7 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
         "candidate_id": candidate_doc["_id"],
         "job_id": job_doc["_id"],
         "source": source,
-        "current_stage": "new_resume",
+        "current_stage": initial_stage,
         "owner_id": operator_id or candidate_doc.get("owner_id", ""),
         "owner_name": operator_name or candidate_doc.get("owner_name", ""),
         "stage_entered_at": now,
@@ -292,13 +299,15 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
         "_id": transition_id,
         "application_id": app_doc["_id"],
         "from_stage": "",
-        "to_stage": "new_resume",
-        "reason": "进入流程",
+        "to_stage": initial_stage,
+        "reason": initial_reason,
         "operator_id": operator_id,
         "operator_name": operator_name,
         "created_at": now,
         }, session=session)
-        lock_doc = start_stage_lock(app_doc, session=session)
+        lock_doc = start_stage_lock(
+            app_doc, session=session, lock_days_override=initial_lock_days,
+        )
         write_log("application", "create", operator_id, operator_name,
                   biz_id=str(app_doc["_id"]),
                   detail=f"candidate={candidate_doc['_id']} job={job_doc['_id']} source={source}",

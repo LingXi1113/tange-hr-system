@@ -1,5 +1,6 @@
 """候选人/应聘记录/查重/锁定期/导入导出/简历解析。"""
 import io
+from datetime import datetime, timedelta
 
 from common.resume_parser import parse_resume_fields
 from conftest import login
@@ -59,6 +60,33 @@ def test_lock_blocks_new_application(client):
     # 详情页显示锁定起止时间
     detail = client.get(f"/api/candidates/{cid}").get_json()["data"]
     assert detail["lock"] and detail["lock"]["start_at"]
+
+
+def test_hr_assignment_enters_hr_screen_and_locks_for_seven_days(client):
+    ensure_hr(client)
+    template = client.post("/api/pipeline-templates", json={
+        "name": "HR筛选规则模板",
+        "stages": [
+            {"stage_key": "new_resume", "name": "新简历", "sort_order": 1, "lock_days": 0},
+            {"stage_key": "hr_screen_passed", "name": "HR筛选", "sort_order": 2, "lock_days": 0},
+        ],
+    }).get_json()["data"]["id"]
+    job = make_job(client, name="HR筛选规则职位", template_id=template)
+    publish_job(client, job["id"])
+    candidate_id = make_candidate(client, phone="13933335555", email="hr-screen@example.com")
+
+    before = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert before["current_stage"] == "pending_screen"
+    assert before["applications"] == []
+
+    app = assign(client, candidate_id, job["id"])
+    assert app["current_stage"] == "hr_screen_passed"
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert detail["current_stage"] == "hr_screen_passed"
+    assert detail["lock"]
+    start = datetime.strptime(detail["lock"]["start_at"], "%Y-%m-%d %H:%M:%S")
+    end = datetime.strptime(detail["lock"]["end_at"], "%Y-%m-%d %H:%M:%S")
+    assert end - start == timedelta(days=7)
 
 
 def test_import_export_and_template(client):

@@ -28,7 +28,9 @@ def test_application_unique_index_protects_when_duplicate_check_is_bypassed(clie
     # 模拟两个请求同时通过了前置查重，最终由 MongoDB 唯一索引拦截第二次插入。
     monkeypatch.setattr("common.flow.check_duplicate_application", lambda *args, **kwargs: None)
     response = client.post(f"/api/candidates/{candidate_id}/applications", json={"job_id": job["id"]})
-    assert response.get_json()["code"] == 1004
+    # HR assignment now creates a seven-day candidate lock before a duplicate
+    # application can be attempted again.
+    assert response.get_json()["code"] == 1005
 
 
 def test_active_lock_unique_index_protects_when_lock_check_is_bypassed(client, monkeypatch):

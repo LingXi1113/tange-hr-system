@@ -24,6 +24,7 @@ export interface CandidateRow {
   tags: string;
   source: string;
   owner_name: string;
+  current_stage: string;
   created_at: string;
   version: number;
   latest_application: ApplicationInfo | null;
