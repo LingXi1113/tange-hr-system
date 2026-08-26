@@ -159,14 +159,26 @@ def test_resume_parser_extracts_gender_and_work_history():
         "\u6027\u522b\uff1a\u7537\n"
         "\u5de5\u4f5c\u7ecf\u5386\n"
         "2020.03-2022.06\n\u676d\u5dde\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8\n\u9500\u552e\u4e13\u5458\n"
-        "2022.07-\u81f3\u4eca\n\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a\n\u9500\u552e\u7ecf\u7406\n"
+        "2022.07-\u81f3\u4eca\n\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a\u6709\u9650\u516c\u53f8\n\u9500\u552e\u7ecf\u7406\n"
     )
     fields = parse_resume_fields(text, "\u5f20\u4e09_\u9500\u552e\u4e13\u5458_\u7537.pdf")
     assert fields["gender"] == "\u7537"
     assert fields["work_experience"] == [
         {"company": "\u676d\u5dde\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8", "position": "\u9500\u552e\u4e13\u5458", "start": "2020-03", "end": "2022-06", "desc": ""},
-        {"company": "\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a", "position": "\u9500\u552e\u7ecf\u7406", "start": "2022-07", "end": "\u81f3\u4eca", "desc": ""},
+        {"company": "\u4e0a\u6d77\u660e\u65e5\u4f01\u4e1a\u6709\u9650\u516c\u53f8", "position": "\u9500\u552e\u7ecf\u7406", "start": "2022-07", "end": "\u81f3\u4eca", "desc": ""},
     ]
+
+
+def test_resume_parser_rejects_name_suffix_and_unlabeled_work():
+    assert parse_resume_fields(
+        "\u59d3\u540d\uff1a\u5f20\u4e09\u7b80\u5386", "resume.pdf",
+    )["name"] == "\u5f20\u4e09"
+    assert parse_resume_fields(
+        "\u4e2a\u4eba\u7b80\u5386", "\u5f20\u4e09\u7b80\u5386.pdf",
+    )["name"] == "\u5f20\u4e09"
+    assert parse_resume_fields(
+        "\u5de5\u4f5c\u7ecf\u5386\n2020.03-2022.06\n\u9500\u552e\u4e13\u5458\n\u8d1f\u8d23\u9500\u552e\u5de5\u4f5c",
+    )["work_experience"] == []
 
 
 def test_resume_profile_can_be_maintained(client):

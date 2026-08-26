@@ -299,6 +299,7 @@ def _extract_work_experience(text: str) -> list[dict]:
 
             company = ""
             position = ""
+            company_labeled = False
             plain_candidates = []
             for context_line in context:
                 company_match = re.search(
@@ -313,6 +314,7 @@ def _extract_work_experience(text: str) -> list[dict]:
                 )
                 if company_match and not company:
                     company = _strip_work_metadata(company_match.group(1))
+                    company_labeled = True
                 if position_match and not position:
                     position = _strip_work_metadata(position_match.group(1))
                 cleaned = _strip_work_metadata(context_line)
@@ -335,7 +337,11 @@ def _extract_work_experience(text: str) -> list[dict]:
             if company == position:
                 position = ""
             desc = plain_candidates[2:] if len(plain_candidates) > 2 else []
-            if company or position:
+            # Do not turn a date plus a job title/description into a fake employer.
+            # An unlabeled company must visibly contain “公司”; an explicit 公司： label
+            # is also accepted even when the value itself omits the suffix.
+            has_company_evidence = company_labeled or "\u516C\u53F8" in company
+            if has_company_evidence and company:
                 records.append({
                     "company": company,
                     "position": position,
@@ -352,6 +358,24 @@ def _extract_work_experience(text: str) -> list[dict]:
             seen.add(key)
             unique.append(record)
     return unique
+
+
+def _sanitize_name(value: str) -> str:
+    """Return only a likely person name, never a filename/section suffix."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip(" \uFF1A:，,;；|/")
+    value = re.split(r"[_\-\[\]（）()（）]", value, maxsplit=1)[0].strip()
+    value = re.sub(
+        r"(?:\u4E2A\u4EBA)?\u7B80\u5386(?:\u6587\u4EF6|\u6587\u6863)?$|(?:resume|curriculum\s+vitae|cv)$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" \uFF1A:，,;；|/")
+    chinese = re.match(r"[\u4e00-\u9fff·]{2,6}", value)
+    if chinese:
+        candidate = chinese.group(0).strip("·")
+        return "" if candidate in SECTION_HEADINGS else candidate
+    english = re.match(r"[A-Za-z][A-Za-z .'-]{1,39}", value)
+    return english.group(0).strip() if english else ""
 
 
 def parse_resume_fields(text: str, filename: str = "") -> dict:
@@ -409,9 +433,28 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
                 fields["name"] = candidate
                 break
 
+    fields["name"] = _sanitize_name(fields["name"])
     fields["education"] = _extract_education(text)
     fields["work_experience"] = _extract_work_experience(text)
     return fields
+
+
+def _sanitize_name(value: str) -> str:
+    """Normalize a name without carrying filename or section text into it."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip(" \uFF1A:\uFF0C,;\uFF1B|/")
+    value = re.split(r"[_\-\[\]\uFF08\uFF09()]", value, maxsplit=1)[0].strip()
+    value = re.sub(
+        r"(?:\u4E2A\u4EBA)?\u7B80\u5386(?:\u6587\u4EF6|\u6587\u6863)?$|(?:resume|curriculum\s+vitae|cv)$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" \uFF1A:\uFF0C,;\uFF1B|/")
+    chinese = re.match(r"[\u4e00-\u9fff\u00b7]{2,6}", value)
+    if chinese:
+        candidate = chinese.group(0).strip("\u00b7")
+        return "" if candidate in SECTION_HEADINGS else candidate
+    english = re.match(r"[A-Za-z][A-Za-z .'-]{1,39}", value)
+    return english.group(0).strip() if english else ""
 
 
 def parse_resume_file(file_path: str, original_filename: str = ""):
