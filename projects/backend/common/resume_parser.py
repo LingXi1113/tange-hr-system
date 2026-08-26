@@ -33,7 +33,7 @@ GENDER_LABEL_RE = re.compile(
 )
 DATE_TOKEN = r"(?:19|20)\d{2}\s*(?:[\u5E74./-]\s*\d{1,2}\s*\u6708?)?"
 WORK_PERIOD_RE = re.compile(
-    rf"(?P<start>{DATE_TOKEN})\s*(?:[-~\uFF5E\u2014\u2013]|\u81F3|\u5230)\s*"
+    rf"(?P<start>{DATE_TOKEN})\s*(?:[-~\uFF5E\u2014\u2013]\s*|\u81F3\s*(?!\u4ECA)|\u5230\s*|(?=\u81F3\u4ECA)|(?=\u73B0\u5728)|(?=\u76EE\u524D))"
     rf"(?P<end>{DATE_TOKEN}|\u81F3\u4ECA|\u73B0\u5728|\u76EE\u524D)",
     flags=re.IGNORECASE,
 )
@@ -330,10 +330,20 @@ def _extract_work_experience(text: str) -> list[dict]:
                     candidate,
                 )
             ]
-            if not company and plain_candidates:
+            company_candidate = next(
+                (candidate for candidate in plain_candidates if "\u516C\u53F8" in candidate),
+                "",
+            )
+            if not company and company_candidate:
+                company = company_candidate
+            elif not company and plain_candidates:
                 company = plain_candidates[0]
-            if not position and len(plain_candidates) > 1:
-                position = plain_candidates[1]
+            if not position:
+                position_candidate = next(
+                    (candidate for candidate in plain_candidates if candidate != company),
+                    "",
+                )
+                position = position_candidate
             if company == position:
                 position = ""
             desc = plain_candidates[2:] if len(plain_candidates) > 2 else []

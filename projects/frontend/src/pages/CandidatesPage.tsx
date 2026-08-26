@@ -322,9 +322,6 @@ export function CandidatesPage() {
           <Form.Item name="email" label="邮箱">
             <Input />
           </Form.Item>
-          <Form.Item name="city" label="城市">
-            <Input />
-          </Form.Item>
           <Form.Item name="tags" label="标签（逗号分隔）">
             <Input />
           </Form.Item>

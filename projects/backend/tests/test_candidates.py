@@ -179,6 +179,11 @@ def test_resume_parser_rejects_name_suffix_and_unlabeled_work():
     assert parse_resume_fields(
         "\u5de5\u4f5c\u7ecf\u5386\n2020.03-2022.06\n\u9500\u552e\u4e13\u5458\n\u8d1f\u8d23\u9500\u552e\u5de5\u4f5c",
     )["work_experience"] == []
+    fields = parse_resume_fields(
+        "\u5de5\u4f5c\u7ecf\u5386\n2022.03-\u81f3\u4eca\n\u9500\u552e\u7ecf\u7406\n\u5317\u4eac\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8",
+    )
+    assert fields["work_experience"][0]["company"] == "\u5317\u4eac\u661f\u8fb0\u79d1\u6280\u6709\u9650\u516c\u53f8"
+    assert fields["work_experience"][0]["position"] == "\u9500\u552e\u7ecf\u7406"
 
 
 def test_resume_profile_can_be_maintained(client):
