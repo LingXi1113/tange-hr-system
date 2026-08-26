@@ -1,7 +1,7 @@
 import { DeleteOutlined, EditOutlined, FileSearchOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Button, Card, Col, Descriptions, Empty, Form, Input, List, Modal, Popconfirm, Row,
-  Select, Table, Tag, Timeline, Upload,
+  Select, Table, Tag, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -36,6 +36,86 @@ const STAGE_TEXT: Record<string, string> = {
   re_interview: '复试', custom: '自定义',
 };
 
+const DEFAULT_STAGE_FLOW = [
+  { key: 'pending_screen', label: '\u5F85\u7B5B\u9009' },
+  { key: 'hr_screen_passed', label: 'HR\u7B5B\u9009' },
+  { key: 'business_screen', label: '\u4E1A\u52A1\u7B5B\u9009' },
+  { key: 'interview_1', label: '\u4E00\u9762' },
+  { key: 'interview_2', label: '\u4E8C\u9762' },
+  { key: 'hr_interview', label: 'HR\u9762' },
+  { key: 'offer_approval', label: '\u6700\u7EC8\u7B5B\u9009' },
+] as const;
+
+const DEFAULT_STAGE_ALIASES: Record<string, string> = {
+  new_resume: 'pending_screen',
+  pending_interview: 'interview_1',
+  interviewing: 'interview_1',
+  interview_passed: 'interview_1',
+  offer_pending: 'offer_approval',
+  pending_onboard: 'offer_approval',
+  onboarded: 'offer_approval',
+};
+
+type StageTransition = {
+  from_stage: string;
+  to_stage: string;
+  reason: string;
+  operator_name: string;
+  created_at: string;
+};
+
+function stageFlowIndex(stageKey: string) {
+  const normalized = DEFAULT_STAGE_ALIASES[stageKey] || stageKey;
+  return DEFAULT_STAGE_FLOW.findIndex((stage) => stage.key === normalized);
+}
+
+function StageProgress({ currentStage, transitions }: { currentStage: string; transitions: StageTransition[] }) {
+  const reached = [currentStage, ...transitions.flatMap((item) => [item.from_stage, item.to_stage])]
+    .map(stageFlowIndex)
+    .filter((index) => index >= 0);
+  const currentIndex = reached.length ? Math.max(...reached) : -1;
+
+  return (
+    <div style={{ overflowX: 'auto', padding: '18px 8px 6px' }}>
+      <div style={{ display: 'flex', minWidth: 680, alignItems: 'flex-start' }}>
+        {DEFAULT_STAGE_FLOW.map((stage, index) => {
+          const completed = index < currentIndex;
+          const active = index === currentIndex;
+          const leftDone = index > 0 && index <= currentIndex;
+          const rightDone = index < currentIndex;
+          return (
+            <div key={stage.key} style={{ flex: 1, minWidth: 90, textAlign: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', height: 18 }}>
+                {index > 0 && (
+                  <div style={{ flex: 1, height: leftDone ? 4 : 1, background: leftDone ? '#d99b1d' : '#d9d9d9' }} />
+                )}
+                <div
+                  title={active ? '\u5F53\u524D\u9636\u6BB5' : completed ? '\u5DF2\u5B8C\u6210' : '\u672A\u5F00\u59CB'}
+                  style={{
+                    width: active ? 16 : 14,
+                    height: active ? 16 : 14,
+                    borderRadius: '50%',
+                    flex: '0 0 auto',
+                    background: completed || active ? '#d99b1d' : '#fff',
+                    border: `${active ? 3 : 2}px solid ${completed || active ? '#d99b1d' : '#c9c9c9'}`,
+                    boxSizing: 'border-box',
+                  }}
+                />
+                {index < DEFAULT_STAGE_FLOW.length - 1 && (
+                  <div style={{ flex: 1, height: rightDone ? 4 : 1, background: rightDone ? '#d99b1d' : '#d9d9d9' }} />
+                )}
+              </div>
+              <div style={{ marginTop: 9, color: active || completed ? '#262626' : '#9a9a9a', fontWeight: active ? 600 : 400, whiteSpace: 'nowrap' }}>
+                {stage.label}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 type ResumeFormValues = {
   version: number;
   name: string;
@@ -56,7 +136,7 @@ export function CandidateDetailPage() {
   const [detail, setDetail] = useState<CandidateDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
-  const [transitions, setTransitions] = useState<{ from_stage: string; to_stage: string; reason: string; operator_name: string; created_at: string }[]>([]);
+  const [transitions, setTransitions] = useState<StageTransition[]>([]);
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [poolEntry, setPoolEntry] = useState<PoolEntry | null>(null);
@@ -101,6 +181,8 @@ export function CandidateDetailPage() {
   const canManage = user?.role === 'hr';
   const canResume = ['hr', 'business_screener', 'interviewer'].includes(user?.role ?? '');
   const candidate = detail;
+  const selectedApplication = detail.applications.find((application) => application.id === selectedAppId)
+    ?? detail.applications[0];
 
   function openResumeEditor(values?: Partial<ResumeFormValues>) {
     resumeForm.setFieldsValue({
@@ -279,7 +361,8 @@ export function CandidateDetailPage() {
               ) : null
             }
           >
-            {transitions.length ? (
+            <StageProgress currentStage={selectedApplication?.current_stage ?? ''} transitions={transitions} />
+            {false && transitions.length ? (
               <Timeline
                 items={transitions.map((t) => ({
                   children: `${STAGE_TEXT[t.from_stage] || t.from_stage || '进入流程'} → ${STAGE_TEXT[t.to_stage] || t.to_stage}｜${t.reason || '-'}｜${t.operator_name || '系统'} · ${t.created_at}`,
