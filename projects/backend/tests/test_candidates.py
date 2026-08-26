@@ -102,6 +102,30 @@ def test_resume_upload_and_parse(client):
     assert parsed["fields"]["email"] == "wangxm@example.com"
 
 
+def test_resume_parse_upload_prefills_before_candidate_creation(client):
+    ensure_hr(client)
+
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph("姓名：李小明\n手机：13966667778\n邮箱：lixm@example.com\n城市：杭州")
+    buf = io.BytesIO()
+    document.save(buf)
+    buf.seek(0)
+
+    parsed = client.post("/api/resume/parse-upload", data={
+        "file": (buf, "resume.docx"),
+    }, content_type="multipart/form-data").get_json()
+    assert parsed["code"] == 0
+    assert parsed["data"]["parse_status"] == "system"
+    assert parsed["data"]["fields"]["name"] == "李小明"
+    assert parsed["data"]["fields"]["phone"] == "13966667778"
+    assert parsed["data"]["fields"]["email"] == "lixm@example.com"
+
+    # 预解析只使用临时文件，不应在候选人创建前产生孤立附件。
+    assert client.get("/api/candidates").get_json()["data"]["total"] == 0
+
+
 def test_resume_profile_can_be_maintained(client):
     ensure_hr(client)
     cid = make_candidate(client, phone="13955556667", email="maintain@example.com")

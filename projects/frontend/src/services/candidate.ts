@@ -104,6 +104,20 @@ export async function importCandidates(file: File) {
   return unwrap<{ success_count: number; duplicates: { row: number; name: string }[]; errors: { row: number; msg: string }[] }>(resp);
 }
 
+export async function parseResumeUpload(file: File) {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await http.post('/api/resume/parse-upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return unwrap<{
+    file_name: string;
+    parse_status: 'system' | 'failed';
+    fields: { name: string; phone: string; email: string; city: string };
+    message: string;
+  }>(resp);
+}
+
 export async function uploadResume(file: File, candidateId?: number) {
   const form = new FormData();
   form.append('file', file);

@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import tempfile
 from datetime import datetime
 
 from flask import Blueprint, Response, current_app, g, request
@@ -445,6 +446,40 @@ def export_candidates():
 
 
 # ---------------- 简历上传与解析 ----------------
+
+@bp.post("/api/resume/parse-upload")
+@role_required(*RESUME_ACCESS_ROLES)
+def resume_parse_upload():
+    """解析尚未关联候选人的简历，供新增候选人表单预填基础信息。"""
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        raise BizError(BizCode.PARAM_INVALID, "请上传简历文件")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in {".pdf", ".docx"}:
+        raise BizError(BizCode.PARAM_INVALID, "新增候选人自动解析目前仅支持 PDF/DOCX")
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="resume-parse-", suffix=ext, delete=False) as temp:
+            temp_path = temp.name
+        file.save(temp_path)
+        if os.path.getsize(temp_path) > 10 * 1024 * 1024:
+            raise BizError(BizCode.PARAM_INVALID, "简历文件不能超过 10MB")
+        fields, status = parse_resume_file(temp_path)
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+    return ok({
+        "file_name": secure_filename(file.filename) or "resume",
+        "parse_status": status,
+        "fields": fields,
+        "message": "解析成功，请核对并修改" if status == "system" else "未能识别出基础信息，请人工填写",
+    })
 
 @bp.post("/api/resume/upload")
 @role_required(*RESUME_ACCESS_ROLES)

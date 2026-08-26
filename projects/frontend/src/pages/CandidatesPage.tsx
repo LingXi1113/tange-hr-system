@@ -1,13 +1,14 @@
 import { LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Upload,
+  Alert, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import {
-  deleteCandidate, fetchCandidates, importCandidates, saveCandidate,
+  deleteCandidate, fetchCandidates, importCandidates, parseResume, parseResumeUpload, saveCandidate,
+  uploadResume,
 } from '@/services/candidate';
 import type { CandidateRow } from '@/services/candidate';
 import { fetchJobs } from '@/services/job';
@@ -39,6 +40,9 @@ export function CandidatesPage() {
   const [batchPoolOpen, setBatchPoolOpen] = useState(false);
   const [batchPoolCategory, setBatchPoolCategory] = useState('');
   const [batchPoolReason, setBatchPoolReason] = useState('');
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeParsing, setResumeParsing] = useState(false);
+  const [resumeParse, setResumeParse] = useState<Awaited<ReturnType<typeof parseResumeUpload>> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,6 +64,54 @@ export function CandidatesPage() {
     void load();
   }, [load]);
 
+  function closeCreateDrawer() {
+    setDrawerOpen(false);
+    setResumeFile(null);
+    setResumeParse(null);
+    form.resetFields();
+  }
+
+  async function attachResume(candidateId: number) {
+    if (!resumeFile) return;
+    try {
+      const uploaded = await uploadResume(resumeFile, candidateId);
+      const parsed = await parseResume(uploaded.attachment_id);
+      if (parsed.parse_status === 'system') {
+        msg.success('候选人已创建，简历已上传并解析');
+      } else {
+        msg.warning('候选人已创建，简历已上传，但未识别出基础信息');
+      }
+    } catch {
+      msg.warning('候选人已创建，但简历附件上传失败，可在详情页重新上传');
+    }
+  }
+
+  async function handleResumeParse(file: File) {
+    setResumeFile(file);
+    setResumeParse(null);
+    setResumeParsing(true);
+    try {
+      const result = await parseResumeUpload(file);
+      setResumeParse(result);
+      if (result.parse_status === 'system') {
+        const current = form.getFieldsValue();
+        form.setFieldsValue({
+          name: result.fields.name || current.name,
+          phone: result.fields.phone || current.phone,
+          email: result.fields.email || current.email,
+          city: result.fields.city || current.city,
+        });
+        msg.success('简历解析完成，请核对自动填充的信息');
+      } else {
+        msg.warning('未能识别出基础信息，请手工填写');
+      }
+    } catch {
+      msg.error('简历解析失败，请确认文件为可读取的 PDF 或 DOCX');
+    } finally {
+      setResumeParsing(false);
+    }
+  }
+
   async function handleCreate() {
     const values = await form.validateFields();
     const result = await saveCandidate(null, values);
@@ -70,20 +122,22 @@ export function CandidatesPage() {
         okText: '使用已有',
         cancelText: '强制新建',
         onOk: () => {
-          setDrawerOpen(false);
+          closeCreateDrawer();
           navigate(`/candidates/${result.duplicates![0].id}`);
         },
         onCancel: async () => {
-          await saveCandidate(null, { ...values, force: 1 });
+          const forced = await saveCandidate(null, { ...values, force: 1 });
+          if (forced.candidate?.id) await attachResume(forced.candidate.id);
           msg.success('已新建候选人');
-          setDrawerOpen(false);
+          closeCreateDrawer();
           void load();
         },
       });
       return;
     }
+    if (result.candidate?.id) await attachResume(result.candidate.id);
     msg.success('候选人已创建');
-    setDrawerOpen(false);
+    closeCreateDrawer();
     void load();
   }
 
@@ -161,7 +215,7 @@ export function CandidatesPage() {
           >
             批量加入人才库
           </Button>}
-          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setDrawerOpen(true); }}>
+          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setResumeFile(null); setResumeParse(null); setDrawerOpen(true); }}>
             新增候选人
           </Button>}
         </Space>
@@ -210,10 +264,37 @@ export function CandidatesPage() {
 
       <Drawer
         title="新增候选人" width={480} open={drawerOpen}
-        forceRender onClose={() => setDrawerOpen(false)}
+        forceRender onClose={closeCreateDrawer}
         extra={<Button type="primary" onClick={() => void handleCreate()}>保存</Button>}
       >
         <Form form={form} layout="vertical">
+          <Form.Item label="简历解析">
+            <Upload
+              accept=".pdf,.docx" showUploadList={false}
+              beforeUpload={(file) => {
+                void handleResumeParse(file as File);
+                return false;
+              }}
+            >
+              <Button icon={<UploadOutlined />} loading={resumeParsing}>
+                上传 PDF/DOCX 并解析
+              </Button>
+            </Upload>
+            {resumeFile && (
+              <div style={{ marginTop: 8, color: 'rgba(23,26,29,0.65)' }}>
+                已选择：{resumeFile.name}
+              </div>
+            )}
+            {resumeParse && (
+              <Alert
+                style={{ marginTop: 8 }}
+                type={resumeParse.parse_status === 'system' ? 'success' : 'warning'}
+                showIcon
+                message={resumeParse.message}
+                description={`姓名：${resumeParse.fields.name || '-'}；手机：${resumeParse.fields.phone || '-'}；邮箱：${resumeParse.fields.email || '-'}；城市：${resumeParse.fields.city || '-'}`}
+              />
+            )}
+          </Form.Item>
           <Form.Item name="name" label="姓名" rules={[{ required: true, message: '必填' }]}>
             <Input />
           </Form.Item>
