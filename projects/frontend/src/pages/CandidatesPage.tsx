@@ -23,6 +23,21 @@ const SOURCE_TEXT: Record<string, string> = {
   headhunt: '猎头', job_site: '招聘网站', campus: '校园招聘', import: '批量导入',
 };
 
+// 接口保存阶段编码，候选人页面统一展示业务中文名称。
+const STAGE_TEXT: Record<string, string> = {
+  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
+  business_screen: '业务筛选', pending_interview: '待面试', interviewing: '面试中',
+  interview_1: '一面', interview_2: '二面', interview_3: '三面', hr_interview: '人力面',
+  interview_passed: '面试通过', offer_approval: '最终筛选', offer_pending: '录用通知', offer: '录用通知',
+  pending_onboard: '待入职', onboarded: '已入职', eliminated: '已淘汰', abandoned: '已放弃',
+  talent_pool: '人才库', written_test: '笔试', assessment: '测评', background_check: '背调',
+  re_interview: '复试', custom: '自定义阶段',
+};
+
+function stageText(stage: string | undefined) {
+  return STAGE_TEXT[stage ?? ''] ?? '其他阶段';
+}
+
 export function CandidatesPage() {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
@@ -152,10 +167,7 @@ export function CandidatesPage() {
   const columns = [
     {
       title: '\u9636\u6BB5', dataIndex: 'current_stage', width: 100,
-      render: (v: string) => ({
-        pending_screen: '\u5F85\u7B5B\u9009', new_resume: '\u5F85\u7B5B\u9009',
-        hr_screen_passed: 'HR\u7B5B\u9009',
-      } as Record<string, string>)[v] ?? v ?? '\u5F85\u7B5B\u9009',
+      render: (v: string) => stageText(v),
     },
     { title: '姓名', dataIndex: 'name', render: (v: string, r: CandidateRow) => <a onClick={() => navigate(`/candidates/${r.id}`)}>{v}</a> },
     { title: '手机号', dataIndex: 'phone', width: 130 },
@@ -165,7 +177,7 @@ export function CandidatesPage() {
     {
       title: '最近应聘', dataIndex: 'latest_application', width: 200,
       render: (v: CandidateRow['latest_application']) =>
-        v ? `${v.job_name} · ${v.current_stage}` : '-',
+        v ? `${v.job_name} · ${stageText(v.current_stage)}` : '-',
     },
     {
       title: '锁定', dataIndex: 'lock', width: 80,

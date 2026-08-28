@@ -36,13 +36,24 @@ const STAGE_TEXT: Record<string, string> = {
   re_interview: '复试', custom: '自定义',
 };
 
+function stageText(stage: string | undefined) {
+  const labels: Record<string, string> = {
+    ...STAGE_TEXT,
+    hr_screen_passed: '人力筛选',
+    offer_pending: '录用通知',
+    offer: '录用通知',
+    hr_interview: '人力面',
+  };
+  return labels[stage ?? ''] ?? '其他阶段';
+}
+
 const DEFAULT_STAGE_FLOW = [
   { key: 'pending_screen', label: '\u5F85\u7B5B\u9009' },
-  { key: 'hr_screen_passed', label: 'HR\u7B5B\u9009' },
+  { key: 'hr_screen_passed', label: '人力筛选' },
   { key: 'business_screen', label: '\u4E1A\u52A1\u7B5B\u9009' },
   { key: 'interview_1', label: '\u4E00\u9762' },
   { key: 'interview_2', label: '\u4E8C\u9762' },
-  { key: 'hr_interview', label: 'HR\u9762' },
+  { key: 'hr_interview', label: '人力面' },
   { key: 'offer_approval', label: '\u6700\u7EC8\u7B5B\u9009' },
 ] as const;
 
@@ -330,7 +341,7 @@ export function CandidateDetailPage() {
               onRow={(r) => ({ onClick: () => setSelectedAppId(r.id), style: { cursor: 'pointer' } })}
               columns={[
                 { title: '职位', dataIndex: 'job_name' },
-                { title: '阶段', dataIndex: 'current_stage', width: 100, render: (v: string) => STAGE_TEXT[v] ?? v },
+                { title: '阶段', dataIndex: 'current_stage', width: 100, render: (v: string) => stageText(v) },
                 { title: '状态', dataIndex: 'status', width: 90 },
                 { title: '进入时间', dataIndex: 'stage_entered_at', width: 150 },
               ]}
