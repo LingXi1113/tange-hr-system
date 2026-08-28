@@ -1,4 +1,4 @@
-import { LockOutlined } from '@ant-design/icons';
+import { DownloadOutlined, LockOutlined } from '@ant-design/icons';
 import { Button, Checkbox, Empty, Input, Modal, Select, Space, Tag, Tooltip } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -9,6 +9,14 @@ import { fetchJobs } from '@/services/job';
 import { addToPool } from '@/services/talentPool';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
+
+const APPLICATION_STATUS_TEXT: Record<string, string> = {
+  in_progress: '进行中', pending_onboard: '待入职', onboarded: '已入职', eliminated: '已淘汰',
+};
+
+function csvCell(value: unknown) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
 
 export function PipelinePage() {
   const { user } = useCurrentUser();
@@ -21,6 +29,44 @@ export function PipelinePage() {
   const [moveTarget, setMoveTarget] = useState<BoardCard | null>(null);
   const [moveStage, setMoveStage] = useState('');
   const [moveReason, setMoveReason] = useState('');
+  const selectedJob = jobs.find((job) => job.id === jobId);
+
+  function exportCurrentBoard() {
+    if (!selectedJob || !columns.length) return;
+    const rows: unknown[][] = [[
+      '职位', '阶段', '候选人', '状态', '负责人', '进入阶段时间', '停留时间',
+      '锁定开始时间', '锁定结束时间', '淘汰原因',
+    ]];
+    columns.forEach((column) => {
+      const columnCards = cards.filter((card) => card.current_stage === column.stage_key);
+      if (!columnCards.length) {
+        rows.push([selectedJob.name, column.name, '', '暂无候选人', '', '', '', '', '', '']);
+        return;
+      }
+      columnCards.forEach((card) => {
+        rows.push([
+          selectedJob.name,
+          column.name,
+          card.candidate_name,
+          APPLICATION_STATUS_TEXT[card.status] ?? card.status,
+          card.owner_name,
+          card.stage_entered_at,
+          card.stay,
+          card.lock?.start_at ?? '',
+          card.lock?.end_at ?? '',
+          card.eliminate_reason,
+        ]);
+      });
+    });
+    const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`;
+    const objectUrl = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = `${selectedJob.name}-招聘流程.csv`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    msg.success('当前职位招聘流程已导出');
+  }
 
   useEffect(() => {
     fetchJobs({ page_size: 100 }).then((data) => {
@@ -114,14 +160,22 @@ export function PipelinePage() {
 
   return (
     <div>
-      <div className="page-head">
+      <div className="page-head pipeline-board-head">
         <h2 className="page-title">招聘流程看板</h2>
+        {selectedJob && <div className="pipeline-board-job">职位：{selectedJob.name}</div>}
         <Select
           style={{ width: 260 }} placeholder="选择职位" showSearch optionFilterProp="label"
           value={jobId ?? undefined}
           onChange={(v) => setJobId(v)}
           options={jobs.map((j) => ({ value: j.id, label: j.name }))}
         />
+        <Button
+          icon={<DownloadOutlined />}
+          disabled={!jobId || loading || !columns.length}
+          onClick={exportCurrentBoard}
+        >
+          导出当前职位
+        </Button>
       </div>
       <div className="hrats-block">
         {loading ? (
