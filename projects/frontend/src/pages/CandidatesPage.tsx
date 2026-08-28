@@ -169,7 +169,20 @@ export function CandidatesPage() {
       title: '\u9636\u6BB5', dataIndex: 'current_stage', width: 100,
       render: (v: string) => stageText(v),
     },
-    { title: '姓名', dataIndex: 'name', render: (v: string, r: CandidateRow) => <a onClick={() => navigate(`/candidates/${r.id}`)}>{v}</a> },
+    {
+      title: '姓名', dataIndex: 'name',
+      render: (v: string, r: CandidateRow) => (
+        <a
+          href={`#/candidates/${r.id}`}
+          onClick={(event) => {
+            event.preventDefault();
+            navigate(`/candidates/${r.id}`);
+          }}
+        >
+          {v}
+        </a>
+      ),
+    },
     { title: '手机号', dataIndex: 'phone', width: 130 },
     { title: '邮箱', dataIndex: 'email', width: 180 },
     { title: '城市', dataIndex: 'city', width: 90 },
