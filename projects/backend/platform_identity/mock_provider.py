@@ -19,6 +19,7 @@ _DEPARTMENTS = [
 ]
 
 _USERS: list[PlatformUser] = [
+    PlatformUser("super-admin-001", "系统管理员", "super_admin", ["super_admin"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("hr-001", "张薇", "hr", ["hr"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("hr-002", "李娜", "hr", ["hr", "unlock"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("screen-001", "王强", "business_screener", ["business_screener"], "dept-backend", "后端研发组", _COMPANY),

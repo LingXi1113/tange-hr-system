@@ -56,6 +56,6 @@ def test_all_eight_roles_exist(client):
     data = client.get("/api/auth/me").get_json()["data"]
     roles = {u["role"] for u in data["switchable_users"]}
     assert {
-        "hr", "business_screener", "interviewer", "org_approver",
+        "super_admin", "hr", "business_screener", "interviewer", "org_approver",
         "gm", "chairman", "offer_sender", "ssc",
     } <= roles

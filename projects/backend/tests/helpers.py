@@ -12,7 +12,10 @@ TPL_PAYLOAD = {
 
 
 def make_template(client) -> int:
+    # 流程模板由超级管理员维护；业务测试创建后恢复为普通 HR 会话。
+    login(client, "super-admin-001")
     resp = client.post("/api/pipeline-templates", json=TPL_PAYLOAD)
+    login(client, "hr-001")
     assert resp.get_json()["code"] == 0, resp.get_data(as_text=True)
     return resp.get_json()["data"]["id"]
 

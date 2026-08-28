@@ -6,6 +6,7 @@ import {
 import { useCallback, useEffect, useState } from 'react';
 
 import { PageLoading } from '@/components/PageLoading';
+import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
 import {
   fetchPipelineTemplate, fetchPipelineTemplates, savePipelineTemplate,
@@ -63,6 +64,8 @@ function normalizeStage(stage: Partial<TemplateStage>, rowKey: string): StageRow
 }
 
 export function PipelineTemplatePage() {
+  const { user } = useCurrentUser();
+  const canManage = user?.role === 'super_admin';
   const [templates, setTemplates] = useState<PipelineTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -176,7 +179,7 @@ export function PipelineTemplatePage() {
     { title: '更新时间', dataIndex: 'updated_at', width: 170 },
     {
       title: '操作', width: 200,
-      render: (_: unknown, record: PipelineTemplate) => (
+      render: (_: unknown, record: PipelineTemplate) => canManage ? (
         <Space>
           <Button size="small" type="link" onClick={() => void openEditor(record.id)}>编辑</Button>
           <Button
@@ -200,7 +203,7 @@ export function PipelineTemplatePage() {
             <Button size="small" type="link" danger>删除</Button>
           </Popconfirm>
         </Space>
-      ),
+      ) : null,
     },
   ];
 
@@ -312,11 +315,16 @@ export function PipelineTemplatePage() {
     <div>
       <div className="page-head">
         <h2 className="page-title">流程模板配置</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => void openEditor(null)}>
+        <Button type="primary" icon={<PlusOutlined />} style={{ display: canManage ? undefined : 'none' }} onClick={() => void openEditor(null)}>
           新建流程模板
         </Button>
       </div>
       <div className="hrats-block">
+        {!canManage && (
+          <Typography.Text type="secondary">
+            当前为只读视图，招聘流程由超级管理员统一维护，修改后会同步到所有 HR。
+          </Typography.Text>
+        )}
         {loading ? (
           <PageLoading />
         ) : (

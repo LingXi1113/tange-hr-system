@@ -10,11 +10,13 @@ V11_STAGES = ["new_resume", "pending_screen", "hr_screen_passed", "pending_inter
 
 def _setup(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "通知用例流程",
         "stages": [{"stage_key": k, "name": k, "sort_order": i + 1}
                    for i, k in enumerate(V11_STAGES)],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="通知职位", template_id=tpl)
     publish_job(client, job["id"])
     return job

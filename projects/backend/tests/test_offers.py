@@ -13,11 +13,13 @@ V11_STAGES = ["new_resume", "pending_screen", "hr_screen_passed", "pending_inter
 def _setup(client):
     """v1.1 模板职位 + 候选人 + 应聘记录推进到 interview_passed。"""
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "Offer用例流程",
         "stages": [{"stage_key": k, "name": k, "sort_order": i + 1}
                    for i, k in enumerate(V11_STAGES)],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="Offer职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13800007701", email="offer@example.com")

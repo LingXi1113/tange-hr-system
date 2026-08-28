@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import common.stage_rules as stage_rules
 from common.background_failures import record_background_failure, resolve_background_failure
 from common.resume_parser import parse_resume_file
+from conftest import login
 from helpers import assign, ensure_hr, make_candidate, make_job, publish_job
 
 
@@ -24,6 +25,7 @@ def test_background_failure_can_be_recorded_and_resolved(client):
 
 def test_stage_rule_failure_is_recorded_and_resolved_after_retry(client, monkeypatch):
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "异常留痕模板", "stage_rules_enabled": True,
         "stages": [{
@@ -31,6 +33,7 @@ def test_stage_rule_failure_is_recorded_and_resolved_after_retry(client, monkeyp
             "unprocessed_days": 1, "expiry_action": "talent_pool", "auto_reminder": False,
         }],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="异常留痕职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13600001999", email="failure-record@example.com")
@@ -71,5 +74,8 @@ def test_resume_parser_logs_exception_and_returns_manual_status(monkeypatch, cap
         fields, status = parse_resume_file("broken.docx")
 
     assert status == "failed"
-    assert fields == {"name": "", "phone": "", "email": "", "city": ""}
+    assert fields == {
+        "name": "", "phone": "", "email": "", "city": "",
+        "gender": "", "education": [], "work_experience": [],
+    }
     assert "简历文本提取失败" in caplog.text

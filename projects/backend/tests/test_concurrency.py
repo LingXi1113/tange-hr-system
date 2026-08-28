@@ -6,6 +6,7 @@ from helpers import assign, ensure_hr, make_candidate, make_job, publish_job
 
 
 def _template(client, stages):
+    login(client, "super-admin-001")
     response = client.post("/api/pipeline-templates", json={
         "name": "并发保护模板",
         "stages": [
@@ -13,6 +14,7 @@ def _template(client, stages):
             for index, (key, lock_days) in enumerate(stages)
         ],
     })
+    login(client, "hr-001")
     assert response.get_json()["code"] == 0
     return response.get_json()["data"]["id"]
 
@@ -166,6 +168,7 @@ def test_candidate_import_unique_index_turns_race_into_duplicate_row(client, mon
 
 def _interview_setup(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     response = client.post("/api/pipeline-templates", json={
         "name": "面试并发保护",
         "stages": [
@@ -174,6 +177,7 @@ def _interview_setup(client):
             {"stage_key": "interviewing", "name": "面试中", "sort_order": 3},
         ],
     })
+    login(client, "hr-001")
     template_id = response.get_json()["data"]["id"]
     job = make_job(client, name="面试并发职位", template_id=template_id)
     publish_job(client, job["id"])

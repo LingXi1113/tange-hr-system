@@ -7,7 +7,9 @@ def _create_template(client, stages=None):
         {"stage_key": "new_resume", "name": "新简历", "sort_order": 1, "category": "开始"},
         {"stage_key": "business_screen", "name": "业务复筛", "sort_order": 2, "category": "筛选"},
     ]
+    login(client, "super-admin-001")
     resp = client.post("/api/pipeline-templates", json={"name": "测试流程模板", "stages": stages})
+    login(client, "hr-001")
     body = resp.get_json()
     assert body["code"] == 0, body
     return body["data"]
@@ -39,6 +41,7 @@ def test_pipeline_template_crud(client):
     assert lst["total"] >= 1
 
     # 修改：替换阶段并显式指定锁定天数
+    login(client, "super-admin-001")
     upd = client.put(f"/api/pipeline-templates/{tid}", json={
         "name": "改名模板",
         "stages": [
@@ -59,7 +62,7 @@ def test_pipeline_template_crud(client):
 
 
 def test_pipeline_template_validation(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     # 未知阶段
     bad = client.post("/api/pipeline-templates", json={
         "name": "x", "stages": [{"stage_key": "nope", "name": "x"}],
@@ -79,6 +82,27 @@ def test_pipeline_template_validation(client):
         "name": "x", "stages": [{"stage_key": "new_resume", "name": "x"}],
     })
     assert resp.get_json()["code"] == 1006
+
+
+def test_pipeline_template_writes_are_super_admin_only_and_shared_with_hr(client):
+    login(client, "super-admin-001")
+    created = client.post("/api/pipeline-templates", json={
+        "name": "共享面试流程",
+        "stages": [{"stage_key": "new_resume", "name": "新简历", "sort_order": 1}],
+    }).get_json()["data"]
+
+    login(client, "hr-001")
+    forbidden = client.put(f"/api/pipeline-templates/{created['id']}", json={"name": "HR不应修改"})
+    assert forbidden.get_json()["code"] == 1006
+    visible = client.get(f"/api/pipeline-templates/{created['id']}").get_json()["data"]
+    assert visible["name"] == "共享面试流程"
+
+    login(client, "super-admin-001")
+    updated = client.put(f"/api/pipeline-templates/{created['id']}", json={"name": "管理员已更新"})
+    assert updated.get_json()["code"] == 0
+    login(client, "hr-001")
+    shared = client.get(f"/api/pipeline-templates/{created['id']}").get_json()["data"]
+    assert shared["name"] == "管理员已更新"
 
 
 def _create_eval(client, **overrides):

@@ -64,6 +64,7 @@ def test_lock_blocks_new_application(client):
 
 def test_hr_assignment_enters_hr_screen_and_locks_for_seven_days(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     template = client.post("/api/pipeline-templates", json={
         "name": "HR筛选规则模板",
         "stages": [
@@ -71,6 +72,7 @@ def test_hr_assignment_enters_hr_screen_and_locks_for_seven_days(client):
             {"stage_key": "hr_screen_passed", "name": "HR筛选", "sort_order": 2, "lock_days": 0},
         ],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="HR筛选规则职位", template_id=template)
     publish_job(client, job["id"])
     candidate_id = make_candidate(client, phone="13933335555", email="hr-screen@example.com")

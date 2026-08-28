@@ -30,7 +30,7 @@ import { useCurrentUser } from '@/services/user';
 /** 登录后默认首页：HR 进工作台，其他角色进我的任务。 */
 function HomeRedirect() {
   const { user } = useCurrentUser();
-  const target = user?.role === 'hr' ? '/workbench' : '/tasks';
+  const target = ['hr', 'super_admin'].includes(user?.role ?? '') ? '/workbench' : '/tasks';
   return <Navigate to={target} replace />;
 }
 
@@ -62,9 +62,11 @@ export function RouterView() {
           <Route path="/interviews" element={<InterviewsPage />} />
           <Route path="/offers" element={<OffersPage />} />
           <Route path="/talent-pool" element={<TalentPoolPage />} />
+          <Route element={<RequireRole roles={['hr', 'super_admin']} />}>
+            <Route path="/pipeline-template" element={<PipelineTemplatePage />} />
+          </Route>
           <Route element={<RequireRole roles={['hr']} />}>
             <Route path="/reports" element={<ReportsPage />} />
-            <Route path="/pipeline-template" element={<PipelineTemplatePage />} />
             <Route path="/eval-template" element={<EvalTemplatePage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/audit-logs" element={<AuditLogsPage />} />

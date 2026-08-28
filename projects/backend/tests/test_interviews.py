@@ -10,6 +10,7 @@ FMT = "%Y-%m-%d %H:%M"
 def _setup(client):
     ensure_hr(client)
     # v1.1 流程模板（含 interview_passed，供结论联动推进）
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "面试用例流程",
         "stages": [
@@ -19,6 +20,7 @@ def _setup(client):
             {"stage_key": "interview_passed", "name": "面试通过", "sort_order": 4},
         ],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="面试职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13611110001", email="iv@example.com")

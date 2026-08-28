@@ -6,7 +6,7 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import HR
+from common.roles import HR, SUPER_ADMIN
 from common.stages import (
     DEADLINE_BASES,
     EXPIRY_ACTIONS,
@@ -143,7 +143,7 @@ def get_pipeline_template(template_id: int):
 
 
 @bp.post("/api/pipeline-templates")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def create_pipeline_template():
     payload = request.get_json(silent=True) or {}
     name = (payload.get("name") or "").strip()
@@ -171,7 +171,7 @@ def create_pipeline_template():
 
 
 @bp.put("/api/pipeline-templates/<int:template_id>")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def update_pipeline_template(template_id: int):
     tpl = get_by_id("pipeline_templates", template_id)
     if tpl is None:
@@ -197,7 +197,7 @@ def update_pipeline_template(template_id: int):
 
 
 @bp.put("/api/pipeline-templates/<int:template_id>/status")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def set_pipeline_template_status(template_id: int):
     tpl = get_by_id("pipeline_templates", template_id)
     if tpl is None:
@@ -214,7 +214,7 @@ def set_pipeline_template_status(template_id: int):
 
 
 @bp.delete("/api/pipeline-templates/<int:template_id>")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def delete_pipeline_template(template_id: int):
     tpl = get_by_id("pipeline_templates", template_id)
     if tpl is None:

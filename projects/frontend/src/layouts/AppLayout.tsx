@@ -59,6 +59,11 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
   const selectedKey = `/${location.pathname.split('/').filter(Boolean)[0] ?? 'workbench'}`;
+  const visibleMenuItems = user?.role === 'super_admin'
+    ? menuItems.map((item) => item && 'key' in item && item.key === 'group-settings'
+      ? { ...item, children: item.children?.filter((child) => child && 'key' in child && child.key === '/pipeline-template') }
+      : item)
+    : menuItems;
 
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key.startsWith('/')) navigate(key);
@@ -98,7 +103,7 @@ export function AppLayout() {
             className="sider-menu"
             mode="inline"
             theme="light"
-            items={menuItems}
+            items={visibleMenuItems}
             selectedKeys={[selectedKey]}
             defaultOpenKeys={['group-settings']}
             onClick={onMenuClick}

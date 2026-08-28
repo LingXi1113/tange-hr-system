@@ -4,13 +4,18 @@ from helpers import assign, ensure_hr, make_candidate, make_job, publish_job
 
 
 def _template(client, stages):
-    return client.post("/api/pipeline-templates", json={
+    from conftest import login
+
+    login(client, "super-admin-001")
+    response = client.post("/api/pipeline-templates", json={
         "name": "一致性测试流程",
         "stages": [
             {"stage_key": key, "name": key, "sort_order": index + 1}
             for index, key in enumerate(stages)
         ],
-    }).get_json()["data"]["id"]
+    })
+    login(client, "hr-001")
+    return response.get_json()["data"]["id"]
 
 
 def _setup(client, stages):

@@ -47,10 +47,12 @@ def _apply(client, token, **overrides):
 def test_public_page_and_apply_flow(client):
     login(client, "hr-001")
     # 无锁定模板：本用例聚焦投递与查重复用，锁定期行为在候选人用例覆盖
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "投递用例流程",
         "stages": [{"stage_key": "new_resume", "name": "新简历", "sort_order": 1, "lock_days": 0}],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, template_id=tpl)
     publish_job(client, job["id"])
     token = job["public_token"]

@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta
 
 from common.stage_rules import process_expired_stage_rules
+from conftest import login
 from helpers import assign, ensure_hr, make_candidate, make_job, publish_job
 
 
 def test_stage_rule_configuration_round_trip(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     response = client.post("/api/pipeline-templates", json={
         "name": "客保规则模板",
         "stage_rules_enabled": True,
@@ -30,6 +32,7 @@ def test_stage_rule_configuration_round_trip(client):
 
 def test_stage_rule_blocks_skipping_non_skippable_stage(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "顺序规则模板", "stage_rules_enabled": True,
         "stages": [
@@ -38,6 +41,7 @@ def test_stage_rule_blocks_skipping_non_skippable_stage(client):
             {"stage_key": "interview_2", "name": "二面", "sort_order": 3},
         ],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="顺序校验职位", template_id=tpl)
     publish_job(client, job["id"])
     app = assign(client, make_candidate(client, phone="13600001001", email="rule-order@example.com"), job["id"])
@@ -49,6 +53,7 @@ def test_stage_rule_blocks_skipping_non_skippable_stage(client):
 
 def test_expired_stage_rule_moves_to_talent_pool(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "到期规则模板", "stage_rules_enabled": True,
         "stages": [{
@@ -56,6 +61,7 @@ def test_expired_stage_rule_moves_to_talent_pool(client):
             "unprocessed_days": 1, "expiry_action": "talent_pool", "auto_reminder": False,
         }],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="到期规则职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13600001002", email="rule-expire@example.com")
@@ -75,6 +81,7 @@ def test_expired_stage_rule_moves_to_talent_pool(client):
 
 def test_stage_rule_sends_reminder_before_deadline(client):
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "提前提醒规则模板", "stage_rules_enabled": True,
         "stages": [{
@@ -83,6 +90,7 @@ def test_stage_rule_sends_reminder_before_deadline(client):
             "expiry_action": "none", "auto_reminder": True,
         }],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="提前提醒职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13600001003", email="rule-remind@example.com")

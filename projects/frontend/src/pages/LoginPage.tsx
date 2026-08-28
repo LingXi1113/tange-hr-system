@@ -37,7 +37,7 @@ export function LoginPage() {
   }
 
   function homePathOf(role: string) {
-    return role === 'hr' ? '/workbench' : '/tasks';
+    return ['hr', 'super_admin'].includes(role) ? '/workbench' : '/tasks';
   }
 
   async function handleLogin(target: SwitchableUser) {

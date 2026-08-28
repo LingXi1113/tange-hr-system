@@ -31,7 +31,7 @@ def test_seed_creates_v11_template_and_disables_legacy(app):
 
 def test_template_api_accepts_new_and_legacy_stages(client):
     """模板校验：v1.1 新阶段与 v1.0 旧阶段都合法（兼容）。"""
-    ensure_hr(client)
+    login(client, "super-admin-001")
     for key in ["pending_screen", "offer_pending"] + LEGACY_STAGES[:2]:
         resp = client.post("/api/pipeline-templates", json={
             "name": f"模板-{key}",
@@ -43,11 +43,13 @@ def test_template_api_accepts_new_and_legacy_stages(client):
 def test_board_with_v11_template(client):
     """v1.1 模板职位的看板：9 主干列 + 淘汰/放弃/人才库；卡片可沿新流程流转。"""
     ensure_hr(client)
+    login(client, "super-admin-001")
     tpl = client.post("/api/pipeline-templates", json={
         "name": "v1.1流程",
         "stages": [{"stage_key": k, "name": k, "sort_order": i + 1}
                    for i, k in enumerate(V11_STAGES)],
     }).get_json()["data"]["id"]
+    login(client, "hr-001")
     job = make_job(client, name="v1.1职位", template_id=tpl)
     publish_job(client, job["id"])
     cid = make_candidate(client, phone="13500001111", email="v11@example.com")
@@ -60,7 +62,8 @@ def test_board_with_v11_template(client):
 
     # 沿新流程流转（含放弃终态）
     version = app["version"]
-    for target in ["pending_screen", "hr_screen_passed", "pending_interview"]:
+    # 分配职位后按当前规则直接进入 HR 筛选阶段。
+    for target in ["pending_interview"]:
         resp = client.post(f"/api/applications/{app['id']}/move",
                            json={"to_stage": target, "reason": "推进", "version": version})
         assert resp.get_json()["code"] == 0, target
