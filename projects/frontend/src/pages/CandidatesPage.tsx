@@ -166,14 +166,15 @@ export function CandidatesPage() {
 
   const columns = [
     {
-      title: '\u9636\u6BB5', dataIndex: 'current_stage', width: 100,
+      title: '\u9636\u6BB5', dataIndex: 'current_stage', width: 120, ellipsis: true,
       render: (v: string) => stageText(v),
     },
     {
-      title: '姓名', dataIndex: 'name',
+      title: '姓名', dataIndex: 'name', width: 150, ellipsis: true,
       render: (v: string, r: CandidateRow) => (
         <a
           href={`#/candidates/${r.id}`}
+          style={{ display: 'inline-block', maxWidth: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', verticalAlign: 'bottom' }}
           onClick={(event) => {
             event.preventDefault();
             navigate(`/candidates/${r.id}`);
@@ -183,17 +184,17 @@ export function CandidatesPage() {
         </a>
       ),
     },
-    { title: '手机号', dataIndex: 'phone', width: 130 },
-    { title: '邮箱', dataIndex: 'email', width: 180 },
-    { title: '城市', dataIndex: 'city', width: 90 },
-    { title: '来源', dataIndex: 'source', width: 100, render: (v: string) => SOURCE_TEXT[v] ?? v },
+    { title: '手机号', dataIndex: 'phone', width: 145 },
+    { title: '邮箱', dataIndex: 'email', width: 200, ellipsis: true },
+    { title: '城市', dataIndex: 'city', width: 100 },
+    { title: '来源', dataIndex: 'source', width: 110, ellipsis: true, render: (v: string) => SOURCE_TEXT[v] ?? v },
     {
-      title: '最近应聘', dataIndex: 'latest_application', width: 200,
+      title: '最近应聘', dataIndex: 'latest_application', width: 260, ellipsis: true,
       render: (v: CandidateRow['latest_application']) =>
         v ? `${v.job_name} · ${stageText(v.current_stage)}` : '-',
     },
     {
-      title: '锁定', dataIndex: 'lock', width: 80,
+      title: '锁定', dataIndex: 'lock', width: 100,
       render: (v: CandidateRow['lock']) =>
         v ? (
           <Tooltip title={`锁定中：${v.start_at} ~ ${v.end_at}`}>
@@ -289,7 +290,7 @@ export function CandidatesPage() {
         </Space>
         {loading ? <PageLoading /> : (
           <Table
-            rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1100 }}
+            rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1400 }}
             rowSelection={{
               selectedRowKeys: selectedIds,
               onChange: (keys) => setSelectedIds(keys.map(Number)),
