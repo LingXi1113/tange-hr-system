@@ -335,7 +335,7 @@ export function OffersPage() {
           </Form.Item>
           <Form.Item name="version" hidden><Input /></Form.Item>
           <Form.Item
-            name="application_id" label="应聘记录（职位联动，仅面试通过/Offer中阶段可选）"
+            name="application_id" label="应聘记录（职位联动，仅面试阶段/Offer中阶段可选）"
             rules={[{ required: true, message: '必填' }]}
           >
             <Select

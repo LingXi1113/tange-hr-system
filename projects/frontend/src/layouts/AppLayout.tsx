@@ -59,11 +59,8 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
   const selectedKey = `/${location.pathname.split('/').filter(Boolean)[0] ?? 'workbench'}`;
-  const visibleMenuItems = user?.role === 'super_admin'
-    ? menuItems.map((item) => item && 'key' in item && item.key === 'group-settings'
-      ? { ...item, children: item.children?.filter((child) => child && 'key' in child && child.key === '/pipeline-template') }
-      : item)
-    : menuItems;
+  // HR 与超级管理员都可以查看设置；是否可编辑由各设置页按超级管理员角色控制。
+  const visibleMenuItems = menuItems;
 
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key.startsWith('/')) navigate(key);

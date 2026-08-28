@@ -13,7 +13,7 @@ DEFAULT_STAGES = [
     ("hr_screen_passed", "HR筛选通过", "筛选", True, True, False, "enter"),
     ("pending_interview", "待面试", "面试", True, True, False, "enter"),
     ("interviewing", "面试中", "面试", True, True, False, "enter"),
-    ("interview_passed", "面试通过", "面试", True, True, False, "enter"),
+    ("interview_passed", "面试阶段", "面试", True, True, False, "enter"),
     ("offer_pending", "Offer中", "Offer", True, True, False, "offer_expire"),
     ("pending_onboard", "待入职", "入职", True, True, False, "onboard"),
     ("onboarded", "已入职", "结束", True, True, False, ""),

@@ -180,6 +180,163 @@ def _demo_log(now: datetime, biz_type: str, biz_id, action: str,
     }, now)
 
 
+def repair_demo_recruitment_consistency(now: datetime | None = None):
+    """修复已存在的演示数据，使其符合面试-Offer-人才库业务链路。
+
+    仅处理演示岗位和 example.com 候选人，不触碰真实业务数据。该函数在
+    演示数据标记已存在时执行，保证升级已有本地数据库也能得到一致结果。
+    """
+    now = now or datetime.now()
+    job_docs = {doc.get("code"): doc for doc in col("jobs").find({
+        "code": {"$in": ["JOB-DEMO-BE", "JOB-DEMO-FE", "JOB-DEMO-SALES"]}
+    })}
+    if not job_docs:
+        return
+    job_ids = [doc["_id"] for doc in job_docs.values()]
+    candidates = {doc.get("email"): doc for doc in col("candidates").find({
+        "email": {"$regex": "@example\\.com$"}
+    })}
+    applications = {}
+    for app in col("applications").find({"job_id": {"$in": job_ids}}):
+        candidate = candidates.get((col("candidates").find_one({"_id": app.get("candidate_id")}) or {}).get("email"))
+        if candidate:
+            applications[candidate.get("email")] = app
+
+    def ensure_stage(app, target, reason):
+        if not app or app.get("current_stage") == target:
+            return app
+        old_stage = app.get("current_stage") or "new_resume"
+        target_status = "closed" if target == "talent_pool" else "in_progress"
+        col("applications").update_one({"_id": app["_id"]}, {"$set": {
+            "current_stage": target, "status": target_status,
+            "stage_entered_at": now, "updated_at": now,
+        }})
+        _demo_insert("stage_transitions", {
+            "application_id": app["_id"], "from_stage": old_stage,
+            "to_stage": target, "reason": reason,
+            "operator_id": "hr-001", "operator_name": "张薇",
+        }, now - timedelta(hours=3))
+        app["current_stage"] = target
+        app["status"] = target_status
+        return app
+
+    # 旧示例中有两条“面试记录已存在但仍停在筛选/新简历”的数据，
+    # 统一回填到对应的面试阶段。
+    ensure_stage(applications.get("zhou.ning@example.com"), "hr_interview", "进入 HR 面试阶段")
+    ensure_stage(applications.get("gu.wan@example.com"), "interviewing", "进入面试阶段")
+
+    def ensure_pool(app, source, reason, tags):
+        if not col("talent_pool").find_one({"candidate_id": app["candidate_id"]}):
+            _demo_insert("talent_pool", {
+                "candidate_id": app["candidate_id"], "category": "tech",
+                "tags": tags, "source": source, "reason": reason,
+                "recommended_job_id": app.get("job_id"),
+                "last_contact_at": now - timedelta(days=2),
+                "status": "active", "added_by": "hr-001",
+            }, now - timedelta(days=3))
+
+    def ensure_interview(app, round_name, conclusion, interviewer="王强"):
+        existing = col("interviews").find_one({
+            "application_id": app["_id"], "round": round_name,
+        }, sort=[("_id", -1)])
+        if existing is None:
+            existing = _demo_insert("interviews", {
+                "candidate_id": app["candidate_id"], "job_id": app["job_id"],
+                "application_id": app["_id"], "round": round_name,
+                "type": "video", "start_at": now - timedelta(days=2),
+                "end_at": now - timedelta(days=2) + timedelta(hours=1),
+                "location": "", "meeting_link": "https://meeting.example.com/demo-room",
+                "interviewer_name": interviewer, "interviewer_contact": "interviewer-001",
+                "template_id": None, "remark": "演示面试记录", "status": "completed",
+                "version": 1, "conclusion_applied": True,
+                "conclusion_action": conclusion,
+                "conclusion_applied_at": now - timedelta(days=1),
+            }, now - timedelta(days=2))
+        else:
+            col("interviews").update_one({"_id": existing["_id"]}, {"$set": {
+                "status": "completed", "conclusion_applied": True,
+                "conclusion_action": conclusion,
+                "conclusion_applied_at": existing.get("conclusion_applied_at") or now - timedelta(days=1),
+            }})
+            existing = col("interviews").find_one({"_id": existing["_id"]})
+        if col("interview_feedback").find_one({"interview_id": existing["_id"]}) is None:
+            failed = conclusion == "fail"
+            _demo_insert("interview_feedback", {
+                "interview_id": existing["_id"],
+                "dimension_scores": [{"name": "专业能力", "score": 2 if failed else 4},
+                                      {"name": "沟通表达", "score": 3 if failed else 5}],
+                "conclusion": conclusion,
+                "comment": "面试未通过，已加入人才库。" if failed else "面试通过，可进入下一阶段。",
+                "risk_note": "岗位匹配度不足" if failed else "暂无",
+                "suggested_salary": "", "evaluator_id": "interviewer-001",
+                "evaluator_name": interviewer, "skip_eval": False,
+            }, now - timedelta(days=1))
+
+    # Offer 只能建立在最后一轮明确通过的面试之后。
+    offer_app_ids = {offer.get("application_id") for offer in col("offers").find({
+        "job_id": {"$in": job_ids}
+    })}
+    for email, app in applications.items():
+        if app.get("_id") in offer_app_ids:
+            ensure_interview(app, "三面", "pass")
+            # 清理旧演示数据中“前一轮仍待安排、但流程已经有 Offer”的矛盾记录。
+            col("interviews").update_many({
+                "application_id": app["_id"],
+                "status": {"$in": ["pending", "invited", "confirmed", "rescheduled"]},
+                "round": {"$ne": "三面"},
+            }, {"$set": {
+                "status": "cancelled", "cancel_reason": "流程已推进至最终面试",
+                "updated_at": now,
+            }})
+
+    # 赵晴的一面已完成但结论尚未应用，保留在“面试中”等待处理。
+    zhao_qing = applications.get("zhao.qing@example.com")
+    if zhao_qing:
+        col("interviews").update_many({
+            "application_id": zhao_qing["_id"], "status": "completed",
+        }, {"$set": {"conclusion_applied": False, "conclusion_action": "",
+                      "conclusion_applied_at": None, "updated_at": now}})
+
+    # 许安：面试通过后曾有 Offer，拒绝后进入人才库。
+    xu_an = applications.get("xu.an@example.com")
+    if xu_an:
+        old_stage = xu_an.get("current_stage")
+        if old_stage != "talent_pool" or xu_an.get("status") != "closed":
+            col("applications").update_one({"_id": xu_an["_id"]}, {"$set": {
+                "current_stage": "talent_pool", "status": "closed",
+                "stage_entered_at": now, "updated_at": now,
+            }})
+            _demo_insert("stage_transitions", {
+                "application_id": xu_an["_id"], "from_stage": old_stage or "interview_passed",
+                "to_stage": "talent_pool", "reason": "Offer 拒绝，加入人才库",
+                "operator_id": "hr-001", "operator_name": "张薇",
+            }, now - timedelta(hours=2))
+        ensure_pool(xu_an, "offer_rejected", "候选人拒绝 Offer，保留后续机会", ["后端", "Offer拒绝"])
+
+    # 郑凯：面试不通过，直接进入人才库，不再停留在“淘汰”示例。
+    zheng_kai = applications.get("zheng.kai@example.com")
+    if zheng_kai:
+        ensure_interview(zheng_kai, "一面", "fail", interviewer="刘洋")
+        old_stage = zheng_kai.get("current_stage")
+        if old_stage != "talent_pool" or zheng_kai.get("status") != "closed":
+            col("applications").update_one({"_id": zheng_kai["_id"]}, {"$set": {
+                "current_stage": "talent_pool", "status": "closed",
+                "stage_entered_at": now, "eliminate_reason": "面试未通过，已加入人才库",
+                "updated_at": now,
+            }})
+            _demo_insert("stage_transitions", {
+                "application_id": zheng_kai["_id"], "from_stage": old_stage or "interviewing",
+                "to_stage": "talent_pool", "reason": "面试不通过，加入人才库",
+                "operator_id": "hr-001", "operator_name": "张薇",
+            }, now - timedelta(hours=1))
+        ensure_pool(zheng_kai, "elimination_added", "面试不通过，保留后续机会", ["销售", "面试未通过"])
+
+    # 旧演示数据中的 a5 曾有“二面待安排”却同时存在 Offer，改为已完成三面。
+    xu_li = applications.get("xu.li@example.com")
+    if xu_li:
+        ensure_interview(xu_li, "三面", "pass")
+
+
 def seed_demo_business_data(now: datetime | None = None):
     """创建可从前端各菜单直接查看的业务演示数据（幂等）。"""
     now = now or datetime.now()
@@ -190,6 +347,7 @@ def seed_demo_business_data(now: datetime | None = None):
              "interview_rounds": {"$exists": False}},
             {"$set": {"interview_rounds": ["一面", "二面", "三面"]}},
         )
+        repair_demo_recruitment_consistency(now)
         return
 
     day = timedelta(days=1)
@@ -285,19 +443,19 @@ def seed_demo_business_data(now: datetime | None = None):
     # 4. 应聘记录：铺满流程看板各主要阶段和终态。
     app_specs = [
         ("c1", "j1", "pending_screen", "in_progress", 5),
-        ("c2", "j1", "hr_screen_passed", "in_progress", 4),
+        ("c2", "j1", "hr_interview", "in_progress", 4),
         ("c3", "j1", "pending_interview", "in_progress", 3),
         ("c4", "j1", "interviewing", "in_progress", 3),
         ("c5", "j1", "interview_passed", "in_progress", 2),
         ("c6", "j1", "offer_pending", "in_progress", 2),
         ("c7", "j1", "pending_onboard", "pending_onboard", 1),
         ("c8", "j2", "onboarded", "onboarded", 20),
-        ("c9", "j1", "eliminated", "eliminated", 15),
+        ("c9", "j1", "talent_pool", "closed", 15),
         ("c10", "j1", "talent_pool", "closed", 12),
         ("c11", "j5", "pending_screen", "in_progress", 4),
-        ("c12", "j2", "new_resume", "in_progress", 1),
+        ("c12", "j2", "interviewing", "in_progress", 1),
         ("c13", "j1", "offer_pending", "in_progress", 2),
-        ("c14", "j1", "interview_passed", "in_progress", 4),
+        ("c14", "j1", "talent_pool", "closed", 4),
     ]
     applications = {}
     for index, (candidate_key, job_key, stage, status, age_days) in enumerate(app_specs, 1):
@@ -307,7 +465,7 @@ def seed_demo_business_data(now: datetime | None = None):
             "source": candidates[candidate_key].get("source", "manual"),
             "current_stage": stage, "owner_id": "hr-001", "owner_name": "张薇",
             "stage_entered_at": created + day, "status": status,
-            "eliminate_reason": "技术栈与岗位要求不匹配" if stage == "eliminated" else "",
+            "eliminate_reason": "技术栈与岗位要求不匹配" if stage in ("eliminated", "talent_pool") else "",
             "expected_salary": "35K", "onboard_time": "2026-09-15" if stage == "pending_onboard" else "",
             "version": 2 if stage != "new_resume" else 1,
         }, created)
@@ -346,10 +504,16 @@ def seed_demo_business_data(now: datetime | None = None):
     interview_specs = [
         ("a3", "一面", "video", "confirmed", now + day, "刘洋"),
         ("a4", "一面", "onsite", "completed", now - 3 * day, "刘洋"),
-        ("a5", "二面", "video", "pending", now + 2 * day, "王强"),
+        ("a5", "三面", "video", "completed", now - day, "王强"),
         ("a2", "HR面试", "phone", "invited", now + timedelta(hours=4), "张薇"),
-        ("a9", "一面", "onsite", "cancelled", now - 2 * day, "刘洋"),
+        ("a9", "一面", "onsite", "completed", now - 2 * day, "刘洋"),
         ("a12", "一面", "video", "rescheduled", now + 3 * day, "刘洋"),
+        ("a6", "三面", "video", "completed", now - 2 * day, "王强"),
+        ("a13", "三面", "video", "completed", now - 2 * day, "王强"),
+        ("a7", "三面", "video", "completed", now - 4 * day, "王强"),
+        ("a8", "三面", "video", "completed", now - 12 * day, "王强"),
+        ("a10", "三面", "video", "completed", now - 10 * day, "王强"),
+        ("a14", "三面", "video", "completed", now - 3 * day, "王强"),
     ]
     interviews = {}
     for index, (app_key, round_name, iv_type, status, start_at, interviewer) in enumerate(interview_specs, 1):
@@ -361,16 +525,28 @@ def seed_demo_business_data(now: datetime | None = None):
             "meeting_link": "https://meeting.example.com/demo-room" if iv_type == "video" else "",
             "interviewer_name": interviewer, "interviewer_contact": "interviewer-001",
             "template_id": None, "remark": "演示面试记录", "status": status,
-            "version": 1, "reschedule_history": [{"reason": "候选人时间调整", "updated_at": now - day}] if status == "rescheduled" else [],
+            "version": 1,
+            "conclusion_applied": status == "completed" and app_key != "a4",
+            "conclusion_action": ("fail" if app_key == "a9" else "pass") if status == "completed" and app_key != "a4" else "",
+            "conclusion_applied_at": start_at + timedelta(hours=1) if status == "completed" and app_key != "a4" else None,
+            "reschedule_history": [{"reason": "候选人时间调整", "updated_at": now - day}] if status == "rescheduled" else [],
         }, start_at - timedelta(hours=2))
         interviews[f"i{index}"] = iv
-    _demo_insert("interview_feedback", {
-        "interview_id": interviews["i2"]["_id"],
-        "dimension_scores": [{"name": "专业能力", "score": 4}, {"name": "沟通表达", "score": 5}],
-        "conclusion": "pass", "comment": "技术基础扎实，沟通清晰，建议进入下一阶段。",
-        "risk_note": "暂无", "suggested_salary": "40K", "evaluator_id": "interviewer-001",
-        "evaluator_name": "刘洋", "skip_eval": False,
-    }, now - 2 * day)
+    # 只有“已完成 + 明确通过”的最后一轮面试，才具备创建 Offer 的资格。
+    completed_interviews = [key for key, item in interviews.items()
+                            if item["status"] == "completed"]
+    for interview_key in completed_interviews:
+        is_failed = interview_key == "i5"
+        _demo_insert("interview_feedback", {
+            "interview_id": interviews[interview_key]["_id"],
+            "dimension_scores": [{"name": "专业能力", "score": 2 if is_failed else 4},
+                                  {"name": "沟通表达", "score": 3 if is_failed else 5}],
+            "conclusion": "fail" if is_failed else "pass",
+            "comment": "面试未通过，保留至人才库。" if is_failed else "技术基础扎实，沟通清晰，建议进入下一阶段。",
+            "risk_note": "岗位匹配度不足" if is_failed else "暂无",
+            "suggested_salary": "", "evaluator_id": "interviewer-001",
+            "evaluator_name": "刘洋", "skip_eval": False,
+        }, now - 2 * day)
 
     # 6. Offer：覆盖草稿、待发送、已发送、已接受、已拒绝、已过期。
     offer_specs = [

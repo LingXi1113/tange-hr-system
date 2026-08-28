@@ -1,6 +1,6 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import {
-  Button, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag,
+  Button, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -11,6 +11,7 @@ import {
   saveEvalTemplate,
 } from '@/services/template';
 import type { EvalBinding, EvalTemplate } from '@/services/template';
+import { useCurrentUser } from '@/services/user';
 
 interface BindingRow extends EvalBinding {
   rowKey: string;
@@ -23,6 +24,8 @@ function nextKey() {
 }
 
 export function EvalTemplatePage() {
+  const { user } = useCurrentUser();
+  const canManage = user?.role === 'super_admin';
   const [list, setList] = useState<EvalTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
@@ -32,6 +35,10 @@ export function EvalTemplatePage() {
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<{ name: string; remark: string; dimensions: string[] }>();
   const [bindings, setBindings] = useState<BindingRow[]>([]);
+
+  useEffect(() => {
+    if (!canManage && drawerOpen) setDrawerOpen(false);
+  }, [canManage, drawerOpen]);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -66,6 +73,10 @@ export function EvalTemplatePage() {
   }
 
   async function handleSave() {
+    if (!canManage) {
+      msg.error('只有超级管理员可以修改面试评价模板');
+      return;
+    }
     const values = await form.validateFields();
     if (!values.dimensions?.length) {
       msg.error('至少需要一个评分维度');
@@ -108,7 +119,7 @@ export function EvalTemplatePage() {
     { title: '更新时间', dataIndex: 'updated_at', width: 170 },
     {
       title: '操作', width: 130,
-      render: (_: unknown, record: EvalTemplate) => (
+      render: (_: unknown, record: EvalTemplate) => canManage ? (
         <Space>
           <Button size="small" type="link" onClick={() => void openEditor(record.id)}>编辑</Button>
           <Popconfirm
@@ -122,7 +133,7 @@ export function EvalTemplatePage() {
             <Button size="small" type="link" danger>删除</Button>
           </Popconfirm>
         </Space>
-      ),
+      ) : <Typography.Text type="secondary">只读</Typography.Text>,
     },
   ];
 
@@ -130,11 +141,16 @@ export function EvalTemplatePage() {
     <div>
       <div className="page-head">
         <h2 className="page-title">面试评价模板配置</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => void openEditor(null)}>
+        <Button type="primary" icon={<PlusOutlined />} style={{ display: canManage ? undefined : 'none' }} onClick={() => void openEditor(null)}>
           新建评价模板
         </Button>
       </div>
       <div className="hrats-block">
+        {!canManage && (
+          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            当前为只读视图，面试评价模板仅由超级管理员维护。
+          </Typography.Text>
+        )}
         <Space style={{ marginBottom: 12 }} wrap>
           <Input.Search
             placeholder="模板名称"

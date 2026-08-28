@@ -67,6 +67,8 @@ export function RouterView() {
           </Route>
           <Route element={<RequireRole roles={['hr']} />}>
             <Route path="/reports" element={<ReportsPage />} />
+          </Route>
+          <Route element={<RequireRole roles={['hr', 'super_admin']} />}>
             <Route path="/eval-template" element={<EvalTemplatePage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/audit-logs" element={<AuditLogsPage />} />

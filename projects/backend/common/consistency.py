@@ -8,7 +8,7 @@ from datetime import datetime
 
 from pymongo import ReturnDocument
 
-from common.db import col
+from common.db import col, get_by_id
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode
@@ -85,6 +85,23 @@ def require_interview_application(application: dict) -> dict:
     return application
 
 
+def require_completed_interview_for_offer(application: dict) -> dict:
+    """Offer 前置条件：最后一轮面试必须完成且明确判定为通过。"""
+    rounds = (get_by_id("jobs", application.get("job_id")) or {}).get("interview_rounds")
+    rounds = [str(item).strip() for item in rounds or [] if str(item).strip()]
+    query = {
+        "application_id": application["_id"],
+        "status": "completed",
+        "conclusion_applied": True,
+        "conclusion_action": "pass",
+    }
+    if rounds:
+        query["round"] = rounds[-1]
+    if col("interviews").find_one(query) is None:
+        raise BizError(BizCode.STATE_INVALID, "面试阶段尚未结束，不能创建或发送 Offer")
+    return application
+
+
 def require_offer_application(application: dict, action: str = "create") -> dict:
     application = reconcile_application_status(application)
     if application.get("status") != APP_IN_PROGRESS:
@@ -94,6 +111,8 @@ def require_offer_application(application: dict, action: str = "create") -> dict
         raise BizError(BizCode.STATE_INVALID, "只有处于 Offer 阶段的应聘记录才能接受 Offer")
     if action in {"create", "submit", "send"} and stage not in {"interview_passed", "offer_pending"}:
         raise BizError(BizCode.STATE_INVALID, "当前招聘阶段不允许处理 Offer")
+    if action in {"create", "submit", "send"} and stage in {"interview_passed", "offer_pending"}:
+        require_completed_interview_for_offer(application)
     return application
 
 

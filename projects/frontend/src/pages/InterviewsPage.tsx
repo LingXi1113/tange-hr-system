@@ -1,10 +1,11 @@
 import { PlusOutlined } from '@ant-design/icons';
 import {
-  Button, Checkbox, DatePicker, Drawer, Form, Input, InputNumber, Modal, Popconfirm,
+  Button, DatePicker, Drawer, Form, Input, InputNumber, Modal,
   Select, Space, Table, Tag,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { fetchCandidate, fetchCandidates } from '@/services/candidate';
@@ -12,7 +13,7 @@ import { fetchEvalTemplates } from '@/services/template';
 import {
   INTERVIEW_ROUND_OPTIONS, INTERVIEW_STATUS_TEXT, INTERVIEW_TYPE_TEXT,
   applyConclusion, completeInterview, fetchInterview, fetchInterviews,
-  interviewAction, rescheduleInterview, saveFeedback, saveInterview,
+  rescheduleInterview, saveFeedback, saveInterview,
 } from '@/services/interview';
 import type { Interview } from '@/services/interview';
 import { http, unwrap } from '@/services/http';
@@ -26,6 +27,11 @@ interface AppOption {
   current_stage: string;
   status: string;
 }
+
+const INTERVIEW_STAGE_KEYS = new Set([
+  'pending_interview', 'interviewing',
+  'interview_1', 'interview_2', 'interview_3', 'hr_interview', 're_interview',
+]);
 
 export function InterviewsPage() {
   const [list, setList] = useState<Interview[]>([]);
@@ -48,6 +54,9 @@ export function InterviewsPage() {
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [conclusionTarget, setConclusionTarget] = useState<Interview | null>(null);
   const [conclusionReason, setConclusionReason] = useState('');
+  const [searchParams] = useSearchParams();
+  const autoOpenedCandidate = useRef<number | null>(null);
+  const autoOpenedInterview = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,11 +101,56 @@ export function InterviewsPage() {
     setDrawerOpen(true);
   }
 
-  async function loadAppOptions(candidateId: number) {
+  const loadAppOptions = useCallback(async (candidateId: number) => {
     const resp = await http.get(`/api/candidates/${candidateId}/applications`);
     const apps = unwrap<AppOption[]>(resp);
-    setAppOptions(apps.filter((a) => a.status === 'in_progress'));
-  }
+    const activeApps = apps.filter((a) =>
+      a.status === 'in_progress' && INTERVIEW_STAGE_KEYS.has(a.current_stage));
+    setAppOptions(activeApps);
+    return activeApps;
+  }, []);
+
+  const openEditorForCandidate = useCallback(async (candidateId: number, applicationId?: number) => {
+    setEditingId(null);
+    if (!candidates.length) {
+      const candidateRows = (await fetchCandidates({ page_size: 100 })).list;
+      setCandidates(candidateRows.map((c) => ({ id: c.id, name: c.name })));
+    }
+    if (!evalTemplates.length) {
+      setEvalTemplates((await fetchEvalTemplates({ page: 1 })).list.map((t) => ({ id: t.id, name: t.name })));
+    }
+    const candidate = await fetchCandidate(candidateId);
+    setCandidates((current) => current.some((item) => item.id === candidateId)
+      ? current
+      : [...current, { id: candidate.id, name: candidate.name }]);
+    const activeApps = await loadAppOptions(candidateId);
+    form.resetFields();
+    form.setFieldsValue({
+      candidate_id: candidateId,
+      application_id: activeApps.some((app) => app.id === applicationId)
+        ? applicationId
+        : activeApps.length === 1 ? activeApps[0].id : undefined,
+    });
+    setDrawerOpen(true);
+  }, [candidates.length, evalTemplates.length, form, loadAppOptions]);
+
+  useEffect(() => {
+    const interviewId = Number(searchParams.get('interview_id'));
+    if (interviewId && autoOpenedInterview.current !== interviewId) {
+      autoOpenedInterview.current = interviewId;
+      void fetchInterview(interviewId).then((detail) => openEditor(detail)).catch(() => {
+        autoOpenedInterview.current = null;
+      });
+      return;
+    }
+    const candidateId = Number(searchParams.get('candidate_id'));
+    const applicationId = Number(searchParams.get('application_id')) || undefined;
+    if (!candidateId || autoOpenedCandidate.current === candidateId) return;
+    autoOpenedCandidate.current = candidateId;
+    void openEditorForCandidate(candidateId, applicationId).catch(() => {
+      autoOpenedCandidate.current = null;
+    });
+  }, [openEditor, openEditorForCandidate, searchParams]);
 
   async function handleSave() {
     const values = await form.validateFields();
@@ -117,18 +171,6 @@ export function InterviewsPage() {
     } finally {
       setSaving(false);
     }
-  }
-
-  async function handleComplete(record: Interview) {
-    if (record.has_feedback) {
-      await completeInterview(record.id, false, record.version);
-      msg.success('面试已完成');
-      void load();
-      return;
-    }
-    // 无反馈：打开反馈表单（可选择暂不评价完成）
-    setFeedbackTarget(record);
-    feedbackForm.resetFields();
   }
 
   async function handleFeedbackSave(markNoEval: boolean) {
@@ -213,62 +255,9 @@ export function InterviewsPage() {
       render: (v: boolean) => (v ? <Tag color="success">已填</Tag> : <Tag>未填</Tag>),
     },
     {
-      title: '操作', width: 250, fixed: 'right' as const,
+      title: '操作', width: 90, fixed: 'right' as const,
       render: (_: unknown, r: Interview) => (
-        <Space size={2} wrap>
-          {r.status === 'pending' && (
-              <Popconfirm title="发起邀请？" onConfirm={async () => { await interviewAction(r.id, 'invite', r.version); msg.success('已邀请'); void load(); }}>
-              <Button size="small" type="link">邀请</Button>
-            </Popconfirm>
-          )}
-          {(r.status === 'invited' || r.status === 'rescheduled') && (
-            <Popconfirm title="确认面试？" onConfirm={async () => { await interviewAction(r.id, 'confirm', r.version); msg.success('已确认'); void load(); }}>
-              <Button size="small" type="link">确认</Button>
-            </Popconfirm>
-          )}
-          {r.status === 'confirmed' && (
-            <Button size="small" type="link" onClick={() => void handleComplete(r)}>完成</Button>
-          )}
-          {r.status === 'completed' && (
-            <>
-              <Button
-                size="small" type="link"
-                onClick={async () => {
-                  const detail = await fetchInterview(r.id);
-                  setFeedbackTarget(detail);
-                  feedbackForm.setFieldsValue({
-                    ...(detail.feedback ?? {}),
-                    dimensions: detail.feedback?.dimension_scores ?? [],
-                  });
-                }}
-              >
-                反馈
-              </Button>
-              {r.has_feedback && !r.feedback_skip_eval && r.feedback_conclusion !== 'hold' && (
-                <Button
-                  size="small" type="link"
-                  onClick={async () => {
-                    const detail = await fetchInterview(r.id);
-                    setConclusionTarget(detail);
-                  }}
-                >
-                  应用结论
-                </Button>
-              )}
-            </>
-          )}
-          {!['completed', 'cancelled'].includes(r.status) && (
-            <>
-              <Button size="small" type="link" onClick={() => { setRescheduleTarget(r); rescheduleForm.setFieldsValue({ reason: '' }); }}>
-                改期
-              </Button>
-              <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>
-              <Popconfirm title="取消该面试？" onConfirm={async () => { await interviewAction(r.id, 'cancel', r.version); msg.success('已取消'); void load(); }}>
-                <Button size="small" type="link" danger>取消</Button>
-              </Popconfirm>
-            </>
-          )}
-        </Space>
+        <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>
       ),
     },
   ];
@@ -302,7 +291,7 @@ export function InterviewsPage() {
         </Space>
         {loading ? <PageLoading /> : (
           <Table
-            rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1200 }}
+            rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1050 }}
             pagination={{
               current: filters.page, pageSize: 10, total,
               onChange: (page) => setFilters((f) => ({ ...f, page })),
@@ -376,6 +365,12 @@ export function InterviewsPage() {
             <Select
               allowClear placeholder="复用现有评价模板"
               options={evalTemplates.map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </Form.Item>
+          <Form.Item name="summary" label="面试摘要">
+            <Input.TextArea
+              rows={4}
+              placeholder="记录本次面试的核心内容、候选人表现和待跟进事项"
             />
           </Form.Item>
           <Form.Item name="remark" label="备注">
@@ -493,7 +488,7 @@ export function InterviewsPage() {
           <p>
             结论：
             <Tag color={conclusionTarget.feedback.conclusion === 'pass' ? 'success' : 'error'}>
-              {conclusionTarget.feedback.conclusion === 'pass' ? '通过 → 推进至「面试通过」' : '不通过 → 淘汰候选人'}
+              {conclusionTarget.feedback.conclusion === 'pass' ? '通过 → 推进至「面试阶段」' : '不通过 → 淘汰候选人'}
             </Tag>
           </p>
         )}

@@ -75,6 +75,10 @@ export function PipelineTemplatePage() {
   const [form] = Form.useForm<{ name: string; remark: string }>();
   const [stages, setStages] = useState<StageRow[]>([]);
 
+  useEffect(() => {
+    if (!canManage && drawerOpen) setDrawerOpen(false);
+  }, [canManage, drawerOpen]);
+
   const loadTemplates = useCallback(async () => {
     setLoading(true);
     try {

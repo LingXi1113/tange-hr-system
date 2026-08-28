@@ -17,7 +17,7 @@ def _create_template(client, stages=None):
 
 def test_lock_days_default_from_sys_param(client):
     """阶段锁定默认天数取自系统参数（不写死）。"""
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     client.put("/api/system/params", json={
         "items": [{"key": "lock_days_default", "value": {"new_resume": 2, "business_screen": 4}}],
     })
@@ -119,7 +119,7 @@ def _create_eval(client, **overrides):
 
 
 def test_eval_template_crud(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     tpl = _create_eval(client)
     tid = tpl["id"]
     assert tpl["dimension_names"] == ["专业能力", "沟通表达"]
@@ -146,7 +146,7 @@ def test_eval_template_crud(client):
 
 
 def test_eval_template_validation(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     # 默认维度
     tpl = _create_eval(client, dimensions=None, bindings=[])
     assert tpl["dimension_names"] == ["专业能力", "沟通表达", "业务理解", "团队协作", "价值观匹配"]

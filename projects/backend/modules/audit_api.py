@@ -1,4 +1,4 @@
-"""操作日志查询（仅 HR 可查看）。"""
+"""操作日志查询（HR 与超级管理员可查看）。"""
 from datetime import datetime, time
 
 from flask import Blueprint, request
@@ -7,13 +7,13 @@ from common.db import col, dt
 from common.decorators import role_required
 from common.errors import BizError
 from common.response import BizCode, ok, paged
-from common.roles import HR
+from common.roles import HR, SUPER_ADMIN
 
 bp = Blueprint("audit_api", __name__, url_prefix="/api/audit-logs")
 
 
 @bp.get("")
-@role_required(HR)
+@role_required(HR, SUPER_ADMIN)
 def list_audit_logs():
     args = request.args
     query = {}

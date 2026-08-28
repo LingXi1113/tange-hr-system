@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timedelta
 
 from flask import current_app
+from pymongo.errors import DuplicateKeyError
 
 from common.background_failures import record_background_failure, resolve_background_failure
 from common.db import col, get_by_id, insert_doc
@@ -69,6 +70,48 @@ def _add_to_talent_pool(application_doc: dict, reason: str):
     })
     write_log("talent_pool", "add_auto", "system", "系统",
               biz_id=str(candidate_id), detail=reason)
+
+
+def add_application_to_talent_pool(application_doc: dict, reason: str,
+                                    source: str = "elimination_added",
+                                    operator_id: str = "system",
+                                    operator_name: str = "系统", session=None):
+    """将应聘记录关联的候选人幂等加入人才库。
+
+    面试不通过和 Offer 拒绝都必须走同一条入库路径，避免出现候选人已经
+    进入人才库但没有来源/原因，或重复创建人才库记录的情况。
+    """
+    candidate_id = application_doc["candidate_id"]
+    try:
+        col("talent_pool").create_index("candidate_id", unique=True)
+    except Exception as exc:
+        record_background_failure(
+            "talent_pool_index", candidate_id, exc,
+            {"source": source},
+        )
+        raise
+    existing = col("talent_pool").find_one({"candidate_id": candidate_id}, session=session)
+    if existing:
+        return existing
+    try:
+        doc = insert_doc("talent_pool", {
+            "candidate_id": candidate_id,
+            "category": "",
+            "tags": [],
+            "source": source,
+            "reason": (reason or "").strip(),
+            "recommended_job_id": application_doc.get("job_id"),
+            "last_contact_at": None,
+            "status": "active",
+            "added_by": operator_id,
+        }, session=session)
+    except DuplicateKeyError:
+        # 并发请求中另一请求可能刚刚插入，唯一索引保证最终只有一条。
+        return col("talent_pool").find_one({"candidate_id": candidate_id}, session=session)
+    write_log("talent_pool", "add_auto", operator_id, operator_name,
+              biz_id=str(doc["_id"]), detail=f"source={source}; {reason}",
+              session=session)
+    return doc
 
 
 def process_expired_stage_rules(now=None, limit=500):

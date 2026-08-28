@@ -81,11 +81,6 @@ export async function deleteCandidate(id: number, hard = true) {
   return unwrap(resp);
 }
 
-export async function assignJob(candidateId: number, jobId: number) {
-  const resp = await http.post(`/api/candidates/${candidateId}/applications`, { job_id: jobId });
-  return unwrap<Application>(resp);
-}
-
 export async function fetchTransitions(applicationId: number) {
   const resp = await http.get(`/api/applications/${applicationId}/transitions`);
   return unwrap<{ from_stage: string; to_stage: string; reason: string; operator_name: string; created_at: string }[]>(resp);

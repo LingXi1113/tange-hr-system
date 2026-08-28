@@ -17,8 +17,11 @@ export interface Interview {
   interviewer_name: string;
   interviewer_contact: string;
   template_id: number | null;
+  summary: string;
   remark: string;
   status: string;
+  conclusion_applied?: boolean;
+  conclusion_action?: string;
   version: number;
   has_feedback?: boolean;
   feedback_conclusion?: string;

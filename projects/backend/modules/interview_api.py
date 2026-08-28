@@ -20,7 +20,7 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
     advance_interview_round, application_to_dict, configured_interview_rounds,
-    eliminate_application, expected_interview_round, move_application,
+    expected_interview_round, move_application,
 )
 from common.interview_guard import candidate_schedule_guard
 from common.logstore import write_log
@@ -29,10 +29,17 @@ from common.roles import HR
 from common.stages import INTERVIEW_ROUNDS
 from common.status import APP_IN_PROGRESS
 from common.consistency import require_interview_application
+from common.stage_rules import add_application_to_talent_pool
 
 bp = Blueprint("interview_api", __name__, url_prefix="/api/interviews")
 
 INTERVIEW_TYPES = ("onsite", "video", "phone")
+
+# 面试记录必须挂在当前面试阶段；旧版阶段名继续兼容，并与面试轮次一一对应。
+INTERVIEW_STAGE_ROUNDS = {
+    "interview_1": "一面", "interview_2": "二面", "interview_3": "三面",
+    "hr_interview": "HR面试", "re_interview": "复试",
+}
 
 # 状态：待安排 / 已邀请 / 已确认 / 已完成 / 已取消 / 已改期
 IV_PENDING, IV_INVITED, IV_CONFIRMED, IV_COMPLETED, IV_CANCELLED, IV_RESCHEDULED = (
@@ -132,8 +139,12 @@ def _interview_view(doc: dict) -> dict:
         "interviewer_name": doc.get("interviewer_name", ""),
         "interviewer_contact": doc.get("interviewer_contact", ""),
         "template_id": doc.get("template_id"),
+        # summary 为面试内容摘要；旧数据没有该字段时兼容展示原备注。
+        "summary": doc.get("summary", doc.get("remark", "")),
         "remark": doc.get("remark", ""),
         "status": doc.get("status", IV_PENDING),
+        "conclusion_applied": bool(doc.get("conclusion_applied")),
+        "conclusion_action": doc.get("conclusion_action", ""),
         "version": doc.get("version", 1),
         "reschedule_history": doc.get("reschedule_history", []),
         "created_at": dt(doc.get("created_at")),
@@ -179,6 +190,21 @@ def _feedback_view(doc: dict) -> dict:
 
 def _get_feedback(interview_id: int):
     return col("interview_feedback").find_one({"interview_id": interview_id})
+
+
+def _expected_round_for_stage(app_doc: dict, job_doc: dict):
+    """按应聘记录当前阶段计算允许安排的唯一面试轮次。"""
+    current_stage = app_doc.get("current_stage", "")
+    if current_stage in INTERVIEW_STAGE_ROUNDS:
+        return INTERVIEW_STAGE_ROUNDS[current_stage]
+    if current_stage not in {"pending_interview", "interviewing"}:
+        return None
+    configured_rounds = configured_interview_rounds(job_doc)
+    if configured_rounds:
+        return expected_interview_round(app_doc, job_doc)
+    # 历史职位未配置面试轮次时，首个面试阶段默认只能安排一面。
+    current_round = app_doc.get("interview_round", "")
+    return current_round if current_round in INTERVIEW_ROUNDS else "一面"
 
 
 @bp.get("")
@@ -238,15 +264,11 @@ def create_interview():
     round_ = (payload.get("round") or "").strip()
     if round_ not in INTERVIEW_ROUNDS:
         raise BizError(BizCode.PARAM_INVALID, f"面试轮次必须是: {'/'.join(INTERVIEW_ROUNDS)}")
-    configured_rounds = configured_interview_rounds(job)
-    if configured_rounds:
-        expected_round = expected_interview_round(app_doc, job)
-        if round_ != expected_round:
-            raise BizError(BizCode.STATE_INVALID, f"当前应安排{expected_round}，不能跳过面试轮次")
-        if len(configured_rounds) > 1 and app_doc.get("current_stage") not in {
-            "pending_interview", "interviewing",
-        }:
-            raise BizError(BizCode.STATE_INVALID, "多轮面试必须先进入待面试或面试中阶段")
+    expected_round = _expected_round_for_stage(app_doc, job)
+    if expected_round is None:
+        raise BizError(BizCode.STATE_INVALID, "当前招聘阶段不是面试阶段，不能安排面试")
+    if round_ != expected_round:
+        raise BizError(BizCode.STATE_INVALID, f"当前阶段只能安排{expected_round}，不能安排{round_}")
     iv_type = (payload.get("type") or "").strip()
     if iv_type not in INTERVIEW_TYPES:
         raise BizError(BizCode.PARAM_INVALID, "面试类型必须是 onsite/video/phone")
@@ -261,6 +283,12 @@ def create_interview():
         template_id = int(template_id)
 
     with candidate_schedule_guard(candidate["_id"]):
+        existing = col("interviews").find_one({
+            "application_id": app_doc["_id"], "round": round_,
+            "status": {"$ne": IV_CANCELLED},
+        })
+        if existing:
+            raise BizError(BizCode.DUPLICATED, "当前阶段已有对应面试，请使用编辑修改面试安排")
         _check_conflict(candidate["_id"], start_at, end_at)
         doc = insert_doc("interviews", {
             "candidate_id": candidate["_id"],
@@ -275,6 +303,7 @@ def create_interview():
             "interviewer_name": (payload.get("interviewer_name") or "").strip(),
             "interviewer_contact": (payload.get("interviewer_contact") or "").strip(),
             "template_id": template_id,
+            "summary": (payload.get("summary") or "").strip(),
             "remark": (payload.get("remark") or "").strip(),
             "status": IV_PENDING,
             "version": 1,
@@ -295,9 +324,17 @@ def update_interview(interview_id: int):
     if doc["status"] in (IV_COMPLETED, IV_CANCELLED):
         raise BizError(BizCode.STATE_INVALID, "已完成/已取消的面试不能编辑")
     payload = request.get_json(silent=True) or {}
+    app_doc = require_interview_application(get_by_id("applications", doc.get("application_id")))
+    job_doc = get_by_id("jobs", doc.get("job_id")) or {}
+    expected_round = _expected_round_for_stage(app_doc, job_doc)
+    if expected_round is None:
+        raise BizError(BizCode.STATE_INVALID, "当前招聘阶段不是面试阶段，不能编辑面试")
+    requested_round = payload.get("round", doc.get("round", ""))
+    if requested_round != expected_round:
+        raise BizError(BizCode.STATE_INVALID, f"当前阶段只能保留{expected_round}面试")
     fields = {}
     for field in ["location", "meeting_link", "interviewer_name",
-                  "interviewer_contact", "remark"]:
+                  "interviewer_contact", "summary", "remark"]:
         if field in payload:
             fields[field] = (payload[field] or "").strip()
     if "round" in payload:
@@ -584,8 +621,15 @@ def apply_conclusion(interview_id: int):
     reason = (payload.get("reason") or "").strip()
     if not reason:
         raise BizError(BizCode.PARAM_INVALID, "面试不通过淘汰候选人必须填写原因")
-    updated = eliminate_application(
-        app_doc, reason=reason,
+    # 面试不通过不是普通的“淘汰”分支：候选人仍需保留在人才库，
+    # 以便后续岗位重新激活。因此阶段和人才库记录必须同时更新。
+    updated = move_application(
+        app_doc, to_stage="talent_pool", reason=reason,
+        operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+        version=app_doc.get("version", 1), bypass_rules=True,
+    )
+    add_application_to_talent_pool(
+        updated, reason, source="elimination_added",
         operator_id=g.current_user.user_id, operator_name=g.current_user.name,
     )
     write_log("interview", "apply_conclusion_fail", g.current_user.user_id,

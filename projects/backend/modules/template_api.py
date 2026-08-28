@@ -6,7 +6,7 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import HR, SUPER_ADMIN
+from common.roles import SUPER_ADMIN
 from common.stages import (
     DEADLINE_BASES,
     EXPIRY_ACTIONS,
@@ -307,7 +307,7 @@ def get_eval_template(template_id: int):
 
 
 @bp.post("/api/eval-templates")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def create_eval_template():
     payload = request.get_json(silent=True) or {}
     name = (payload.get("name") or "").strip()
@@ -329,7 +329,7 @@ def create_eval_template():
 
 
 @bp.put("/api/eval-templates/<int:template_id>")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def update_eval_template(template_id: int):
     tpl = get_by_id("eval_templates", template_id)
     if tpl is None:
@@ -351,7 +351,7 @@ def update_eval_template(template_id: int):
 
 
 @bp.delete("/api/eval-templates/<int:template_id>")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def delete_eval_template(template_id: int):
     tpl = get_by_id("eval_templates", template_id)
     if tpl is None:

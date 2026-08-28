@@ -19,6 +19,7 @@ from common.decorators import role_required
 from common.errors import BizError
 from common.file_service import get_storage, save_uploaded_file
 from common.flow import application_to_dict, move_application, rollback_application_operation
+from common.stage_rules import add_application_to_talent_pool
 from common.logstore import write_log
 from common.mongo import MongoUnavailable
 from common.response import BizCode, ok, paged
@@ -166,7 +167,7 @@ def _check_stage_gate(app_doc: dict):
         raise BizError(BizCode.STATE_INVALID, "应聘记录已结束，不能创建 Offer")
     if app_doc.get("current_stage") not in ALLOWED_STAGES:
         raise BizError(BizCode.STATE_INVALID,
-                       "仅面试通过（interview_passed）或 Offer 中阶段的候选人可创建 Offer")
+                       "仅面试阶段（interview_passed）或 Offer 中阶段的候选人可创建 Offer")
 
 
 def _check_single_active(application_id: int, exclude_id: int = None):
@@ -262,6 +263,10 @@ def update_offer(offer_id: int):
     doc = _get_or_404(offer_id)
     if doc["status"] != OF_DRAFT:
         raise BizError(BizCode.STATE_INVALID, "仅草稿状态的 Offer 可编辑")
+    app_doc = get_by_id("applications", doc.get("application_id"))
+    if app_doc is None:
+        raise BizError(BizCode.STATE_INVALID, "Offer 关联的应聘记录不存在")
+    require_offer_application(app_doc, action="create")
     payload = request.get_json(silent=True) or {}
     fields = {}
     for field in EDITABLE_FIELDS:
@@ -297,13 +302,14 @@ def update_offer(offer_id: int):
     return ok(_offer_view(doc))
 
 
-def _move_application_stage(app_doc: dict, to_stage: str, reason: str, session=None):
+def _move_application_stage(app_doc: dict, to_stage: str, reason: str,
+                            session=None, bypass_rules: bool = False):
     """使用现有乐观锁阶段流转机制推进应聘记录。"""
     app_doc = get_by_id("applications", app_doc["_id"], session=session)
     return move_application(
         app_doc, to_stage=to_stage, reason=reason,
         operator_id=g.current_user.user_id, operator_name=g.current_user.name,
-        version=app_doc["version"], session=session,
+        version=app_doc["version"], session=session, bypass_rules=bypass_rules,
     )
 
 
@@ -361,6 +367,18 @@ def change_status(offer_id: int):
                     moved_app = _move_application_stage(app_doc, "offer_pending", f"Offer 已发送（#{offer_id}）", session=session)
                 elif action == "accept":
                     moved_app = _move_application_stage(app_doc, "pending_onboard", f"Offer 已接受（#{offer_id}）", session=session)
+                elif action == "reject":
+                    moved_app = _move_application_stage(
+                        app_doc, "talent_pool", f"Offer 已拒绝（#{offer_id}）：{reason}",
+                        session=session, bypass_rules=True,
+                    )
+                    add_application_to_talent_pool(
+                        moved_app, reason or "候选人拒绝 Offer，保留后续机会",
+                        source="offer_rejected",
+                        operator_id=g.current_user.user_id,
+                        operator_name=g.current_user.name,
+                        session=session,
+                    )
 
     # 审批页使用固定审批人配置；保留 Offer 原有状态机兼容性，同时在提交时建立审批任务。
             if action == "submit":

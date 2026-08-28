@@ -1,7 +1,7 @@
 import { DeleteOutlined, EditOutlined, FileSearchOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Button, Card, Col, Descriptions, Empty, Form, Input, List, Modal, Popconfirm, Row,
-  Select, Table, Tag, Upload,
+  Select, Table, Tag, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -24,7 +24,7 @@ import { openProtectedFile } from '@/services/http';
 const STAGE_TEXT: Record<string, string> = {
   // PRD v1.1 默认九阶段
   new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
-  pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试通过',
+  pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试阶段',
   offer_pending: '录用通知', pending_onboard: '待入职', onboarded: '已入职',
   // 终态
   eliminated: '淘汰', abandoned: '放弃', talent_pool: '人才库',
@@ -65,6 +65,20 @@ const DEFAULT_STAGE_ALIASES: Record<string, string> = {
   offer_pending: 'offer_approval',
   pending_onboard: 'offer_approval',
   onboarded: 'offer_approval',
+};
+
+const INTERVIEW_STAGE_KEYS = new Set([
+  'pending_interview', 'interviewing',
+  'interview_1', 'interview_2', 'interview_3', 'hr_interview', 're_interview',
+]);
+
+const INTERVIEW_HISTORY_STAGE_KEYS = new Set([
+  ...INTERVIEW_STAGE_KEYS, 'interview_passed', 'offer_pending', 'pending_onboard', 'onboarded',
+]);
+
+const INTERVIEW_STAGE_ROUNDS: Record<string, string> = {
+  interview_1: '一面', interview_2: '二面', interview_3: '三面',
+  hr_interview: 'HR面试', re_interview: '复试',
 };
 
 type StageTransition = {
@@ -178,8 +192,21 @@ export function CandidateDetailPage() {
   }, [selectedAppId]);
 
   useEffect(() => {
+    const selectedStage = detail?.applications.find((application) => application.id === selectedAppId)?.current_stage;
+    if (selectedAppId && INTERVIEW_HISTORY_STAGE_KEYS.has(selectedStage ?? '')) {
+      let active = true;
+      setInterviews([]);
+      fetchInterviews({ application_id: selectedAppId, page_size: 50 }).then((d) => {
+        if (active) setInterviews(d.list);
+      });
+      return () => { active = false; };
+    } else {
+      setInterviews([]);
+    }
+  }, [detail, selectedAppId]);
+
+  useEffect(() => {
     if (id) {
-      fetchInterviews({ candidate_id: Number(id), page_size: 50 }).then((d) => setInterviews(d.list));
       fetchOffers({ candidate_id: Number(id), page_size: 50 }).then((d) => setOffers(d.list));
       fetchPool({ candidate_id: Number(id), page_size: 1 }).then((d) => setPoolEntry(d.list[0] ?? null));
     }
@@ -194,6 +221,29 @@ export function CandidateDetailPage() {
   const candidate = detail;
   const selectedApplication = detail.applications.find((application) => application.id === selectedAppId)
     ?? detail.applications[0];
+  const canScheduleInterview = Boolean(
+    canManage
+      && selectedApplication?.status === 'in_progress'
+      && INTERVIEW_STAGE_KEYS.has(selectedApplication.current_stage),
+  );
+  const expectedInterviewRound = selectedApplication
+    ? INTERVIEW_STAGE_ROUNDS[selectedApplication.current_stage]
+      || selectedApplication.interview_round
+      || (['pending_interview', 'interviewing'].includes(selectedApplication.current_stage) ? '一面' : '')
+    : '';
+  const currentInterview = interviews.find((interview) =>
+    interview.round === expectedInterviewRound && interview.status !== 'cancelled');
+  const interviewPassed = interviews.some((interview) => (
+    interview.status === 'completed'
+    && interview.conclusion_applied === true
+    && interview.conclusion_action === 'pass'
+  ));
+  const currentOffers = offers.filter((offer) => offer.application_id === selectedApplication?.id);
+  const canCreateOffer = Boolean(
+    canManage && interviewPassed
+      && ['interview_passed', 'offer_pending'].includes(selectedApplication?.current_stage ?? '')
+      && !currentOffers.some((offer) => ['draft', 'pending_send', 'sent'].includes(offer.status)),
+  );
 
   function openResumeEditor(values?: Partial<ResumeFormValues>) {
     resumeForm.setFieldsValue({
@@ -241,7 +291,7 @@ export function CandidateDetailPage() {
         <Col xs={24} lg={12}>
           <Card
             title="基本信息" size="small" style={{ marginBottom: 16 }}
-            extra={canManage ? (
+            extra={canCreateOffer ? (
               <Button size="small" icon={<EditOutlined />} onClick={() => openResumeEditor()}>
                 维护简历
               </Button>
@@ -382,16 +432,45 @@ export function CandidateDetailPage() {
             ) : <Empty description="选择应聘记录查看流转" />}
           </Card>
           <Card
-            title="面试记录" size="small" style={{ marginBottom: 16 }}
-            extra={canManage ? <Button size="small" type="primary" onClick={() => navigate('/interviews')}>安排面试</Button> : null}
+            title="面试记录（当前应聘记录）" size="small" style={{ marginBottom: 16 }}
+            extra={canScheduleInterview ? (
+              <Button
+                size="small" type="primary"
+                onClick={() => navigate(
+                  currentInterview
+                    ? `/interviews?interview_id=${currentInterview.id}&open=1`
+                    : `/interviews?candidate_id=${id}&application_id=${selectedApplication?.id}&open=1`,
+                )}
+              >
+                {currentInterview ? '编辑面试' : '安排面试'}
+              </Button>
+            ) : null}
           >
             <Table
               rowKey="id" size="small" pagination={false} dataSource={interviews}
               locale={{ emptyText: '暂无面试安排' }}
+              expandable={{
+                expandedRowRender: (r) => (
+                  <div style={{ padding: '4px 12px 8px' }}>
+                    <Typography.Text strong>面试摘要</Typography.Text>
+                    <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                      {r.summary?.trim() || '暂无摘要，可进入面试管理点击“编辑”填写。'}
+                    </div>
+                  </div>
+                ),
+              }}
               columns={[
                 { title: '轮次', dataIndex: 'round', width: 70 },
                 { title: '时间', dataIndex: 'start_at', width: 130 },
                 { title: '面试官', dataIndex: 'interviewer_name', width: 80 },
+                {
+                  title: '面试摘要', dataIndex: 'summary', width: 220,
+                  render: (v: string) => (
+                    <Typography.Text ellipsis={{ tooltip: v }}>
+                      {v?.trim() || '暂无摘要'}
+                    </Typography.Text>
+                  ),
+                },
                 {
                   title: '状态', dataIndex: 'status', width: 80,
                   render: (v: string) => INTERVIEW_STATUS_TEXT[v] ?? v,
@@ -411,7 +490,7 @@ export function CandidateDetailPage() {
             ) : null}
           >
             <Table
-              rowKey="id" size="small" pagination={false} dataSource={offers}
+              rowKey="id" size="small" pagination={false} dataSource={interviewPassed ? currentOffers : []}
               locale={{ emptyText: '暂无 Offer 记录' }}
               columns={[
                 { title: '职位', dataIndex: 'job_name' },

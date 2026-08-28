@@ -2,9 +2,11 @@
 import csv
 import io
 import json
+import mimetypes
 import os
 import tempfile
 from datetime import datetime
+from urllib.parse import quote
 
 from flask import Blueprint, Response, current_app, g, request
 from pymongo import ReturnDocument
@@ -570,6 +572,13 @@ def download_attachment(att_id: int):
         raise BizError(BizCode.NOT_FOUND, str(e))
     write_log("attachment", "download", g.current_user.user_id, g.current_user.name,
               biz_id=str(att_id), detail=f"candidate={att.get('candidate_id', '')}; file={att.get('file_name', '')}")
-    return Response(data.getvalue(), mimetype="application/octet-stream",
+    filename = att.get("file_name", "") or "resume"
+    # Werkzeug 的开发服务器和部分代理只能用 Latin-1 编码响应头，直接把
+    # 中文简历名放进 Content-Disposition 会导致响应头编码异常、浏览器显示
+    # “请求错误”。同时提供 ASCII 兜底名和 RFC 5987 UTF-8 文件名。
+    fallback_name = secure_filename(filename) or "resume"
+    encoded_name = quote(filename, safe="")
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return Response(data.getvalue(), mimetype=content_type,
                     headers={"Content-Disposition":
-                             f"inline; filename*=UTF-8''{att.get('file_name', '')}"})
+                             f'inline; filename="{fallback_name}"; filename*=UTF-8\'\'{encoded_name}'})

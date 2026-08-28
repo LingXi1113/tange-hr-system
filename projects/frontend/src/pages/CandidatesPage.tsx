@@ -11,8 +11,6 @@ import {
   uploadResume,
 } from '@/services/candidate';
 import type { CandidateRow } from '@/services/candidate';
-import { fetchJobs } from '@/services/job';
-import { assignJob } from '@/services/candidate';
 import { addToPool } from '@/services/talentPool';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
@@ -28,7 +26,7 @@ const STAGE_TEXT: Record<string, string> = {
   new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
   business_screen: '业务筛选', pending_interview: '待面试', interviewing: '面试中',
   interview_1: '一面', interview_2: '二面', interview_3: '三面', hr_interview: '人力面',
-  interview_passed: '面试通过', offer_approval: '最终筛选', offer_pending: '录用通知', offer: '录用通知',
+  interview_passed: '面试阶段', offer_approval: '最终筛选', offer_pending: '录用通知', offer: '录用通知',
   pending_onboard: '待入职', onboarded: '已入职', eliminated: '已淘汰', abandoned: '已放弃',
   talent_pool: '人才库', written_test: '笔试', assessment: '测评', background_check: '背调',
   re_interview: '复试', custom: '自定义阶段',
@@ -48,9 +46,6 @@ export function CandidatesPage() {
   const [filters, setFilters] = useState({ keyword: '', stage: '', locked: '', page: 1 });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [form] = Form.useForm();
-  const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
-  const [assignTarget, setAssignTarget] = useState<CandidateRow | null>(null);
-  const [assignJobId, setAssignJobId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [batchPoolOpen, setBatchPoolOpen] = useState(false);
   const [batchPoolCategory, setBatchPoolCategory] = useState('');
@@ -206,16 +201,6 @@ export function CandidatesPage() {
       title: '操作', width: 180, fixed: 'right' as const,
       render: (_: unknown, record: CandidateRow) => (
         <Space size={4}>
-          {canManage && <Button
-            size="small" type="link"
-            onClick={async () => {
-              if (!jobs.length) {
-                setJobs((await fetchJobs({ status: 'recruiting', page_size: 100 })).list.map((j) => ({ id: j.id, name: j.name })));
-              }
-              setAssignJobId(null);
-              setAssignTarget(record);
-            }}
-          >分配职位</Button>}
           {canManage && <Popconfirm
             title="删除候选人？将彻底删除其资料、附件及全部招聘关联数据"
             onConfirm={async () => {
@@ -274,7 +259,7 @@ export function CandidatesPage() {
             options={[
               { value: 'new_resume', label: '新简历' }, { value: 'pending_screen', label: '待筛选' },
               { value: 'hr_screen_passed', label: '人力筛选' }, { value: 'pending_interview', label: '待面试' },
-              { value: 'interviewing', label: '面试中' }, { value: 'interview_passed', label: '面试通过' },
+              { value: 'interviewing', label: '面试中' }, { value: 'interview_passed', label: '面试阶段' },
               { value: 'offer_pending', label: '录用通知' }, { value: 'pending_onboard', label: '待入职' },
               { value: 'onboarded', label: '已入职' },
               { value: 'business_screen', label: '业务复筛(旧)' }, { value: 'interview_1', label: '一面(旧)' },
@@ -396,31 +381,6 @@ export function CandidatesPage() {
         <Input.TextArea rows={2} value={batchPoolReason} onChange={(e) => setBatchPoolReason(e.target.value)} />
       </Modal>
 
-      <Modal
-        title={`为 ${assignTarget?.name ?? ''} 分配职位`}
-        open={!!assignTarget}
-        onCancel={() => setAssignTarget(null)}
-        onOk={async () => {
-          if (!assignTarget || !assignJobId) {
-            msg.error('请选择职位');
-            return;
-          }
-          await assignJob(assignTarget.id, assignJobId);
-          msg.success('已创建应聘记录');
-          setAssignTarget(null);
-          void load();
-        }}
-      >
-        <Select
-          style={{ width: '100%' }} placeholder="选择招聘中的职位" showSearch optionFilterProp="label"
-          value={assignJobId ?? undefined}
-          onChange={(v) => setAssignJobId(v)}
-          options={jobs.map((j) => ({ value: j.id, label: j.name }))}
-        />
-        <p style={{ marginTop: 8, color: 'rgba(23,26,29,0.6)' }}>
-          锁定期内的候选人将被限制分配其他职位。
-        </p>
-      </Modal>
     </div>
   );
 }

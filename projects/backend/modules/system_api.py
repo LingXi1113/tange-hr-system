@@ -8,7 +8,7 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import HR
+from common.roles import SUPER_ADMIN
 from common.stages import (
     LOCK_DAYS_FALLBACK,
     ONBOARDING_CHECKLIST_FALLBACK,
@@ -79,7 +79,7 @@ def list_params():
 
 
 @bp.put("/params")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def update_params():
     payload = request.get_json(silent=True) or {}
     items = payload.get("items") or []
@@ -123,7 +123,7 @@ def list_dicts():
 
 
 @bp.post("/dicts")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def create_dict():
     payload = request.get_json(silent=True) or {}
     type_, code, name = payload.get("type", ""), payload.get("code", ""), payload.get("name", "")
@@ -144,7 +144,7 @@ def create_dict():
 
 
 @bp.put("/dicts/<int:item_id>")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def update_dict(item_id: int):
     item = get_by_id("dict_items", item_id)
     if item is None:
@@ -202,7 +202,7 @@ def get_offer_approvers():
 
 
 @bp.put("/offer-approvers")
-@role_required(HR)
+@role_required(SUPER_ADMIN)
 def update_offer_approvers():
     payload = request.get_json(silent=True) or {}
     identity = get_identity(current_app)

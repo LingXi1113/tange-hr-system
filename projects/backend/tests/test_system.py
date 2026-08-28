@@ -12,7 +12,7 @@ def test_params_defaults_available(client):
 
 
 def test_update_params_and_lock_source(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     resp = client.put("/api/system/params", json={
         "items": [{"key": "lock_days_default", "value": {"business_screen": 9}}],
     })
@@ -21,14 +21,17 @@ def test_update_params_and_lock_source(client):
     assert data["lock_days_default"]["business_screen"] == 9
 
 
-def test_update_params_requires_hr(client):
+def test_update_params_requires_super_admin(client):
     login(client, "interviewer-001")
+    resp = client.put("/api/system/params", json={"items": [{"key": "lock_days_default", "value": {}}]})
+    assert resp.get_json()["code"] == 1006
+    login(client, "hr-001")
     resp = client.put("/api/system/params", json={"items": [{"key": "lock_days_default", "value": {}}]})
     assert resp.get_json()["code"] == 1006
 
 
 def test_update_params_invalid_value(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     resp = client.put("/api/system/params", json={
         "items": [{"key": "lock_days_default", "value": {"a": -1}}],
     })
@@ -38,7 +41,7 @@ def test_update_params_invalid_value(client):
 
 
 def test_dict_crud(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     created = client.post("/api/system/dicts", json={
         "type": "source_channel", "code": "website", "name": "官网投递",
     }).get_json()["data"]
@@ -60,7 +63,7 @@ def test_dict_crud(client):
 
 
 def test_offer_approvers(client):
-    login(client, "hr-001")
+    login(client, "super-admin-001")
     resp = client.put("/api/system/offer-approvers", json={
         "org_approver_id": "org-001", "gm_id": "gm-001",
         "chairman_id": "chairman-001", "offer_sender_id": "offer-001",
@@ -85,7 +88,13 @@ def test_offer_approvers(client):
     bad2 = client.put("/api/system/offer-approvers", json={"org_approver_id": "org-001"})
     assert bad2.get_json()["code"] == 1001
 
-    # 非 HR 不可修改
+    # 普通 HR 和其他角色均不可修改
+    login(client, "hr-001")
+    resp = client.put("/api/system/offer-approvers", json={
+        "org_approver_id": "org-001", "gm_id": "gm-001",
+        "chairman_id": "chairman-001", "offer_sender_id": "offer-001",
+    })
+    assert resp.get_json()["code"] == 1006
     login(client, "ssc-001")
     resp = client.put("/api/system/offer-approvers", json={
         "org_approver_id": "org-001", "gm_id": "gm-001",

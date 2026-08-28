@@ -292,7 +292,7 @@ function DictTab({ canEdit }: { canEdit: boolean }) {
 
 export function SettingsPage() {
   const { user } = useCurrentUser();
-  const canEdit = user?.role === 'hr';
+  const canEdit = user?.role === 'super_admin';
 
   return (
     <div>
@@ -300,6 +300,11 @@ export function SettingsPage() {
         <h2 className="page-title">系统设置</h2>
       </div>
       <div className="hrats-block">
+        {!canEdit && (
+          <Tag color="gold" style={{ marginBottom: 12 }}>
+            当前为只读视图，系统设置仅由超级管理员维护。
+          </Tag>
+        )}
         <Tabs
           defaultActiveKey="approvers"
           items={[
