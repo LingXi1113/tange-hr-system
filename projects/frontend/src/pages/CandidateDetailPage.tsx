@@ -23,14 +23,14 @@ import { openProtectedFile } from '@/services/http';
 
 const STAGE_TEXT: Record<string, string> = {
   // PRD v1.1 默认九阶段
-  new_resume: '新简历', pending_screen: '待筛选', hr_screen_passed: 'HR筛选通过',
+  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
   pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试通过',
-  offer_pending: 'Offer中', pending_onboard: '待入职', onboarded: '已入职',
+  offer_pending: '录用通知', pending_onboard: '待入职', onboarded: '已入职',
   // 终态
   eliminated: '淘汰', abandoned: '放弃', talent_pool: '人才库',
   // v1.0 旧阶段（兼容历史数据）
   business_screen: '业务复筛', interview_1: '一面', interview_2: '二面',
-  interview_3: '三面', hr_interview: 'HR面试', offer_approval: '录用审批', offer: 'Offer',
+  interview_3: '三面', hr_interview: '人力面', offer_approval: '最终筛选', offer: '录用通知',
   // 可选环节
   written_test: '笔试', assessment: '测评', background_check: '背调',
   re_interview: '复试', custom: '自定义',

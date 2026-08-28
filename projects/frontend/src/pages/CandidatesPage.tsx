@@ -259,9 +259,9 @@ export function CandidatesPage() {
             onChange={(v) => setFilters((f) => ({ ...f, stage: v ?? '', page: 1 }))}
             options={[
               { value: 'new_resume', label: '新简历' }, { value: 'pending_screen', label: '待筛选' },
-              { value: 'hr_screen_passed', label: 'HR筛选通过' }, { value: 'pending_interview', label: '待面试' },
+              { value: 'hr_screen_passed', label: '人力筛选' }, { value: 'pending_interview', label: '待面试' },
               { value: 'interviewing', label: '面试中' }, { value: 'interview_passed', label: '面试通过' },
-              { value: 'offer_pending', label: 'Offer中' }, { value: 'pending_onboard', label: '待入职' },
+              { value: 'offer_pending', label: '录用通知' }, { value: 'pending_onboard', label: '待入职' },
               { value: 'onboarded', label: '已入职' },
               { value: 'business_screen', label: '业务复筛(旧)' }, { value: 'interview_1', label: '一面(旧)' },
               { value: 'offer_approval', label: '录用审批(旧)' },
