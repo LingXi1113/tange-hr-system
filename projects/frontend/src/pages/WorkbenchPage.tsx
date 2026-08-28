@@ -1,11 +1,14 @@
 import { ArrowRightOutlined, BellOutlined, CheckCircleOutlined } from '@ant-design/icons';
-import { Card, Col, Empty, List, Progress, Row, Space, Statistic, Tag, Typography } from 'antd';
+import { Card, Col, Empty, List, Progress, Row, Space, Statistic, Tag, Timeline, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { fetchDashboardSummary } from '@/services/dashboard';
 import type { DashboardSummary } from '@/services/dashboard';
+import { fetchInterviews, INTERVIEW_STATUS_TEXT, INTERVIEW_TYPE_TEXT } from '@/services/interview';
+import type { Interview } from '@/services/interview';
 import { http, unwrap } from '@/services/http';
 import { useCurrentUser } from '@/services/user';
 
@@ -16,24 +19,56 @@ const overviewItems = [
   ['month_interviews', '本月面试'], ['month_offers', '本月 Offer'], ['month_onboarded', '本月入职'],
 ] as const;
 
+const PENDING_INTERVIEW_STATUSES = new Set(['pending', 'invited', 'confirmed', 'rescheduled']);
+const WEEKDAY_TEXT = ['日', '一', '二', '三', '四', '五', '六'];
+
+function interviewDateLabel(dateKey: string, todayKey: string) {
+  const date = dayjs(dateKey);
+  const prefix = dateKey === todayKey ? '今天' : '';
+  return `${prefix ? `${prefix} · ` : ''}${date.format('MM月DD日')} 星期${WEEKDAY_TEXT[date.day()]}`;
+}
+
 export function WorkbenchPage() {
   const { user } = useCurrentUser();
   const navigate = useNavigate();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [upcomingInterviews, setUpcomingInterviews] = useState<Interview[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([fetchDashboardSummary(), http.get('/api/health').then((resp) => unwrap<HealthInfo>(resp))])
-      .then(([dashboard, serviceHealth]) => {
-        if (mounted) { setSummary(dashboard); setHealth(serviceHealth); }
+    const today = dayjs();
+    Promise.all([
+      fetchDashboardSummary(),
+      http.get('/api/health').then((resp) => unwrap<HealthInfo>(resp)),
+      fetchInterviews({
+        date_from: today.format('YYYY-MM-DD'),
+        date_to: today.add(30, 'day').format('YYYY-MM-DD'),
+        page: 1,
+        page_size: 100,
+      }).then((data) => data.list.filter((item) => PENDING_INTERVIEW_STATUSES.has(item.status)))
+        .catch(() => [] as Interview[]),
+    ])
+      .then(([dashboard, serviceHealth, interviews]) => {
+        if (mounted) {
+          setSummary(dashboard);
+          setHealth(serviceHealth);
+          setUpcomingInterviews(interviews);
+        }
       })
       .finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
   }, []);
 
   if (loading) return <PageLoading tip="正在加载工作台…" />;
+  const todayKey = dayjs().format('YYYY-MM-DD');
+  const interviewGroups = Object.entries(upcomingInterviews.reduce<Record<string, Interview[]>>((groups, interview) => {
+    const dateKey = interview.start_at.slice(0, 10);
+    (groups[dateKey] ??= []).push(interview);
+    return groups;
+  }, {})).sort(([left], [right]) => left.localeCompare(right));
+
   return (
     <div>
       <div className="page-head">
@@ -53,6 +88,42 @@ export function WorkbenchPage() {
                 </Col>
               ))}
             </Row>
+          </Card>
+          <Card
+            title="面试日程"
+            extra={<a onClick={() => navigate('/interviews')}>查看全部 <ArrowRightOutlined /></a>}
+            style={{ marginBottom: 16 }}
+          >
+            {interviewGroups.length ? (
+              <Timeline
+                items={interviewGroups.map(([dateKey, interviews]) => ({
+                  color: dateKey === todayKey ? '#CD9324' : '#BFBFBF',
+                  children: (
+                    <div>
+                      <Typography.Text strong>{interviewDateLabel(dateKey, todayKey)}</Typography.Text>
+                      <List
+                        size="small"
+                        split={false}
+                        dataSource={[...interviews].sort((left, right) => left.start_at.localeCompare(right.start_at))}
+                        renderItem={(interview) => (
+                          <List.Item
+                            style={{ padding: '8px 0', cursor: 'pointer' }}
+                            onClick={() => navigate('/interviews')}
+                          >
+                            <List.Item.Meta
+                              title={`${interview.start_at.slice(11)} · ${interview.candidate_name}`}
+                              description={`${interview.job_name} · ${interview.round} · ${INTERVIEW_TYPE_TEXT[interview.type] ?? interview.type} · ${INTERVIEW_STATUS_TEXT[interview.status] ?? interview.status}`}
+                            />
+                          </List.Item>
+                        )}
+                      />
+                    </div>
+                  ),
+                }))}
+              />
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未来 30 天暂无待处理面试" />
+            )}
           </Card>
           <Row gutter={16}>
             <Col xs={24} xl={15}>
