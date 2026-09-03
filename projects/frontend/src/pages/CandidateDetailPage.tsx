@@ -1,7 +1,7 @@
 import { DeleteOutlined, EditOutlined, FileSearchOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Button, Card, Col, Descriptions, Empty, Form, Input, List, Modal, Popconfirm, Row,
-  Select, Table, Tag, Typography, Upload,
+  Select, Space, Table, Tag, Timeline, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -14,6 +14,7 @@ import { fetchInterviews, INTERVIEW_STATUS_TEXT } from '@/services/interview';
 import type { Interview } from '@/services/interview';
 import { fetchOffers, OFFER_STATUS_COLOR, OFFER_STATUS_TEXT } from '@/services/offer';
 import type { Offer } from '@/services/offer';
+import { fetchBoard, moveApplication } from '@/services/pipeline';
 import { addToPool, fetchPool, removeFromPool } from '@/services/talentPool';
 import type { PoolEntry } from '@/services/talentPool';
 import type { CandidateDetail } from '@/services/candidate';
@@ -80,6 +81,9 @@ const INTERVIEW_STAGE_ROUNDS: Record<string, string> = {
   interview_1: '一面', interview_2: '二面', interview_3: '三面',
   hr_interview: 'HR面试', re_interview: '复试',
 };
+
+const BUSINESS_SCREEN_STAGE_KEYS = ['business_screen', 'pending_screen'];
+const SCHEDULABLE_STAGE_KEYS = ['pending_interview', 'interview_1', 'interviewing'];
 
 type StageTransition = {
   from_stage: string;
@@ -169,6 +173,7 @@ export function CandidateDetailPage() {
   const [poolCategory, setPoolCategory] = useState('');
   const [poolReason, setPoolReason] = useState('');
   const [resumeEditOpen, setResumeEditOpen] = useState(false);
+  const [resumeActionLoading, setResumeActionLoading] = useState<'business' | 'interview' | ''>('');
   const [resumeForm] = Form.useForm<ResumeFormValues>();
 
   const load = useCallback(async () => {
@@ -274,6 +279,100 @@ export function CandidateDetailPage() {
     await load();
   }
 
+  async function availableStageKeys(jobId: number) {
+    const board = await fetchBoard({ job_id: jobId });
+    return board.columns.map((column) => column.stage_key);
+  }
+
+  function stageRoute(stageKeys: string[], currentStage: string, targets: string[]) {
+    const currentIndex = stageKeys.indexOf(currentStage);
+    return targets.find((stageKey) => {
+      const targetIndex = stageKeys.indexOf(stageKey);
+      return targetIndex >= 0 && (currentIndex < 0 || targetIndex >= currentIndex);
+    });
+  }
+
+  async function enterBusinessScreen() {
+    if (!selectedApplication) return;
+    setResumeActionLoading('business');
+    try {
+      const stageKeys = await availableStageKeys(selectedApplication.job_id);
+      const toStage = stageRoute(stageKeys, selectedApplication.current_stage, BUSINESS_SCREEN_STAGE_KEYS);
+      if (!toStage) {
+        msg.error('当前职位流程未配置业务复筛阶段');
+        return;
+      }
+      if (toStage === selectedApplication.current_stage) {
+        msg.info('当前应聘记录已在业务复筛阶段');
+        return;
+      }
+      await moveApplication(selectedApplication.id, {
+        to_stage: toStage,
+        reason: '简历处理进入业务复筛',
+        version: selectedApplication.version,
+      });
+      msg.success(`已进入${stageText(toStage)}`);
+      await load();
+      setSelectedAppId(selectedApplication.id);
+      void fetchTransitions(selectedApplication.id).then(setTransitions);
+    } finally {
+      setResumeActionLoading('');
+    }
+  }
+
+  async function scheduleInterviewFromResume() {
+    if (!selectedApplication || !id) return;
+    setResumeActionLoading('interview');
+    try {
+      if (currentInterview) {
+        navigate(`/interviews?interview_id=${currentInterview.id}&open=1`);
+        return;
+      }
+      let applicationId = selectedApplication.id;
+      if (!INTERVIEW_STAGE_KEYS.has(selectedApplication.current_stage)) {
+        const stageKeys = await availableStageKeys(selectedApplication.job_id);
+        const toStage = stageRoute(stageKeys, selectedApplication.current_stage, SCHEDULABLE_STAGE_KEYS);
+        if (!toStage) {
+          msg.error('当前职位流程未配置可安排面试阶段');
+          return;
+        }
+        const moved = await moveApplication(selectedApplication.id, {
+          to_stage: toStage,
+          reason: '简历处理通过，安排面试',
+          version: selectedApplication.version,
+        });
+        applicationId = moved.id;
+      }
+      navigate(`/interviews?candidate_id=${id}&application_id=${applicationId}&open=1`);
+    } finally {
+      setResumeActionLoading('');
+    }
+  }
+
+  const canResumeBusinessScreen = Boolean(canManage && selectedApplication?.status === 'in_progress');
+  const canResumeScheduleInterview = Boolean(canManage && selectedApplication?.status === 'in_progress');
+  const resumeWorkflowActions = canManage ? (
+    <Space size={8} wrap>
+      <Button
+        size="small"
+        onClick={() => void enterBusinessScreen()}
+        disabled={!canResumeBusinessScreen}
+        loading={resumeActionLoading === 'business'}
+      >
+        进入业务复筛
+      </Button>
+      <Button
+        size="small"
+        type="primary"
+        onClick={() => void scheduleInterviewFromResume()}
+        disabled={!canResumeScheduleInterview}
+        loading={resumeActionLoading === 'interview'}
+      >
+        安排面试
+      </Button>
+    </Space>
+  ) : null;
+
   return (
     <div>
       <div className="page-head">
@@ -309,41 +408,46 @@ export function CandidateDetailPage() {
             </Descriptions>
           </Card>
           <Card
-            title="简历附件" size="small" style={{ marginBottom: 16 }}
-            extra={canResume ? (
-              <Upload
-                showUploadList={false} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"
-                beforeUpload={async (file) => {
-                  const up = await uploadResume(file as File, detail.id);
-                  msg.success('简历已上传');
-                  const parsed = await parseResume(up.attachment_id);
-                  if (parsed.parse_status === 'system') {
-                    const fields = parsed.fields;
-                    if (canManage) {
-                      openResumeEditor({
-                        name: fields.name || detail.name,
-                        gender: fields.gender || detail.gender,
-                        phone: fields.phone || detail.phone,
-                        email: fields.email || detail.email,
-                        education: fields.education?.length ? fields.education : detail.education,
-                        work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
-                      });
-                    } else {
-                      Modal.info({
-                        title: '解析结果',
-                        content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre>,
-                      });
-                    }
-                  } else {
-                    msg.error(parsed.message);
-                  }
-                  void load();
-                  return false;
-                }}
-              >
-                <Button size="small" icon={<UploadOutlined />}>上传简历</Button>
-              </Upload>
-            ) : null}
+            title="简历处理" size="small" style={{ marginBottom: 16 }}
+            extra={(
+              <Space size={8} wrap>
+                {resumeWorkflowActions}
+                {canResume ? (
+                  <Upload
+                    showUploadList={false} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"
+                    beforeUpload={async (file) => {
+                      const up = await uploadResume(file as File, detail.id);
+                      msg.success('简历已上传');
+                      const parsed = await parseResume(up.attachment_id);
+                      if (parsed.parse_status === 'system') {
+                        const fields = parsed.fields;
+                        if (canManage) {
+                          openResumeEditor({
+                            name: fields.name || detail.name,
+                            gender: fields.gender || detail.gender,
+                            phone: fields.phone || detail.phone,
+                            email: fields.email || detail.email,
+                            education: fields.education?.length ? fields.education : detail.education,
+                            work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
+                          });
+                        } else {
+                          Modal.info({
+                            title: '解析结果',
+                            content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre>,
+                          });
+                        }
+                      } else {
+                        msg.error(parsed.message);
+                      }
+                      void load();
+                      return false;
+                    }}
+                  >
+                    <Button size="small" icon={<UploadOutlined />}>上传简历</Button>
+                  </Upload>
+                ) : null}
+              </Space>
+            )}
           >
             <List
               size="small"

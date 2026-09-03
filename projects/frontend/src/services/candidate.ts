@@ -37,6 +37,7 @@ export interface Application extends ApplicationInfo {
   job_id: number;
   source: string;
   owner_name: string;
+  interview_round?: string;
   stage_entered_at: string;
   eliminate_reason: string;
   expected_salary: string;
