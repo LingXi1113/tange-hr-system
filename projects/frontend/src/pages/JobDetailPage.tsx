@@ -1,10 +1,10 @@
 import { LinkOutlined } from '@ant-design/icons';
-import { Button, Card, Col, Descriptions, Empty, Row, Table, Tag, Typography } from 'antd';
+import { Button, Card, Col, Descriptions, Empty, Row, Table, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
-import { JOB_STATUS_TEXT, fetchJob } from '@/services/job';
+import { fetchJob } from '@/services/job';
 import type { Job } from '@/services/job';
 import { http, unwrap } from '@/services/http';
 import type { Application } from '@/services/candidate';
@@ -39,7 +39,7 @@ export function JobDetailPage() {
     <div>
       <div className="page-head">
         <h2 className="page-title">
-          {job.name} <Tag color="gold">{JOB_STATUS_TEXT[job.status] ?? job.status}</Tag>
+          {job.name}
         </h2>
         <Button onClick={() => navigate('/jobs')}>返回列表</Button>
       </div>
@@ -53,7 +53,6 @@ export function JobDetailPage() {
               <Descriptions.Item label="职级">{job.level || '-'}</Descriptions.Item>
               <Descriptions.Item label="人数">{job.headcount}</Descriptions.Item>
               <Descriptions.Item label="薪资范围">{job.salary_range || '-'}</Descriptions.Item>
-              <Descriptions.Item label="面试轮次">{job.interview_rounds?.join(' → ') || '一面'}</Descriptions.Item>
               <Descriptions.Item label="职位描述" span={2}>{job.description || '-'}</Descriptions.Item>
               <Descriptions.Item label="任职资格" span={2}>{job.qualification || '-'}</Descriptions.Item>
             </Descriptions>
@@ -78,7 +77,7 @@ export function JobDetailPage() {
         <Col xs={24} lg={10}>
           <Card title="公开页与投递" size="small">
             <p style={{ color: 'rgba(23,26,29,0.6)' }}>
-              公开页提供简易投递表单，候选人无需注册登录。暂停/关闭的职位停止接收投递。
+              公开页提供简易投递表单，候选人无需注册登录；HR 可将候选人关联到全部固定职位。
             </p>
             <Typography.Paragraph copyable={{ text: publicUrl }} style={{ wordBreak: 'break-all' }}>
               {publicUrl}

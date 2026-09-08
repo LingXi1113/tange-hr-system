@@ -91,6 +91,30 @@ def test_hr_assignment_enters_hr_screen_and_locks_for_seven_days(client):
     assert end - start == timedelta(days=7)
 
 
+def test_hr_can_assign_candidate_to_non_recruiting_job(client):
+    """职位状态不再阻止 HR 为候选人建立应聘记录。"""
+    ensure_hr(client)
+    login(client, "super-admin-001")
+    template = client.post("/api/pipeline-templates", json={
+        "name": "固定职位 HR 筛选模板",
+        "stages": [
+            {"stage_key": "new_resume", "name": "新简历", "sort_order": 1, "lock_days": 0},
+            {"stage_key": "hr_screen_passed", "name": "HR筛选", "sort_order": 2, "lock_days": 0},
+        ],
+    }).get_json()["data"]["id"]
+    login(client, "hr-001")
+    job = make_job(client, name="产品经理", template_id=template)
+    publish_job(client, job["id"])
+    assert client.post(
+        f"/api/jobs/{job['id']}/status", json={"action": "close"},
+    ).get_json()["code"] == 0
+
+    candidate_id = make_candidate(client, phone="13933335555", email="closed-job@example.com")
+    app = assign(client, candidate_id, job["id"])
+    assert app["job_id"] == job["id"]
+    assert app["current_stage"] == "hr_screen_passed"
+
+
 def test_import_export_and_template(client):
     ensure_hr(client)
     tpl_resp = client.get("/api/candidates/import-template")

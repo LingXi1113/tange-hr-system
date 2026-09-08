@@ -35,10 +35,11 @@ from common.mongo import MongoUnavailable
 from common.privacy import purge_candidate
 from common.resume_parser import parse_resume_file
 from common.response import BizCode, ok, paged
-from common.roles import HR
+from common.roles import HR, SUPER_ADMIN
 from common.status import APP_IN_PROGRESS
 from common.status import APP_PENDING_ONBOARD
 from common.consistency import reconcile_application_status
+from common.stages import STAGE_NAMES
 from common.storage import StorageError
 
 bp = Blueprint("candidate_api", __name__)
@@ -161,15 +162,100 @@ def get_candidate(cid: int):
         ) else None
         data["applications"].append(d)
     data["current_stage"] = apps[0].get("current_stage", "") if apps else "pending_screen"
-    biz_ids = [str(cid)] + [str(a["_id"]) for a in apps]
-    logs = list(col("operation_logs").find({
-        "biz_type": {"$in": ["candidate", "application"]}, "biz_id": {"$in": biz_ids},
-    }).sort("_id", -1).limit(50))
-    data["operation_logs"] = [{
-        "biz_type": l["biz_type"], "action": l["action"],
-        "operator_name": l.get("operator_name", ""), "detail": l.get("detail", ""),
-        "created_at": dt(l.get("created_at")),
-    } for l in logs]
+    app_ids = [a["_id"] for a in apps]
+    app_jobs = {app_id: get_by_id("jobs", app.get("job_id")) or {}
+                for app_id, app in ((a["_id"], a) for a in apps)}
+
+    def stage_name(application_id, stage_key):
+        job = app_jobs.get(application_id, {})
+        for stage in job_stage_sequence(job):
+            if stage.stage_key == stage_key:
+                return stage.name
+        return STAGE_NAMES.get(stage_key, stage_key or "未标记")
+
+    screening_records = []
+    interview_stage_keys = {
+        "pending_interview", "interviewing", "interview_passed",
+        "interview_1", "interview_2", "interview_3", "hr_interview", "re_interview",
+    }
+    offer_stage_keys = {
+        "hrbp_interview", "offer_approval", "offer_pending", "offer",
+        "pending_onboard", "onboarded",
+    }
+
+    def record_category(from_stage: str, to_stage: str, record_type: str = "stage") -> str:
+        if record_type == "recommendation":
+            return "recommendation"
+        if from_stage in offer_stage_keys or to_stage in offer_stage_keys:
+            return "offer"
+        if from_stage in interview_stage_keys or to_stage in interview_stage_keys:
+            return "interview"
+        return "recommendation"
+
+    transitions = col("stage_transitions").find({
+        "application_id": {"$in": app_ids},
+    }).sort("_id", -1).limit(100)
+    for transition in transitions:
+        application_id = transition.get("application_id")
+        from_stage = transition.get("from_stage", "")
+        to_stage = transition.get("to_stage", "")
+        reason = transition.get("reason", "")
+        # 推荐给业务复筛单独展示“推荐记录”，避免与阶段推进重复显示。
+        if to_stage == "business_screen" and ("推送" in reason or "指派" in reason):
+            continue
+        screening_records.append({
+            "type": "stage",
+            "category": record_category(from_stage, to_stage),
+            "title": "推进阶段",
+            "from_stage": stage_name(application_id, from_stage),
+            "to_stage": stage_name(application_id, to_stage),
+            "operator_name": transition.get("operator_name", ""),
+            "detail": reason or f"推进至{stage_name(application_id, to_stage)}",
+            "created_at": dt(transition.get("created_at")),
+        })
+
+    recommendation_logs = col("operation_logs").find({
+        "biz_type": "application",
+        "biz_id": {"$in": [str(app_id) for app_id in app_ids]},
+        "action": {"$in": ["assign_business_screener", "recommend_business_screener"]},
+    }).sort("_id", -1).limit(100)
+    for log in recommendation_logs:
+        screening_records.append({
+            "type": "recommendation",
+            "category": "recommendation",
+            "title": "推荐给业务复筛",
+            "from_stage": "",
+            "to_stage": "业务复筛",
+            "operator_name": log.get("operator_name", ""),
+            "detail": log.get("detail", "") or "已推荐给业务复筛人员",
+            "created_at": dt(log.get("created_at")),
+        })
+
+    interview_docs = list(col("interviews").find({
+        "application_id": {"$in": app_ids},
+    }, {"_id": 1, "round": 1}))
+    interview_rounds = {str(item.get("_id")): item.get("round", "") for item in interview_docs}
+    interview_ids = list(interview_rounds)
+    if interview_ids:
+        reschedule_logs = col("operation_logs").find({
+            "biz_type": "interview",
+            "biz_id": {"$in": interview_ids},
+            "action": "reschedule",
+        }).sort("_id", -1).limit(100)
+        for log in reschedule_logs:
+            round_name = interview_rounds.get(str(log.get("biz_id")), "")
+            screening_records.append({
+                "type": "interview_reschedule",
+                "category": "interview",
+                "title": "面试改期",
+                "from_stage": "",
+                "to_stage": "",
+                "operator_name": log.get("operator_name", ""),
+                "detail": f"{round_name}：改期原因：{log.get('detail', '')}" if round_name else f"改期原因：{log.get('detail', '')}",
+                "created_at": dt(log.get("created_at")),
+            })
+    screening_records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    data["screening_records"] = screening_records[:100]
     write_log("candidate", "view", g.current_user.user_id, g.current_user.name, biz_id=str(cid))
     return ok(data)
 
@@ -303,7 +389,7 @@ def delete_candidate(cid: int):
 
 
 @bp.post("/api/candidates/<int:cid>/applications")
-@role_required(HR)
+@role_required(HR, SUPER_ADMIN)
 def assign_job(cid: int):
     c = _get_candidate_or_404(cid)
     payload = request.get_json(silent=True) or {}
@@ -321,6 +407,7 @@ def assign_job(cid: int):
         initial_stage=assigned_stage,
         initial_lock_days=7,
         initial_reason="HR分配职位并进入HR筛选",
+        hr_assignment=True,
     )
     return ok(application_to_dict(app_doc))
 
@@ -331,6 +418,167 @@ def candidate_applications(cid: int):
     _get_candidate_or_404(cid)
     apps = col("applications").find({"candidate_id": cid}).sort("_id", -1)
     return ok([application_to_dict(a) for a in apps])
+
+
+@bp.get("/api/candidates/<int:cid>/delivery-analysis")
+@role_required(*CANDIDATE_READ_ROLES)
+def delivery_analysis(cid: int):
+    """候选人的全量投递、阶段流转和面试评价统计。"""
+    candidate = _get_candidate_or_404(cid)
+    apps = list(col("applications").find({"candidate_id": cid}).sort("_id", -1))
+    app_ids = [item["_id"] for item in apps]
+    interviews = list(col("interviews").find({
+        "application_id": {"$in": app_ids},
+    }).sort("_id", -1)) if app_ids else []
+    interview_ids = [item["_id"] for item in interviews]
+    feedback_by_interview = {
+        item["interview_id"]: item
+        for item in col("interview_feedback").find({
+            "interview_id": {"$in": interview_ids},
+        })
+    } if interview_ids else {}
+
+    evaluated = []
+    passed = 0
+    for item in interviews:
+        feedback = feedback_by_interview.get(item["_id"])
+        if item.get("status") == "completed" and feedback and not feedback.get("skip_eval"):
+            evaluated.append(item)
+            if feedback.get("conclusion") == "pass":
+                passed += 1
+
+    details = []
+    overall_highest = {"rank": -1, "name": "-"}
+    for app in apps:
+        job = get_by_id("jobs", app.get("job_id")) or {}
+        sequence = job_stage_sequence(job)
+        rank_by_key = {stage.stage_key: index for index, stage in enumerate(sequence)}
+        name_by_key = {stage.stage_key: stage.name for stage in sequence}
+        transitions = list(col("stage_transitions").find({
+            "application_id": app["_id"],
+        }).sort("_id", 1))
+        reached_keys = [app.get("current_stage", "")]
+        reached_keys.extend(item.get("to_stage", "") for item in transitions)
+        reached = max(
+            (key for key in reached_keys if key in rank_by_key),
+            key=lambda key: rank_by_key[key],
+            default=app.get("current_stage", ""),
+        )
+        reached_rank = rank_by_key.get(reached, -1)
+        if reached_rank > overall_highest["rank"]:
+            overall_highest = {
+                "rank": reached_rank,
+                "name": name_by_key.get(reached, STAGE_NAMES.get(reached, reached or "-")),
+            }
+        app_interviews = [item for item in interviews if item.get("application_id") == app["_id"]]
+        details.append({
+            **application_to_dict(app),
+            "created_at": dt(app.get("created_at")),
+            "stage_name": name_by_key.get(
+                app.get("current_stage", ""),
+                STAGE_NAMES.get(app.get("current_stage", ""), app.get("current_stage", "-")),
+            ),
+            "highest_stage_name": name_by_key.get(
+                reached, STAGE_NAMES.get(reached, reached or "-"),
+            ),
+            "transitions": [{
+                "from_stage": item.get("from_stage", ""),
+                "to_stage": item.get("to_stage", ""),
+                "to_stage_name": name_by_key.get(
+                    item.get("to_stage", ""),
+                    STAGE_NAMES.get(item.get("to_stage", ""), item.get("to_stage", "-")),
+                ),
+                "reason": item.get("reason", ""),
+                "operator_name": item.get("operator_name", ""),
+                "created_at": dt(item.get("created_at")),
+            } for item in transitions],
+            "interviews": [{
+                "id": item["_id"],
+                "round": item.get("round", ""),
+                "status": item.get("status", ""),
+                "interviewer_name": item.get("interviewer_name", ""),
+                "start_at": dt(item.get("start_at")),
+                "conclusion": (feedback_by_interview.get(item["_id"]) or {}).get("conclusion", ""),
+            } for item in app_interviews],
+        })
+
+    app_by_id = {item["_id"]: item for item in apps}
+    interview_by_id = {item["_id"]: item for item in interviews}
+    offers = list(col("offers").find({"application_id": {"$in": app_ids}})) if app_ids else []
+    offer_ids = [item["_id"] for item in offers]
+    approvals = list(col("offer_approvals").find({"offer_id": {"$in": offer_ids}})) if offer_ids else []
+    offer_by_id = {item["_id"]: item for item in offers}
+    approval_by_id = {item["_id"]: item for item in approvals}
+    attachment_docs = list(col("attachments").find({"candidate_id": cid}).sort("_id", 1))
+
+    activities = []
+
+    def add_activity(activity_id, title, detail, created_at, operator_name="", job_name="", kind="operation"):
+        activities.append({
+            "id": str(activity_id), "kind": kind, "title": title,
+            "detail": detail or "", "operator_name": operator_name or "系统",
+            "job_name": job_name or "", "created_at": dt(created_at),
+            "_sort_at": created_at or datetime.min,
+        })
+
+    # 候选人创建/首次投递和后续简历附件上传时间。
+    add_activity(
+        f"candidate-{cid}", "简历投递", candidate.get("source") or "候选人进入系统",
+        candidate.get("created_at"), kind="resume",
+    )
+    for attachment in attachment_docs:
+        add_activity(
+            f"attachment-{attachment['_id']}", "简历附件上传",
+            attachment.get("file_name", ""), attachment.get("created_at"), kind="resume",
+        )
+
+    related_ids = {str(cid)}
+    related_ids.update(str(item["_id"]) for item in apps)
+    related_ids.update(str(item["_id"]) for item in interviews)
+    related_ids.update(str(item["_id"]) for item in offers)
+    related_ids.update(str(item["_id"]) for item in approvals)
+    related_ids.update(str(item["_id"]) for item in attachment_docs)
+    logs = col("operation_logs").find({
+        "biz_id": {"$in": list(related_ids)},
+        "biz_type": {"$in": ["candidate", "application", "interview", "offer", "offer_approval", "attachment"]},
+    }).sort("_id", 1)
+    passive_actions = {"view", "list_view", "file_preview", "file_download", "download"}
+    for log in logs:
+        if log.get("action") in passive_actions:
+            continue
+        biz_type = log.get("biz_type", "")
+        related_job = ""
+        if biz_type == "application":
+            related_job = (get_by_id("jobs", app_by_id.get(int(log.get("biz_id", 0)), {}).get("job_id")) or {}).get("name", "")
+        elif biz_type == "interview":
+            interview = interview_by_id.get(int(log.get("biz_id", 0)), {})
+            app = app_by_id.get(interview.get("application_id"), {})
+            related_job = (get_by_id("jobs", app.get("job_id")) or {}).get("name", "")
+        elif biz_type == "offer":
+            offer = offer_by_id.get(int(log.get("biz_id", 0)), {})
+            related_job = (get_by_id("jobs", offer.get("job_id")) or {}).get("name", "")
+        elif biz_type == "offer_approval":
+            approval = approval_by_id.get(int(log.get("biz_id", 0)), {})
+            offer = offer_by_id.get(approval.get("offer_id"), {})
+            related_job = (get_by_id("jobs", offer.get("job_id")) or {}).get("name", "")
+        add_activity(
+            f"log-{log['_id']}", log.get("action", "系统操作"), log.get("detail", ""),
+            log.get("created_at"), log.get("operator_name", ""), related_job,
+        )
+    activities.sort(key=lambda item: item.pop("_sort_at"), reverse=True)
+
+    return ok({
+        "summary": {
+            "total_deliveries": len(apps),
+            "highest_stage": overall_highest["name"],
+            "interviews": len(interviews),
+            "evaluated_interviews": len(evaluated),
+            "passed_interviews": passed,
+            "interview_pass_rate": round(passed / len(evaluated) * 100, 1) if evaluated else 0,
+        },
+        "applications": details,
+        "activities": activities,
+    })
 
 
 @bp.get("/api/applications/<int:app_id>/transitions")

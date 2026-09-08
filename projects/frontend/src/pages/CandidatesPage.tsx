@@ -7,10 +7,12 @@ import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import {
-  deleteCandidate, fetchCandidates, importCandidates, parseResume, parseResumeUpload, saveCandidate,
+  assignJob, deleteCandidate, fetchCandidates, importCandidates, parseResume, parseResumeUpload, saveCandidate,
   uploadResume,
 } from '@/services/candidate';
 import type { CandidateRow } from '@/services/candidate';
+import { fetchJobs } from '@/services/job';
+import type { Job } from '@/services/job';
 import { addToPool } from '@/services/talentPool';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
@@ -25,7 +27,7 @@ const SOURCE_TEXT: Record<string, string> = {
 const STAGE_TEXT: Record<string, string> = {
   new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
   business_screen: '业务筛选', pending_interview: '待面试', interviewing: '面试中',
-  interview_1: '一面', interview_2: '二面', interview_3: '三面', hr_interview: '人力面',
+  interview_1: '一面', interview_2: '二面', interview_3: '三面', hrbp_interview: 'HRBP确认', hr_interview: '人力面',
   interview_passed: '面试阶段', offer_approval: '最终筛选', offer_pending: '录用通知', offer: '录用通知',
   pending_onboard: '待入职', onboarded: '已入职', eliminated: '已淘汰', abandoned: '已放弃',
   talent_pool: '人才库', written_test: '笔试', assessment: '测评', background_check: '背调',
@@ -53,6 +55,7 @@ export function CandidatesPage() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [resumeParsing, setResumeParsing] = useState(false);
   const [resumeParse, setResumeParse] = useState<Awaited<ReturnType<typeof parseResumeUpload>> | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,6 +76,11 @@ export function CandidatesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!canManage || jobs.length) return;
+    void fetchJobs({ page_size: 100 }).then((data) => setJobs(data.list));
+  }, [canManage, jobs.length]);
 
   function closeCreateDrawer() {
     setDrawerOpen(false);
@@ -126,8 +134,9 @@ export function CandidatesPage() {
 
   async function handleCreate() {
     const values = await form.validateFields();
+    const { job_id: selectedJobId, ...candidateValues } = values;
     const payload = {
-      ...values,
+      ...candidateValues,
       gender: values.gender || resumeParse?.fields.gender || '',
       education: values.education?.length ? values.education : resumeParse?.fields.education ?? [],
       work_experience: values.work_experience?.length ? values.work_experience : resumeParse?.fields.work_experience ?? [],
@@ -139,13 +148,17 @@ export function CandidatesPage() {
         content: `匹配到：${result.duplicates.map((d) => `${d.name}（${d.phone}）`).join('、')}。继续使用已有候选人，或强制新建？`,
         okText: '使用已有',
         cancelText: '强制新建',
-        onOk: () => {
+        onOk: async () => {
+          if (selectedJobId) await assignJob(result.duplicates![0].id, Number(selectedJobId));
           closeCreateDrawer();
           navigate(`/candidates/${result.duplicates![0].id}`);
         },
         onCancel: async () => {
           const forced = await saveCandidate(null, { ...payload, force: 1 });
-          if (forced.candidate?.id) await attachResume(forced.candidate.id);
+          if (forced.candidate?.id) {
+            if (selectedJobId) await assignJob(forced.candidate.id, Number(selectedJobId));
+            await attachResume(forced.candidate.id);
+          }
           msg.success('已新建候选人');
           closeCreateDrawer();
           void load();
@@ -153,10 +166,20 @@ export function CandidatesPage() {
       });
       return;
     }
-    if (result.candidate?.id) await attachResume(result.candidate.id);
+    if (result.candidate?.id) {
+      if (selectedJobId) await assignJob(result.candidate.id, Number(selectedJobId));
+      await attachResume(result.candidate.id);
+    }
     msg.success('候选人已创建');
     closeCreateDrawer();
     void load();
+  }
+
+  function openCreateDrawer() {
+    form.resetFields();
+    setResumeFile(null);
+    setResumeParse(null);
+    setDrawerOpen(true);
   }
 
   const columns = [
@@ -241,7 +264,7 @@ export function CandidatesPage() {
           >
             批量加入人才库
           </Button>}
-          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setResumeFile(null); setResumeParse(null); setDrawerOpen(true); }}>
+          {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreateDrawer}>
             新增候选人
           </Button>}
         </Space>
@@ -258,7 +281,7 @@ export function CandidatesPage() {
             onChange={(v) => setFilters((f) => ({ ...f, stage: v ?? '', page: 1 }))}
             options={[
               { value: 'new_resume', label: '新简历' }, { value: 'pending_screen', label: '待筛选' },
-              { value: 'hr_screen_passed', label: '人力筛选' }, { value: 'pending_interview', label: '待面试' },
+              { value: 'pending_interview', label: '待面试' },
               { value: 'interviewing', label: '面试中' }, { value: 'interview_passed', label: '面试阶段' },
               { value: 'offer_pending', label: '录用通知' }, { value: 'pending_onboard', label: '待入职' },
               { value: 'onboarded', label: '已入职' },
@@ -330,6 +353,13 @@ export function CandidatesPage() {
           </Form.Item>
           <Form.Item name="name" label="姓名" rules={[{ required: true, message: '必填' }]}>
             <Input />
+          </Form.Item>
+          <Form.Item name="job_id" label="应聘职位（可选）">
+            <Select
+              allowClear showSearch optionFilterProp="label"
+              placeholder="选择后保存时同时创建应聘记录"
+              options={jobs.map((job) => ({ value: job.id, label: job.name }))}
+            />
           </Form.Item>
           <Form.Item name="gender" label="性别">
             <Select allowClear options={[{ value: '男', label: '男' }, { value: '女', label: '女' }]} />

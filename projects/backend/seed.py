@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 from common.db import col, next_id
+from common.job_catalog import FIXED_JOB_NAMES
 from common.stages import (
     DEFAULT_STAGES,
     LOCK_DAYS_FALLBACK,
@@ -69,7 +70,7 @@ def seed_demo_data():
                 })
         col("dict_items").insert_many(docs)
 
-    # 默认流程模板：PRD v1.1 九阶段 + 可选插入环节（旧 v1.0 模板停用保留，不删除）
+    # 默认流程模板：PRD v1.1 十阶段 + 可选插入环节（旧 v1.0 模板停用保留，不删除）
     lock_raw = col("sys_params").find_one({"_id": PARAM_LOCK_DAYS_DEFAULT})
     lock_defaults = json.loads(lock_raw["value"]) if lock_raw else dict(LOCK_DAYS_FALLBACK)
     if col("pipeline_templates").find_one({"name": "默认招聘流程模板（v1.1）"}) is None:
@@ -105,6 +106,35 @@ def seed_demo_data():
     for tpl in col("pipeline_templates").find({"name": v11_name}):
         stages = list(tpl.get("stages", []))
         changed = False
+        if not any(s.get("stage_key") == "business_screen" for s in stages):
+            for stage in stages:
+                if int(stage.get("sort_order") or 0) >= 4:
+                    stage["sort_order"] = int(stage.get("sort_order") or 0) + 1
+            stages.append({
+                "stage_key": "business_screen", "name": "业务复筛", "category": "筛选",
+                "sort_order": 4, "lock_days": int(lock_defaults.get("business_screen", 3)),
+                **STAGE_RULE_FALLBACK.get("business_screen", {}),
+                "required": True, "skippable": False, "reminder_type": "enter",
+                "optional_flag": False,
+            })
+            changed = True
+        if not any(s.get("stage_key") == "hrbp_interview" for s in stages):
+            after_stage = next(
+                (stage for stage in stages if stage.get("stage_key") == "interview_passed"),
+                None,
+            )
+            insert_order = int(after_stage.get("sort_order") or 0) + 1 if after_stage else 8
+            for stage in stages:
+                if int(stage.get("sort_order") or 0) >= insert_order and not stage.get("optional_flag"):
+                    stage["sort_order"] = int(stage.get("sort_order") or 0) + 1
+            stages.append({
+                "stage_key": "hrbp_interview", "name": "HRBP确认", "category": "审批",
+                "sort_order": insert_order, "lock_days": int(lock_defaults.get("hrbp_interview", 7)),
+                **STAGE_RULE_FALLBACK.get("hrbp_interview", {}),
+                "required": True, "skippable": False, "reminder_type": "enter",
+                "optional_flag": False,
+            })
+            changed = True
         for stage in stages:
             key = stage.get("stage_key", "")
             defaults = STAGE_RULE_FALLBACK.get(key, {})
@@ -159,6 +189,67 @@ def seed_demo_data():
 
 
 DEMO_BUSINESS_MARKER = "demo_business_data_v1"
+FIXED_JOB_CODES = (
+    "JOB-DEMO-PM", "JOB-DEMO-BE", "JOB-DEMO-FE", "JOB-DEMO-INTERN",
+    "JOB-DEMO-SALES", "JOB-DEMO-CLOSED", "JOB-DEMO-7", "JOB-DEMO-8",
+    "JOB-DEMO-9", "JOB-DEMO-10", "JOB-DEMO-11", "JOB-DEMO-12",
+)
+
+
+def ensure_fixed_job_catalog(now: datetime | None = None):
+    """补齐固定职位目录，并保留旧演示职位 ID 及其应聘关联。"""
+    now = now or datetime.now()
+    requirement = col("requirements").find_one(sort=[("_id", 1)])
+    template = col("pipeline_templates").find_one({"status": "active"}, sort=[("_id", 1)])
+    for index, (code, name) in enumerate(zip(FIXED_JOB_CODES, FIXED_JOB_NAMES), 1):
+        job = col("jobs").find_one({"code": code})
+        if job:
+            col("jobs").update_one(
+                {"_id": job["_id"]},
+                {"$set": {"name": name, "status": "recruiting", "updated_at": now}},
+            )
+            continue
+        col("jobs").insert_one({
+            "_id": next_id("jobs"), "code": code, "name": name,
+            "dept_id": requirement.get("dept_id", "") if requirement else "",
+            "dept_name": requirement.get("dept_name", "") if requirement else "",
+            "location": "上海", "job_type": "full_time", "level": "P5",
+            "report_to": "", "headcount": 1, "salary_range": "",
+            "description": f"负责{name}相关工作。", "qualification": "",
+            "skill_tags": "", "template_id": template.get("_id") if template else None,
+            "channels": "官网投递,内部推荐", "requirement_id": requirement.get("_id") if requirement else None,
+            "stage_configs": [],
+            "owner_id": "hr-001", "owner_name": "张薇", "status": "recruiting",
+            "public_token": f"fixed-demo-{index}", "created_at": now, "updated_at": now,
+        })
+
+
+def remove_legacy_job_interview_rounds():
+    """清理职位上的旧轮次配置；面试顺序统一由流程模板决定。"""
+    col("jobs").update_many(
+        {"interview_rounds": {"$exists": True}},
+        {"$unset": {"interview_rounds": ""}},
+    )
+
+
+def ensure_demo_business_assignments():
+    """为演示库保留两个业务复筛人员样例，便于直接切换角色验证。"""
+    for email, user_id, user_name in (
+        ("lin.yuan@example.com", "screen-001", "王强"),
+        ("yang.fan@example.com", "screen-002", "赵磊"),
+    ):
+        candidate = col("candidates").find_one({"email": email})
+        if not candidate:
+            continue
+        app = col("applications").find_one({
+            "candidate_id": candidate["_id"], "status": "in_progress",
+        }, sort=[("_id", -1)])
+        if app and app.get("current_stage") == "pending_screen":
+            col("applications").update_one({"_id": app["_id"]}, {"$set": {
+                "current_stage": "business_screen",
+                "business_screener_id": user_id,
+                "business_screener_name": user_name,
+            }})
 
 
 def _demo_insert(collection: str, document: dict, created_at: datetime):
@@ -246,6 +337,7 @@ def repair_demo_recruitment_consistency(now: datetime | None = None):
                 "type": "video", "start_at": now - timedelta(days=2),
                 "end_at": now - timedelta(days=2) + timedelta(hours=1),
                 "location": "", "meeting_link": "https://meeting.example.com/demo-room",
+                "interviewer_id": {"王强": "screen-001", "刘洋": "interviewer-001", "张薇": "hr-001"}.get(interviewer, ""),
                 "interviewer_name": interviewer, "interviewer_contact": "interviewer-001",
                 "template_id": None, "remark": "演示面试记录", "status": "completed",
                 "version": 1, "conclusion_applied": True,
@@ -342,11 +434,9 @@ def seed_demo_business_data(now: datetime | None = None):
     now = now or datetime.now()
     if col("sys_params").find_one({"_id": DEMO_BUSINESS_MARKER}):
         # 兼容已初始化过旧演示数据的本地数据库：补齐后续版本新增字段。
-        col("jobs").update_many(
-            {"code": {"$in": ["JOB-DEMO-BE", "JOB-DEMO-FE", "JOB-DEMO-SALES"]},
-             "interview_rounds": {"$exists": False}},
-            {"$set": {"interview_rounds": ["一面", "二面", "三面"]}},
-        )
+        ensure_fixed_job_catalog(now)
+        remove_legacy_job_interview_rounds()
+        ensure_demo_business_assignments()
         repair_demo_recruitment_consistency(now)
         return
 
@@ -378,14 +468,21 @@ def seed_demo_business_data(now: datetime | None = None):
         }, now - (12 - index) * day)
         requirements[f"r{index}"] = req
 
-    # 2. 职位：至少一个可公开投递的招聘中职位，并覆盖其他状态。
+    # 2. 固定职位目录：职位管理页只展示这一组职位，职位状态仍保留在数据库中
+    # 供公开投递和历史接口兼容，但 HR 手工关联候选人不受状态限制。
     job_specs = [
-        ("JOB-DEMO-BE", "高级后端工程师", requirements["r1"], "recruiting", "上海", "P6", 2, "35-50K"),
-        ("JOB-DEMO-FE", "前端工程师", requirements["r1"], "recruiting", "上海", "P5", 2, "25-38K"),
-        ("JOB-DEMO-PM", "产品经理", requirements["r2"], "pending_publish", "上海", "P6", 1, "30-45K"),
-        ("JOB-DEMO-INTERN", "人力资源实习生", requirements["r3"], "draft", "北京", "P4", 5, "150-200/天"),
-        ("JOB-DEMO-SALES", "大客户销售经理", requirements["r4"], "paused", "深圳", "P6", 2, "20-35K"),
-        ("JOB-DEMO-CLOSED", "交互设计师", requirements["r6"], "closed", "上海", "P5", 1, "25-35K"),
+        ("JOB-DEMO-PM", "产品经理", requirements["r2"], "recruiting", "上海", "P6", 1, "30-45K"),
+        ("JOB-DEMO-BE", "后台开发工程师", requirements["r1"], "recruiting", "上海", "P6", 2, "35-50K"),
+        ("JOB-DEMO-FE", "算法工程师", requirements["r1"], "recruiting", "上海", "P7", 2, "40-60K"),
+        ("JOB-DEMO-INTERN", "硬件工程师", requirements["r1"], "recruiting", "上海", "P6", 2, "30-45K"),
+        ("JOB-DEMO-SALES", "CAD工程师", requirements["r1"], "recruiting", "上海", "P5", 2, "20-35K"),
+        ("JOB-DEMO-CLOSED", "嵌入式工程师", requirements["r1"], "recruiting", "上海", "P6", 2, "30-45K"),
+        ("JOB-DEMO-7", "视频制作", requirements["r5"], "recruiting", "北京", "P5", 2, "15-25K"),
+        ("JOB-DEMO-8", "图文", requirements["r5"], "recruiting", "北京", "P4", 2, "12-20K"),
+        ("JOB-DEMO-9", "市场专员", requirements["r4"], "recruiting", "深圳", "P5", 2, "15-25K"),
+        ("JOB-DEMO-10", "SEO", requirements["r4"], "recruiting", "深圳", "P5", 2, "15-25K"),
+        ("JOB-DEMO-11", "舆情管控", requirements["r4"], "recruiting", "深圳", "P5", 2, "15-25K"),
+        ("JOB-DEMO-12", "在线客服", requirements["r4"], "recruiting", "深圳", "P4", 5, "8-15K"),
     ]
     jobs = {}
     for index, (code, name, req, status, location, level, headcount, salary) in enumerate(job_specs, 1):
@@ -397,7 +494,6 @@ def seed_demo_business_data(now: datetime | None = None):
             "description": f"负责{ name }相关工作，参与核心项目建设和团队协作。",
             "qualification": "本科及以上学历，相关专业，具备良好的学习和沟通能力。",
             "skill_tags": "Python, MongoDB, 团队协作" if "后端" in name else "业务分析, 沟通协作",
-            "interview_rounds": ["一面", "二面", "三面"] if index in (1, 2, 5) else ["一面"],
             "template_id": template_id, "channels": "官网投递,内部推荐",
             "requirement_id": req["_id"], "owner_id": "hr-001", "owner_name": "张薇",
             "status": status, "public_token": f"demo-public-{index}",
@@ -407,6 +503,11 @@ def seed_demo_business_data(now: datetime | None = None):
             ],
         }, now - (10 - index) * day)
         jobs[f"j{index}"] = job
+
+    # 已存在的本地演示库不会重新插入同一编码，补一遍名称和可用状态迁移，
+    # 让升级后的职位管理页立即显示固定职位目录。
+    ensure_fixed_job_catalog(now)
+    remove_legacy_job_interview_rounds()
 
     # 3. 候选人主档：有完整简历解析结果字段，便于查看和编辑维护。
     candidate_specs = [
@@ -442,7 +543,7 @@ def seed_demo_business_data(now: datetime | None = None):
 
     # 4. 应聘记录：铺满流程看板各主要阶段和终态。
     app_specs = [
-        ("c1", "j1", "pending_screen", "in_progress", 5),
+        ("c1", "j1", "business_screen", "in_progress", 5),
         ("c2", "j1", "hr_interview", "in_progress", 4),
         ("c3", "j1", "pending_interview", "in_progress", 3),
         ("c4", "j1", "interviewing", "in_progress", 3),
@@ -452,7 +553,7 @@ def seed_demo_business_data(now: datetime | None = None):
         ("c8", "j2", "onboarded", "onboarded", 20),
         ("c9", "j1", "talent_pool", "closed", 15),
         ("c10", "j1", "talent_pool", "closed", 12),
-        ("c11", "j5", "pending_screen", "in_progress", 4),
+        ("c11", "j5", "business_screen", "in_progress", 4),
         ("c12", "j2", "interviewing", "in_progress", 1),
         ("c13", "j1", "offer_pending", "in_progress", 2),
         ("c14", "j1", "talent_pool", "closed", 4),
@@ -464,6 +565,8 @@ def seed_demo_business_data(now: datetime | None = None):
             "candidate_id": candidates[candidate_key]["_id"], "job_id": jobs[job_key]["_id"],
             "source": candidates[candidate_key].get("source", "manual"),
             "current_stage": stage, "owner_id": "hr-001", "owner_name": "张薇",
+            "business_screener_id": "screen-002" if candidate_key == "c11" else "screen-001" if stage == "business_screen" else "",
+            "business_screener_name": "赵磊" if candidate_key == "c11" else "王强" if stage == "business_screen" else "",
             "stage_entered_at": created + day, "status": status,
             "eliminate_reason": "技术栈与岗位要求不匹配" if stage in ("eliminated", "talent_pool") else "",
             "expected_salary": "35K", "onboard_time": "2026-09-15" if stage == "pending_onboard" else "",
@@ -472,7 +575,7 @@ def seed_demo_business_data(now: datetime | None = None):
         applications[f"a{index}"] = app
 
     # 阶段流转历史，供候选人详情、报表招聘周期和审计查看。
-    main_stage_order = ["new_resume", "pending_screen", "hr_screen_passed", "pending_interview",
+    main_stage_order = ["new_resume", "pending_screen", "hr_screen_passed", "business_screen", "pending_interview",
                         "interviewing", "interview_passed", "offer_pending", "pending_onboard", "onboarded"]
     for app_key, app in applications.items():
         current = app["current_stage"]
@@ -523,6 +626,7 @@ def seed_demo_business_data(now: datetime | None = None):
             "round": round_name, "type": iv_type, "start_at": start_at,
             "end_at": start_at + timedelta(hours=1), "location": "上海办公室" if iv_type == "onsite" else "",
             "meeting_link": "https://meeting.example.com/demo-room" if iv_type == "video" else "",
+            "interviewer_id": {"王强": "screen-001", "刘洋": "interviewer-001", "张薇": "hr-001"}.get(interviewer, ""),
             "interviewer_name": interviewer, "interviewer_contact": "interviewer-001",
             "template_id": None, "remark": "演示面试记录", "status": status,
             "version": 1,

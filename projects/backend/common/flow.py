@@ -21,7 +21,11 @@ from common.status import (
     JOB_RECRUITING,
     REQ_CLOSED,
 )
-from common.stages import INTERVIEW_ROUNDS, STAGE_RULE_FALLBACK
+from common.stages import (
+    INTERVIEW_STAGE_ROUNDS,
+    STAGE_RULE_FALLBACK,
+    template_interview_rounds,
+)
 
 from .db import col, get_by_id, next_id
 from .errors import BizError
@@ -103,21 +107,12 @@ def stage_rules_enabled(job_doc: dict) -> bool:
 
 
 def _interview_rounds_for_stage(stage_key: str):
-    return {
-        "interview_1": "一面", "interview_2": "二面", "interview_3": "三面",
-        "hr_interview": "HR面试", "re_interview": "复试",
-    }.get(stage_key)
+    return INTERVIEW_STAGE_ROUNDS.get(stage_key)
 
 
 def configured_interview_rounds(job_doc: dict) -> list[str]:
-    """返回职位配置的面试轮次；未配置时返回空，保持旧职位单轮兼容。"""
-    raw = job_doc.get("interview_rounds")
-    if not isinstance(raw, list):
-        return []
-    return list(dict.fromkeys(
-        str(item).strip() for item in raw
-        if str(item).strip() in INTERVIEW_ROUNDS
-    ))
+    """返回职位绑定的流程模板中的面试阶段顺序。"""
+    return template_interview_rounds(job_stage_sequence(job_doc))
 
 
 def expected_interview_round(application_doc: dict, job_doc: dict) -> str:
@@ -126,6 +121,20 @@ def expected_interview_round(application_doc: dict, job_doc: dict) -> str:
         return ""
     current = application_doc.get("interview_round", "")
     return current if current in rounds else rounds[0]
+
+
+def effective_interview_round(application_doc: dict, job_doc: dict | None = None) -> str:
+    """返回当前应显示/安排的面试轮次，并兼容旧版“终面”数据。
+
+    旧版默认通用流程把二面之后的轮次保存成“HR面试”，新版默认流程已统一
+    为“一面、二面、三面”。只有未配置明确轮次的旧职位才做这个兼容映射，
+    不影响仍然明确配置了 HR 面试的自定义流程。
+    """
+    job = job_doc or get_by_id("jobs", application_doc.get("job_id")) or {}
+    current = application_doc.get("interview_round", "") or ""
+    if not configured_interview_rounds(job) and current in {"HR面试", "终面", "终面（HR）"}:
+        return "三面"
+    return current
 
 
 def _check_interview_requirements(app_doc: dict, stage_key: str, rule: dict):
@@ -237,10 +246,15 @@ def lock_info_for_candidate(candidate_id: int):
 
 # ---------------- 应聘记录 ----------------
 
-def check_job_accepting(job_doc: dict):
-    if job_doc.get("status") != JOB_RECRUITING:
+def check_job_accepting(job_doc: dict, *, hr_assignment: bool = False):
+    """校验职位是否接收投递。
+
+    官网投递仍受职位/招聘需求状态约束；HR 手工为候选人创建应聘记录时，
+    固定职位目录中的职位不受职位状态限制。
+    """
+    if not hr_assignment and job_doc.get("status") != JOB_RECRUITING:
         raise BizError(BizCode.STATE_INVALID, "该职位当前不接收投递")
-    if job_doc.get("requirement_id"):
+    if not hr_assignment and job_doc.get("requirement_id"):
         req = get_by_id("requirements", job_doc["requirement_id"])
         if req and req.get("status") == REQ_CLOSED:
             raise BizError(BizCode.STATE_INVALID, "关联招聘需求已关闭，不能新增候选人")
@@ -259,10 +273,11 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
                        extra: dict = None, session=None,
                        initial_stage: str = "new_resume",
                        initial_lock_days=None,
-                       initial_reason: str = "进入流程"):
+                       initial_reason: str = "进入流程",
+                       hr_assignment: bool = False):
     """新建应聘记录：校验接收状态、锁定期、重复投递；写入流转记录并开始锁定。"""
     ensure_core_indexes()
-    check_job_accepting(job_doc)
+    check_job_accepting(job_doc, hr_assignment=hr_assignment)
     check_duplicate_application(candidate_doc["_id"], job_doc["_id"], session=session)
     lock = active_lock_for_candidate(candidate_doc["_id"], session=session)
     if lock:
@@ -364,7 +379,9 @@ def advance_interview_round(application_doc: dict, next_round: str,
         raise BizError(BizCode.PARAM_INVALID, "该职位未配置目标面试轮次")
     if app_doc.get("status") != APP_IN_PROGRESS:
         raise BizError(BizCode.STATE_INVALID, "应聘记录已结束，不能推进面试轮次")
-    if app_doc.get("current_stage") not in {"pending_interview", "interviewing"}:
+    if app_doc.get("current_stage") not in {
+        "pending_interview", "interviewing", *INTERVIEW_STAGE_ROUNDS.keys(),
+    }:
         raise BizError(BizCode.STATE_INVALID, "当前阶段不允许推进面试轮次")
     if version != app_doc.get("version", 1):
         raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")
@@ -542,7 +559,9 @@ def application_to_dict(app_doc: dict) -> dict:
         "job_name": job.get("name", ""),
         "source": app_doc.get("source", ""),
         "current_stage": app_doc.get("current_stage", ""),
-        "interview_round": app_doc.get("interview_round", ""),
+        "interview_round": effective_interview_round(app_doc, job),
+        "business_screener_id": app_doc.get("business_screener_id", ""),
+        "business_screener_name": app_doc.get("business_screener_name", ""),
         "owner_id": app_doc.get("owner_id", ""),
         "owner_name": app_doc.get("owner_name", ""),
         "stage_entered_at": dt(app_doc.get("stage_entered_at")),
@@ -559,7 +578,8 @@ def application_to_dict(app_doc: dict) -> dict:
 # the same public function names while all modules use the stricter behavior.
 def move_application(application_doc: dict, to_stage: str, reason: str,
                      operator_id: str, operator_name: str, version: int,
-                     bypass_rules: bool = False, session=None):
+                     bypass_rules: bool = False, session=None,
+                     set_fields: dict | None = None):
     if not (reason or "").strip():
         raise BizError(BizCode.PARAM_INVALID, "阶段流转必须填写原因")
     app_doc = _refresh(application_doc) or application_doc
@@ -601,10 +621,13 @@ def move_application(application_doc: dict, to_stage: str, reason: str,
     }, session=session))
     transition_id = next_id("stage_transitions", session=session)
     lock_doc = None
+    set_payload = {"current_stage": to_stage, "status": terminal_status,
+                   "stage_entered_at": now, "updated_at": now}
+    if set_fields:
+        set_payload.update(set_fields)
     updated = col("applications").find_one_and_update(
         {"_id": app_doc["_id"], "version": version, "status": app_doc["status"]},
-        {"$set": {"current_stage": to_stage, "status": terminal_status,
-                   "stage_entered_at": now, "updated_at": now},
+        {"$set": set_payload,
          "$inc": {"version": 1}},
         return_document=ReturnDocument.AFTER, session=session,
     )

@@ -74,8 +74,8 @@ export async function deletePipelineTemplate(id: number) {
 /** 阶段元数据（与后端 common/stages.py 对应） */
 export const STAGE_META: { key: string; name: string; category: string; optional: boolean }[] = [
   { key: 'new_resume', name: '未处理简历', category: '开始', optional: false },
-  { key: 'pending_screen', name: '业务复筛', category: '筛选', optional: false },
-  { key: 'hr_screen_passed', name: 'HR筛选通过', category: '筛选', optional: false },
+  { key: 'pending_screen', name: '待筛选', category: '筛选', optional: false },
+  { key: 'business_screen', name: '业务复筛', category: '筛选', optional: false },
   { key: 'pending_interview', name: '待面试', category: '面试', optional: false },
   { key: 'interviewing', name: '面试阶段', category: '面试', optional: false },
   { key: 'interview_passed', name: '录用审批', category: '审批', optional: false },
@@ -85,6 +85,7 @@ export const STAGE_META: { key: string; name: string; category: string; optional
   { key: 'interview_1', name: '一面', category: '面试', optional: false },
   { key: 'interview_2', name: '二面', category: '面试', optional: false },
   { key: 'interview_3', name: '三面', category: '面试', optional: false },
+  { key: 'hrbp_interview', name: 'HRBP确认', category: '审批', optional: false },
   { key: 're_interview', name: '复试', category: '可选插入', optional: true },
   { key: 'hr_interview', name: 'HR面试', category: '面试', optional: false },
   { key: 'background_check', name: '背调', category: '可选插入', optional: true },

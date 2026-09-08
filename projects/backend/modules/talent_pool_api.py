@@ -70,17 +70,25 @@ def _pool_view(doc: dict, mask: bool = True) -> dict:
     if doc.get("recommended_job_id"):
         job = get_by_id("jobs", doc["recommended_job_id"]) or {}
         job_name = job.get("name", "")
+    source = doc.get("source", "")
+    reason = doc.get("reason", "")
+    category = doc.get("category", "")
+    tags = doc.get("tags", [])
+    # 兼容早期“放弃加入”记录：展示放弃时实际选择的原因，且补齐分类与标签。
+    if source == "abandoned_added":
+        category = category or "放弃"
+        tags = tags or ([reason] if reason else [])
     return {
         "id": doc["_id"],
         "candidate_id": doc["candidate_id"],
         "candidate_name": candidate.get("name", ""),
         "phone": _mask_phone(candidate.get("phone", "")) if mask else candidate.get("phone", ""),
         "email": _mask_email(candidate.get("email", "")) if mask else candidate.get("email", ""),
-        "category": doc.get("category", ""),
-        "tags": doc.get("tags", []),
-        "source": doc.get("source", ""),
-        "source_text": SOURCE_TEXT.get(doc.get("source", ""), doc.get("source", "")),
-        "reason": doc.get("reason", ""),
+        "category": category,
+        "tags": tags,
+        "source": source,
+        "source_text": reason if source == "abandoned_added" and reason else SOURCE_TEXT.get(source, source),
+        "reason": reason,
         "recommended_job_id": doc.get("recommended_job_id"),
         "recommended_job_name": job_name,
         "last_contact_at": dt(doc.get("last_contact_at")),

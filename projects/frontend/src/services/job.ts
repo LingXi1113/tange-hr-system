@@ -18,7 +18,6 @@ export interface Job {
   skill_tags: string;
   template_id: number | null;
   channels: string;
-  interview_rounds: string[];
   status: string;
   requirement_id: number | null;
   owner_id: string;

@@ -20,7 +20,7 @@ import { addToPool } from '@/services/talentPool';
 import { msg } from '@/utils/message';
 
 // 允许创建 Offer 的应聘记录阶段（与后端门禁一致）
-const OFFER_ALLOWED_STAGES = ['interview_passed', 'offer_pending'];
+const OFFER_ALLOWED_STAGES = ['offer_pending', 'offer_approval'];
 
 interface AppOption {
   id: number;

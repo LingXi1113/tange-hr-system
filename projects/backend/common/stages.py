@@ -1,19 +1,21 @@
 """招聘流程阶段定义。
 
-默认流程：新简历→业务复筛→一面→二面→三面→HR面试→录用审批→Offer→待入职→入职；
+默认流程：新简历→业务复筛→一面→二面→三面→HRBP确认→录用审批→Offer→待入职→入职；
 终态分支：淘汰、人才库；可选插入环节：笔试、测评、背调、复试、自定义。
 锁定期默认天数不在此写死，取自系统参数 lock_days_default（见 models/system.py）。
 """
 
 # (stage_key, 名称, 环节类型, 是否默认阶段, 必选, 可跳过, 提醒类型)
-# PRD v1.1 默认流程（9 阶段）
+# PRD v1.1 默认流程（11 阶段）
 DEFAULT_STAGES = [
     ("new_resume", "新简历", "开始", True, True, False, "enter"),
     ("pending_screen", "待筛选", "筛选", True, True, False, "enter"),
     ("hr_screen_passed", "HR筛选通过", "筛选", True, True, False, "enter"),
+    ("business_screen", "业务复筛", "筛选", True, True, False, "enter"),
     ("pending_interview", "待面试", "面试", True, True, False, "enter"),
     ("interviewing", "面试中", "面试", True, True, False, "enter"),
     ("interview_passed", "面试阶段", "面试", True, True, False, "enter"),
+    ("hrbp_interview", "HRBP确认", "审批", True, True, False, "enter"),
     ("offer_pending", "Offer中", "Offer", True, True, False, "offer_expire"),
     ("pending_onboard", "待入职", "入职", True, True, False, "onboard"),
     ("onboarded", "已入职", "结束", True, True, False, ""),
@@ -62,8 +64,8 @@ PARAM_ONBOARDING_CHECKLIST_DEFAULT = "onboarding_checklist_default"
 # 锁定期默认天数（仅作为系统参数缺失时的最终兜底；正常运行以系统参数为准）
 LOCK_DAYS_FALLBACK = {
     # v1.1 默认阶段（默认不锁定，可通过系统参数调整）
-    "new_resume": 0, "pending_screen": 5, "hr_screen_passed": 0,
-    "pending_interview": 7, "interviewing": 7, "interview_passed": 30,
+    "new_resume": 0, "pending_screen": 5, "hr_screen_passed": 0, "business_screen": 3,
+    "pending_interview": 7, "interviewing": 7, "interview_passed": 30, "hrbp_interview": 7,
     "offer_pending": 15, "pending_onboard": 45, "onboarded": 9999,
     # v1.0 旧阶段（兼容历史数据）
     "business_screen": 3,
@@ -80,6 +82,7 @@ STAGE_RULE_FALLBACK = {
     "new_resume": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
     "pending_screen": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
     "hr_screen_passed": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
+    "business_screen": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
     "pending_interview": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
     "interviewing": {
         "unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered",
@@ -88,6 +91,9 @@ STAGE_RULE_FALLBACK = {
     "interview_passed": {
         "unprocessed_days": 15, "expiry_action": "eliminated", "deadline_basis": "stage_entered",
         "enter_talent_pool": True, "reminder_days_before": 3,
+    },
+    "hrbp_interview": {
+        "unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered",
     },
     "offer_pending": {"unprocessed_days": 0, "expiry_action": "none", "deadline_basis": "stage_entered"},
     "pending_onboard": {
@@ -131,3 +137,34 @@ ONBOARDING_CHECKLIST_FALLBACK = [
 ]
 
 INTERVIEW_ROUNDS = ["一面", "二面", "三面", "HR面试", "复试"]
+
+INTERVIEW_STAGE_ROUNDS = {
+    "interview_1": "一面",
+    "interview_2": "二面",
+    "interview_3": "三面",
+    "hr_interview": "HR面试",
+    "re_interview": "复试",
+}
+
+
+def template_interview_rounds(stages) -> list[str]:
+    """从招聘流程模板推导面试顺序，不读取职位上的旧轮次配置。"""
+    def value(stage, key, default=""):
+        if isinstance(stage, dict):
+            return stage.get(key, default)
+        return getattr(stage, key, default)
+
+    ordered = sorted(
+        stages or [],
+        key=lambda stage: int(value(stage, "sort_order", 0) or 0),
+    )
+    result = []
+    for stage in ordered:
+        round_name = INTERVIEW_STAGE_ROUNDS.get(value(stage, "stage_key", ""))
+        if not round_name:
+            stage_name = str(value(stage, "name", "") or "").strip()
+            if stage_name in INTERVIEW_ROUNDS:
+                round_name = stage_name
+        if round_name and round_name not in result:
+            result.append(round_name)
+    return result

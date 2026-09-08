@@ -21,6 +21,7 @@ export interface PoolEntry {
 
 export const POOL_SOURCE_TEXT: Record<string, string> = {
   elimination_added: '淘汰加入', offer_rejected: 'Offer拒绝加入',
+  abandoned_added: '放弃加入',
   manual: '手动加入', batch_import: '批量导入', archived: '流程归档',
 };
 

@@ -1,7 +1,7 @@
 """Offer 管理（PRD v1.1 Sprint 4）。
 
 - 集合：offers；状态严格为 草稿/待发送/已发送/已接受/已拒绝/已过期/已撤回，无审批链；
-- 创建前校验候选人/职位/应聘记录一致，且应聘记录处于 interview_passed 或 offer_pending；
+- 创建前校验候选人/职位/应聘记录一致，且应聘记录已进入录用审批后的 offer_pending 阶段；
 - 发送后应聘记录进入 offer_pending；接受后进入 pending_onboard（走乐观锁阶段流转）；
 - 拒绝/过期/撤回必须记录原因并写 operation_logs；
 - Offer 文件走现有 OSS 文件服务（files 集合存元数据），下载经登录校验，不暴露密钥；
@@ -45,7 +45,7 @@ OFFER_FLOW = {
 # 同一应聘记录同时只能有一个进行中的 Offer
 ACTIVE_STATUSES = [OF_DRAFT, OF_PENDING_SEND, OF_SENT]
 # 允许创建 Offer 的应聘记录阶段
-ALLOWED_STAGES = ["interview_passed", "offer_pending"]
+ALLOWED_STAGES = ["offer_pending", "offer_approval"]
 # 需要记录原因的动作
 REASON_REQUIRED = {"reject", "withdraw", "expire"}
 
@@ -167,7 +167,7 @@ def _check_stage_gate(app_doc: dict):
         raise BizError(BizCode.STATE_INVALID, "应聘记录已结束，不能创建 Offer")
     if app_doc.get("current_stage") not in ALLOWED_STAGES:
         raise BizError(BizCode.STATE_INVALID,
-                       "仅面试阶段（interview_passed）或 Offer 中阶段的候选人可创建 Offer")
+                       "候选人必须先经 HR 确认进入录用审批后才能创建 Offer")
 
 
 def _check_single_active(application_id: int, exclude_id: int = None):

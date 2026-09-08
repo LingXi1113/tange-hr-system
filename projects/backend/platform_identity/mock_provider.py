@@ -23,6 +23,7 @@ _USERS: list[PlatformUser] = [
     PlatformUser("hr-001", "张薇", "hr", ["hr"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("hr-002", "李娜", "hr", ["hr", "unlock"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("screen-001", "王强", "business_screener", ["business_screener"], "dept-backend", "后端研发组", _COMPANY),
+    PlatformUser("screen-002", "赵磊", "business_screener", ["business_screener"], "dept-frontend", "前端研发组", _COMPANY),
     PlatformUser("interviewer-001", "刘洋", "interviewer", ["interviewer"], "dept-tech", "技术中心", _COMPANY),
     PlatformUser("org-001", "陈静", "org_approver", ["org_approver"], "dept-hr", "人力资源部", _COMPANY),
     PlatformUser("gm-001", "赵敏", "gm", ["gm"], "dept-hr", "人力资源部", _COMPANY),

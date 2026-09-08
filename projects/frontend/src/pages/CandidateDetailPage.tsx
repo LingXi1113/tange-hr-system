@@ -1,36 +1,45 @@
-import { DeleteOutlined, EditOutlined, FileSearchOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  Button, Card, Col, Descriptions, Empty, Form, Input, List, Modal, Popconfirm, Row,
-  Select, Table, Tag, Typography, Upload,
+  Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, List, Modal, Radio, Row,
+  Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import {
-  fetchCandidate, fetchTransitions, parseResume, saveCandidate, unlockApplication, uploadResume,
+  assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
+  fetchTransitions, parseResume,
+  saveCandidate, unlockApplication, uploadResume,
 } from '@/services/candidate';
 import { fetchInterviews, INTERVIEW_STATUS_TEXT } from '@/services/interview';
 import type { Interview } from '@/services/interview';
 import { fetchOffers, OFFER_STATUS_COLOR, OFFER_STATUS_TEXT } from '@/services/offer';
 import type { Offer } from '@/services/offer';
-import { addToPool, fetchPool, removeFromPool } from '@/services/talentPool';
-import type { PoolEntry } from '@/services/talentPool';
-import type { CandidateDetail } from '@/services/candidate';
+import type { CandidateDetail, DeliveryAnalysis } from '@/services/candidate';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
-import { openProtectedFile } from '@/services/http';
+import { createProtectedFileUrl } from '@/services/http';
+import { fetchPlatformUsers } from '@/services/system';
+import type { PlatformUser } from '@/services/system';
+import { fetchJobs } from '@/services/job';
+import type { Job } from '@/services/job';
+import { abandonApplication, moveApplication } from '@/services/pipeline';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const STAGE_TEXT: Record<string, string> = {
   // PRD v1.1 默认九阶段
-  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
+  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '业务复筛',
   pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试阶段',
   offer_pending: '录用通知', pending_onboard: '待入职', onboarded: '已入职',
   // 终态
   eliminated: '淘汰', abandoned: '放弃', talent_pool: '人才库',
   // v1.0 旧阶段（兼容历史数据）
   business_screen: '业务复筛', interview_1: '一面', interview_2: '二面',
-  interview_3: '三面', hr_interview: '人力面', offer_approval: '最终筛选', offer: '录用通知',
+  interview_3: '三面', hrbp_interview: 'HRBP确认', hr_interview: '人力面', offer_approval: '最终筛选', offer: '录用通知',
   // 可选环节
   written_test: '笔试', assessment: '测评', background_check: '背调',
   re_interview: '复试', custom: '自定义',
@@ -39,7 +48,7 @@ const STAGE_TEXT: Record<string, string> = {
 function stageText(stage: string | undefined) {
   const labels: Record<string, string> = {
     ...STAGE_TEXT,
-    hr_screen_passed: '人力筛选',
+    hr_screen_passed: '业务复筛',
     offer_pending: '录用通知',
     offer: '录用通知',
     hr_interview: '人力面',
@@ -47,18 +56,53 @@ function stageText(stage: string | undefined) {
   return labels[stage ?? ''] ?? '其他阶段';
 }
 
+const OPERATION_ACTION_TEXT: Record<string, string> = {
+  create: '新建记录',
+  update: '更新信息',
+  upload: '上传文件',
+  delete: '删除记录',
+  assign_business_screener: '推荐业务复筛',
+  recommend_business_screener: '推荐业务复筛',
+  direct_interview: '直接进入面试',
+  enter_second_interview: '进入二面',
+  advance_interview_round: '推进下一轮面试',
+  reschedule: '面试改期',
+  feedback: '提交面试评价',
+  complete: '完成面试',
+  apply_conclusion_pass: '应用通过结论',
+  apply_conclusion_fail: '应用未通过结论',
+  eliminate: '淘汰候选人',
+  abandon: '放弃候选人',
+  force_unlock: '强制解锁',
+  status_reconcile: '修正流程状态',
+  add: '加入人才库',
+  add_auto: '自动加入人才库',
+  activate: '激活人才库记录',
+  remove: '移出人才库',
+};
+
+function operationActionText(action: string, kind: string) {
+  if (kind === 'resume') return action;
+  const moveMatch = action.match(/^move_(.+)_to_(.+)$/);
+  if (moveMatch) {
+    return `从${stageText(moveMatch[1])}推进到${stageText(moveMatch[2])}`;
+  }
+  return OPERATION_ACTION_TEXT[action] || '更新招聘流程';
+}
+
 const DEFAULT_STAGE_FLOW = [
-  { key: 'pending_screen', label: '\u5F85\u7B5B\u9009' },
-  { key: 'hr_screen_passed', label: '人力筛选' },
-  { key: 'business_screen', label: '\u4E1A\u52A1\u7B5B\u9009' },
-  { key: 'interview_1', label: '\u4E00\u9762' },
-  { key: 'interview_2', label: '\u4E8C\u9762' },
-  { key: 'hr_interview', label: '人力面' },
-  { key: 'offer_approval', label: '\u6700\u7EC8\u7B5B\u9009' },
+  { key: 'pending_screen', label: '简历初筛' },
+  { key: 'business_screen', label: '业务复筛' },
+  { key: 'interview_1', label: '一面（业务）' },
+  { key: 'interview_2', label: '二面（业务）' },
+  { key: 'interview_3', label: '三面' },
+  { key: 'hrbp_interview', label: 'HRBP确认' },
+  { key: 'offer_approval', label: '最终筛选' },
 ] as const;
 
 const DEFAULT_STAGE_ALIASES: Record<string, string> = {
   new_resume: 'pending_screen',
+  hr_screen_passed: 'business_screen',
   pending_interview: 'interview_1',
   interviewing: 'interview_1',
   interview_passed: 'interview_1',
@@ -73,7 +117,7 @@ const INTERVIEW_STAGE_KEYS = new Set([
 ]);
 
 const INTERVIEW_HISTORY_STAGE_KEYS = new Set([
-  ...INTERVIEW_STAGE_KEYS, 'interview_passed', 'offer_pending', 'pending_onboard', 'onboarded',
+  ...INTERVIEW_STAGE_KEYS, 'interview_passed', 'hrbp_interview', 'offer_pending', 'pending_onboard', 'onboarded',
 ]);
 
 const INTERVIEW_STAGE_ROUNDS: Record<string, string> = {
@@ -94,8 +138,18 @@ function stageFlowIndex(stageKey: string) {
   return DEFAULT_STAGE_FLOW.findIndex((stage) => stage.key === normalized);
 }
 
-function StageProgress({ currentStage, transitions }: { currentStage: string; transitions: StageTransition[] }) {
-  const reached = [currentStage, ...transitions.flatMap((item) => [item.from_stage, item.to_stage])]
+function StageProgress({ currentStage, interviewRound, transitions }: {
+  currentStage: string;
+  interviewRound?: string;
+  transitions: StageTransition[];
+}) {
+  const visibleInterviewStage = ['二面', '三面', 'HR面试', '终面'].includes(interviewRound ?? '')
+    ? ({ 二面: 'interview_2', 三面: 'interview_3', HR面试: 'interview_3', 终面: 'interview_3' } as Record<string, string>)[interviewRound ?? '']
+    : '';
+  const visibleStage = visibleInterviewStage && ['interviewing', 'interview_passed'].includes(currentStage)
+    ? visibleInterviewStage
+    : currentStage;
+  const reached = [visibleStage, ...transitions.flatMap((item) => [item.from_stage, item.to_stage])]
     .map(stageFlowIndex)
     .filter((index) => index >= 0);
   const currentIndex = reached.length ? Math.max(...reached) : -1;
@@ -141,6 +195,67 @@ function StageProgress({ currentStage, transitions }: { currentStage: string; tr
   );
 }
 
+function PdfImagePreview({ url }: { url: string }) {
+  const [pages, setPages] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const loadingTask = pdfjsLib.getDocument(url);
+    setPages([]);
+    setLoading(true);
+    setFailed(false);
+
+    loadingTask.promise.then(async (pdf) => {
+      const renderedPages: string[] = [];
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1.6 });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({
+          canvasContext: canvas.getContext('2d')!,
+          viewport,
+        }).promise;
+        renderedPages.push(canvas.toDataURL('image/png'));
+      }
+      await pdf.destroy();
+      if (active) {
+        setPages(renderedPages);
+        setLoading(false);
+      }
+    }).catch(() => {
+      if (active) {
+        setFailed(true);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      void loadingTask.destroy();
+    };
+  }, [url]);
+
+  if (loading) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在生成简历图片" />;
+  if (failed || !pages.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="简历图片生成失败" />;
+
+  return (
+    <div style={{ background: '#f5f5f5', padding: 12 }}>
+      {pages.map((page, index) => (
+        <img
+          key={`${url}-${index + 1}`}
+          src={page}
+          alt={`简历第${index + 1}页`}
+          style={{ display: 'block', width: '100%', maxWidth: 900, margin: '0 auto 12px', background: '#fff', boxShadow: '0 1px 4px rgba(0,0,0,.12)' }}
+        />
+      ))}
+    </div>
+  );
+}
+
 type ResumeFormValues = {
   version: number;
   name: string;
@@ -164,11 +279,29 @@ export function CandidateDetailPage() {
   const [transitions, setTransitions] = useState<StageTransition[]>([]);
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
-  const [poolEntry, setPoolEntry] = useState<PoolEntry | null>(null);
-  const [poolModalOpen, setPoolModalOpen] = useState(false);
-  const [poolCategory, setPoolCategory] = useState('');
-  const [poolReason, setPoolReason] = useState('');
+  const [businessUsers, setBusinessUsers] = useState<PlatformUser[]>([]);
+  const [businessScreenerId, setBusinessScreenerId] = useState('');
+  const [businessJobId, setBusinessJobId] = useState<number | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [businessAssignOpen, setBusinessAssignOpen] = useState(false);
+  const [businessAssignSaving, setBusinessAssignSaving] = useState(false);
+  const [offerJobOpen, setOfferJobOpen] = useState(false);
+  const [offerJobId, setOfferJobId] = useState<number | null>(null);
+  const [offerJobSaving, setOfferJobSaving] = useState(false);
   const [resumeEditOpen, setResumeEditOpen] = useState(false);
+  const [deliveryAnalysisOpen, setDeliveryAnalysisOpen] = useState(false);
+  const [deliveryAnalysisLoading, setDeliveryAnalysisLoading] = useState(false);
+  const [deliveryAnalysis, setDeliveryAnalysis] = useState<DeliveryAnalysis | null>(null);
+  const [screeningCategory, setScreeningCategory] = useState<'all' | 'recommendation' | 'interview' | 'offer'>('all');
+  const [abandonOpen, setAbandonOpen] = useState(false);
+  const [abandonReason, setAbandonReason] = useState('面试未通过');
+  const [abandonToPool, setAbandonToPool] = useState(false);
+  const [abandonSaving, setAbandonSaving] = useState(false);
+  const [resumePreviews, setResumePreviews] = useState<Record<number, {
+    fileName: string;
+    url: string;
+    mimeType: string;
+  }>>({});
   const [resumeForm] = Form.useForm<ResumeFormValues>();
 
   const load = useCallback(async () => {
@@ -208,16 +341,60 @@ export function CandidateDetailPage() {
   useEffect(() => {
     if (id) {
       fetchOffers({ candidate_id: Number(id), page_size: 50 }).then((d) => setOffers(d.list));
-      fetchPool({ candidate_id: Number(id), page_size: 1 }).then((d) => setPoolEntry(d.list[0] ?? null));
     }
   }, [id]);
+
+  useEffect(() => {
+    if (['hr', 'super_admin'].some((role) => user?.role === role || user?.roles?.includes(role))) {
+      fetchPlatformUsers().then((users) => setBusinessUsers(
+        users.filter((item) => item.role === 'business_screener'),
+      ));
+      fetchJobs({ page_size: 100 }).then((data) => setJobs(data.list));
+    }
+  }, [user?.role]);
+
+  useEffect(() => {
+    let active = true;
+    const createdUrls: string[] = [];
+
+    async function loadResumePreviews() {
+      if (!detail?.attachments.length) {
+        setResumePreviews({});
+        return;
+      }
+      const entries = await Promise.all(detail.attachments.map(async (attachment) => {
+        try {
+          const preview = await createProtectedFileUrl(`/api/attachments/${attachment.id}`);
+          createdUrls.push(preview.url);
+          return [attachment.id, {
+            fileName: attachment.file_name,
+            url: preview.url,
+            mimeType: preview.mimeType,
+          }] as const;
+        } catch {
+          return null;
+        }
+      }));
+      if (active) {
+        setResumePreviews(Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null)));
+      }
+    }
+
+    void loadResumePreviews();
+    return () => {
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [detail?.attachments]);
 
   if (loading && !detail) return <PageLoading />;
   if (!detail) return <Empty description="候选人不存在" />;
 
   const canUnlock = user?.roles?.includes('unlock');
-  const canManage = user?.role === 'hr';
-  const canResume = ['hr', 'business_screener', 'interviewer'].includes(user?.role ?? '');
+  const canManage = ['hr', 'super_admin'].some((role) => user?.role === role || user?.roles?.includes(role));
+  const canResume = ['hr', 'super_admin', 'business_screener', 'interviewer'].some(
+    (role) => user?.role === role || user?.roles?.includes(role),
+  );
   const candidate = detail;
   const selectedApplication = detail.applications.find((application) => application.id === selectedAppId)
     ?? detail.applications[0];
@@ -235,15 +412,112 @@ export function CandidateDetailPage() {
     interview.round === expectedInterviewRound && interview.status !== 'cancelled');
   const interviewPassed = interviews.some((interview) => (
     interview.status === 'completed'
-    && interview.conclusion_applied === true
-    && interview.conclusion_action === 'pass'
+    && (interview.conclusion_action === 'pass' || interview.feedback_conclusion === 'pass')
   ));
+  const canEnterSecondInterview = Boolean(
+    canManage
+      && selectedApplication
+      && ['interview_passed', 'interviewing', 'interview_1'].includes(selectedApplication.current_stage)
+      && !['二面', '三面', 'HR面试', '终面', '终面（HR）'].includes(selectedApplication.interview_round ?? ''),
+  );
+  const alreadyInSecondInterview = Boolean(
+    selectedApplication?.current_stage === 'interviewing'
+      && selectedApplication.interview_round === '二面',
+  );
+  const canEnterFinalInterview = Boolean(
+    canManage
+      && selectedApplication
+      && (
+        selectedApplication.current_stage === 'interview_2'
+        || (selectedApplication.current_stage === 'interviewing'
+          && selectedApplication.interview_round === '二面')
+        || (selectedApplication.current_stage === 'interview_passed'
+          && selectedApplication.interview_round === '二面')
+      ),
+  );
+  const alreadyInFinalInterview = Boolean(
+    selectedApplication?.current_stage === 'interview_3'
+      || selectedApplication?.current_stage === 'hr_interview'
+      || (selectedApplication?.current_stage === 'interviewing'
+        && ['三面', 'HR面试', '终面'].includes(selectedApplication.interview_round ?? '')),
+  );
+  const alreadyInHrbpInterview = selectedApplication?.current_stage === 'hrbp_interview';
+  const canSkipInterviewToOffer = Boolean(
+    canManage && selectedApplication?.status === 'in_progress'
+      && ![
+        'offer_pending', 'offer_approval', 'offer', 'pending_onboard', 'onboarded',
+        'eliminated', 'abandoned', 'talent_pool',
+      ].includes(selectedApplication.current_stage),
+  );
+  const canEnterOfferApproval = Boolean(
+    canManage && (!selectedApplication || canSkipInterviewToOffer),
+  );
   const currentOffers = offers.filter((offer) => offer.application_id === selectedApplication?.id);
   const canCreateOffer = Boolean(
     canManage && interviewPassed
-      && ['interview_passed', 'offer_pending'].includes(selectedApplication?.current_stage ?? '')
+      && ['offer_pending', 'offer_approval'].includes(selectedApplication?.current_stage ?? '')
       && !currentOffers.some((offer) => ['draft', 'pending_send', 'sent'].includes(offer.status)),
   );
+  // 流程入口对所有候选人阶段都展示，具体动作再按当前阶段和权限控制。
+  const isBusinessScreener = user?.role === 'business_screener' || user?.roles?.includes('business_screener');
+  const canApproveBusinessScreen = Boolean(
+    isBusinessScreener
+      && selectedApplication?.current_stage === 'business_screen'
+      && selectedApplication.business_screener_id === user?.user_id,
+  );
+  const canShowFlowButton = Boolean(detail);
+  const canArrangeFlow = Boolean(
+    ['new_resume', 'pending_screen', 'hr_screen_passed', 'business_screen'].includes(selectedApplication?.current_stage ?? ''),
+  );
+  const canDirectInterview = Boolean(
+    canManage && (!selectedApplication || canArrangeFlow)
+      || canApproveBusinessScreen,
+  );
+  const canOfferFlowAction = canEnterOfferApproval;
+  const canUseFlowButton = canDirectInterview || canEnterSecondInterview
+    || canEnterFinalInterview || canOfferFlowAction || canCreateOffer;
+  const flowPrimaryLabel = canApproveBusinessScreen
+    ? '通过业务复筛'
+    : canEnterFinalInterview
+      ? '进入三面'
+      : canEnterSecondInterview
+        ? '进入二面（业务）'
+        : alreadyInFinalInterview
+          ? '三面进行中'
+          : alreadyInSecondInterview
+            ? '二面进行中'
+            : alreadyInHrbpInterview
+              ? '进入录用审批'
+              : canDirectInterview
+                ? '进入一面（业务）'
+                : canCreateOffer
+                  ? '创建 Offer'
+                  : selectedApplication
+                    ? `当前阶段：${stageText(selectedApplication.current_stage)}`
+                    : '进入一面（业务）';
+  const inInterviewStage = Boolean(
+    selectedApplication && INTERVIEW_STAGE_KEYS.has(selectedApplication.current_stage),
+  );
+  const canAbandon = Boolean(
+    canManage && selectedApplication
+      && ['in_progress', 'pending_onboard'].includes(selectedApplication.status)
+      && !['abandoned', 'eliminated', 'talent_pool', 'onboarded'].includes(selectedApplication.current_stage),
+  );
+  const flowActionItems = [
+    ...(canManage ? [{ key: 'business', label: '推给业务复筛', disabled: !canArrangeFlow }] : []),
+    { key: 'interview_1', label: '进入一面（业务）', disabled: !canDirectInterview },
+    { key: 'interview_2', label: '进入二面（业务）', disabled: !canEnterSecondInterview },
+    { key: 'final_interview', label: '进入三面', disabled: !canEnterFinalInterview },
+    { key: 'hrbp_interview', label: 'HRBP确认', disabled: true },
+    {
+      key: 'offer_approval',
+      label: '进入录用审批',
+      disabled: !canOfferFlowAction,
+    },
+    { key: 'offer', label: '创建 Offer', disabled: !canCreateOffer },
+    { key: 'pending_onboard', label: '进入待入职', disabled: true },
+    { key: 'onboarded', label: '进入入职', disabled: true },
+  ];
 
   function openResumeEditor(values?: Partial<ResumeFormValues>) {
     resumeForm.setFieldsValue({
@@ -274,6 +548,160 @@ export function CandidateDetailPage() {
     await load();
   }
 
+  async function openDeliveryAnalysis() {
+    setDeliveryAnalysisOpen(true);
+    setDeliveryAnalysisLoading(true);
+    try {
+      setDeliveryAnalysis(await fetchDeliveryAnalysis(candidate.id));
+    } finally {
+      setDeliveryAnalysisLoading(false);
+    }
+  }
+
+  async function handleAssignBusiness() {
+    const screenerId = businessScreenerId || selectedApplication?.business_screener_id || '';
+    if (!screenerId) {
+      msg.error('请选择业务复筛人员');
+      return;
+    }
+    if (!selectedApplication && !businessJobId) {
+      msg.error('请先选择应聘职位');
+      return;
+    }
+    if (selectedApplication && !canArrangeFlow) {
+      msg.error(`当前阶段“${stageText(selectedApplication.current_stage)}”无法推荐给业务复筛`);
+      return;
+    }
+    if (businessAssignSaving) return;
+    setBusinessAssignSaving(true);
+    try {
+      const application = selectedApplication
+        ?? await assignJob(Number(id), businessJobId!, 'business_recommendation');
+      await assignBusinessScreener(application.id, screenerId, application.version);
+      msg.success('已推送给业务复筛人员');
+      setBusinessAssignOpen(false);
+      setSelectedAppId(application.id);
+      await load();
+      setTransitions(await fetchTransitions(application.id));
+    } finally {
+      setBusinessAssignSaving(false);
+    }
+  }
+
+  function openBusinessAssign() {
+    setBusinessScreenerId(selectedApplication?.business_screener_id ?? '');
+    setBusinessJobId(selectedApplication?.job_id ?? null);
+    setBusinessAssignOpen(true);
+  }
+
+  async function handleDirectInterview() {
+    if (!selectedApplication) {
+      navigate(`/interviews?candidate_id=${id}&open=1`);
+      return;
+    }
+    await directInterview(selectedApplication.id, selectedApplication.version);
+    msg.success('已直接进入面试阶段，请安排面试');
+    await load();
+    setTransitions(await fetchTransitions(selectedApplication.id));
+  }
+
+  async function handleEnterSecondInterview() {
+    if (!selectedApplication || !canEnterSecondInterview) {
+      msg.warning('请先完成并通过一面评价');
+      return;
+    }
+    await enterNextInterview(selectedApplication.id, selectedApplication.version);
+    msg.success('已进入二面，请安排二面面试');
+    await load();
+    setTransitions(await fetchTransitions(selectedApplication.id));
+  }
+
+  async function handleEnterFinalInterview() {
+    if (!selectedApplication || !canEnterFinalInterview) {
+      if (alreadyInFinalInterview) {
+        msg.info('候选人已进入三面，请点击“安排面试”');
+      } else {
+        msg.warning('请先完成并通过二面评价');
+      }
+      return;
+    }
+    await enterNextInterview(selectedApplication.id, selectedApplication.version);
+    msg.success('已进入三面，请安排三面面试');
+    await load();
+    setTransitions(await fetchTransitions(selectedApplication.id));
+  }
+
+  async function handleEnterOfferApproval() {
+    if (!selectedApplication || !canOfferFlowAction) {
+      if (!canOfferFlowAction) {
+        msg.warning('仅 HR 或超级管理员可以进入录用审批');
+        return;
+      }
+      if (!jobs.length) {
+        msg.error('暂无可用职位，请先维护职位信息');
+        return;
+      }
+      setOfferJobId(jobs[0].id);
+      setOfferJobOpen(true);
+      return;
+    }
+    await moveApplication(selectedApplication.id, {
+      to_stage: 'offer_approval',
+      reason: 'HR进入录用审批',
+      version: selectedApplication.version,
+    });
+    msg.success('已进入录用审批');
+    await load();
+    setTransitions(await fetchTransitions(selectedApplication.id));
+  }
+
+  async function confirmDirectOfferApproval() {
+    if (!offerJobId || offerJobSaving) return;
+    setOfferJobSaving(true);
+    try {
+      const application = await assignJob(Number(id), offerJobId, 'hr_direct_offer');
+      const updated = await moveApplication(application.id, {
+        to_stage: 'offer_pending',
+        reason: 'HR跳过面试直接进入录用审批',
+        version: application.version,
+      });
+      msg.success('已创建应聘记录并进入录用审批');
+      setOfferJobOpen(false);
+      setSelectedAppId(updated.id);
+      await load();
+      setTransitions(await fetchTransitions(updated.id));
+    } finally {
+      setOfferJobSaving(false);
+    }
+  }
+
+  function handleArrangeInterview() {
+    if (!selectedApplication || !canScheduleInterview) {
+      msg.warning('当前阶段暂不能安排面试');
+      return;
+    }
+    navigate(
+      currentInterview
+        ? `/interviews?interview_id=${currentInterview.id}&open=1`
+        : `/interviews?candidate_id=${id}&application_id=${selectedApplication.id}&open=1`,
+    );
+  }
+
+  async function handleAbandon() {
+    if (!selectedApplication || !abandonReason || abandonSaving) return;
+    setAbandonSaving(true);
+    try {
+      await abandonApplication(selectedApplication.id, abandonReason, selectedApplication.version, abandonToPool);
+      msg.success(abandonToPool ? '候选人已放弃并加入人才库' : '候选人已放弃，流程已结束');
+      setAbandonOpen(false);
+      setAbandonToPool(false);
+      await load();
+      setTransitions(await fetchTransitions(selectedApplication.id));
+    } finally {
+      setAbandonSaving(false);
+    }
+  }
+
   return (
     <div>
       <div className="page-head">
@@ -287,13 +715,40 @@ export function CandidateDetailPage() {
         </h2>
         <Button onClick={() => navigate('/candidates')}>返回列表</Button>
       </div>
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Row align="middle" justify="space-between" gutter={[16, 12]}>
+          <Col flex="1 1 520px">
+            <Space align="start" size={14}>
+              <Avatar size={64} style={{ background: '#eef2f5', color: '#8a969f', fontSize: 28 }}>
+                {detail.name.slice(0, 1)}
+              </Avatar>
+              <div>
+                <Typography.Title level={3} style={{ margin: 0 }}>{detail.name}</Typography.Title>
+                <Typography.Text type="secondary">
+                  {detail.gender || '未填写'}　·　{detail.city || '城市未填写'}　·　{detail.source || '来源未填写'}
+                </Typography.Text>
+                <div style={{ marginTop: 8 }}>
+                  <Typography.Text>{detail.phone}</Typography.Text>
+                  <Typography.Text type="secondary">　|　</Typography.Text>
+                  <Typography.Text>{detail.email}</Typography.Text>
+                  {selectedApplication?.business_screener_name && (
+                    <Tag color="blue" style={{ marginLeft: 12 }}>
+                      业务复筛：{selectedApplication.business_screener_name}
+                    </Tag>
+                  )}
+                </div>
+              </div>
+            </Space>
+          </Col>
+        </Row>
+      </Card>
       <Row gutter={16}>
-        <Col xs={24} lg={12}>
+        <Col xs={24} lg={15}>
           <Card
             title="基本信息" size="small" style={{ marginBottom: 16 }}
-            extra={canCreateOffer ? (
+            extra={canManage ? (
               <Button size="small" icon={<EditOutlined />} onClick={() => openResumeEditor()}>
-                维护简历
+                编辑基本信息
               </Button>
             ) : null}
           >
@@ -304,125 +759,194 @@ export function CandidateDetailPage() {
               <Descriptions.Item label="邮箱">{detail.email}</Descriptions.Item>
               <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
               <Descriptions.Item label="负责人">{detail.owner_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="教育经历" span={2}>
+                {detail.education.length
+                  ? detail.education.map((item) => [item.school, item.major, item.degree, item.graduate_at]
+                    .filter(Boolean).join(' · ')).filter(Boolean).join('；')
+                  : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="标签" span={2}>{detail.tags || '-'}</Descriptions.Item>
               <Descriptions.Item label="备注" span={2}>{detail.remark || '-'}</Descriptions.Item>
             </Descriptions>
           </Card>
           <Card
             title="简历附件" size="small" style={{ marginBottom: 16 }}
-            extra={canResume ? (
-              <Upload
-                showUploadList={false} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"
-                beforeUpload={async (file) => {
-                  const up = await uploadResume(file as File, detail.id);
-                  msg.success('简历已上传');
-                  const parsed = await parseResume(up.attachment_id);
-                  if (parsed.parse_status === 'system') {
-                    const fields = parsed.fields;
-                    if (canManage) {
-                      openResumeEditor({
-                        name: fields.name || detail.name,
-                        gender: fields.gender || detail.gender,
-                        phone: fields.phone || detail.phone,
-                        email: fields.email || detail.email,
-                        education: fields.education?.length ? fields.education : detail.education,
-                        work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
-                      });
-                    } else {
-                      Modal.info({
-                        title: '解析结果',
-                        content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre>,
-                      });
-                    }
-                  } else {
-                    msg.error(parsed.message);
-                  }
-                  void load();
-                  return false;
-                }}
-              >
-                <Button size="small" icon={<UploadOutlined />}>上传简历</Button>
-              </Upload>
-            ) : null}
+            extra={(
+              <Space>
+                <Button size="small" type="primary" ghost onClick={() => void openDeliveryAnalysis()}>
+                  投递分析
+                </Button>
+                {canResume ? (
+                  <Upload
+                    showUploadList={false} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"
+                    beforeUpload={async (file) => {
+                      const up = await uploadResume(file as File, detail.id);
+                      msg.success('简历已上传');
+                      const parsed = await parseResume(up.attachment_id);
+                      if (parsed.parse_status === 'system') {
+                        const fields = parsed.fields;
+                        if (canManage) {
+                          openResumeEditor({
+                            name: fields.name || detail.name,
+                            gender: fields.gender || detail.gender,
+                            phone: fields.phone || detail.phone,
+                            email: fields.email || detail.email,
+                            education: fields.education?.length ? fields.education : detail.education,
+                            work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
+                          });
+                        } else {
+                          Modal.info({
+                            title: '解析结果',
+                            content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre>,
+                          });
+                        }
+                      } else {
+                        msg.error(parsed.message);
+                      }
+                      void load();
+                      return false;
+                    }}
+                  >
+                    <Button size="small" icon={<UploadOutlined />}>上传简历</Button>
+                  </Upload>
+                ) : null}
+              </Space>
+            )}
           >
             <List
               size="small"
               locale={{ emptyText: '暂无附件' }}
               dataSource={detail.attachments}
               renderItem={(a) => (
-                <List.Item
-                  actions={[
-                    <Button key="view" size="small" type="link" icon={<FileSearchOutlined />}
-                      onClick={() => void openProtectedFile(`/api/attachments/${a.id}`)}>
-                      预览
-                    </Button>,
-                  ]}
-                >
+                <List.Item>
                   {a.file_name}
                   {a.parse_status === 'system' && <Tag color="success" style={{ marginLeft: 8 }}>系统解析</Tag>}
                   {a.parse_status === 'failed' && <Tag color="warning" style={{ marginLeft: 8 }}>解析失败·人工录入</Tag>}
                 </List.Item>
               )}
             />
-          </Card>
-          <Card title="教育经历" size="small" style={{ marginBottom: 16 }}>
-            <List
-              size="small" locale={{ emptyText: '暂无' }} dataSource={detail.education}
-              renderItem={(e) => (
-                <List.Item>{`${e.school ?? ''} · ${e.major ?? ''} · ${e.degree ?? ''} · ${e.graduate_at ?? ''}`}</List.Item>
-              )}
-            />
-          </Card>
-          <Card title="工作经历" size="small">
-            <List
-              size="small" locale={{ emptyText: '暂无' }} dataSource={detail.work_experience}
-              renderItem={(w) => (
-                <List.Item>{`${w.company ?? ''} · ${w.position ?? ''}（${w.start ?? ''} ~ ${w.end ?? ''}）`}</List.Item>
-              )}
-            />
+            {detail.attachments.map((attachment) => {
+              const preview = resumePreviews[attachment.id];
+              const isPdf = Boolean(preview && (
+                preview.mimeType === 'application/pdf'
+                || preview.fileName.toLowerCase().endsWith('.pdf')
+              ));
+              const isImage = Boolean(preview?.mimeType.startsWith('image/'));
+              return (
+                <div key={`resume-content-${attachment.id}`} style={{ marginTop: 16 }}>
+                  <Typography.Title level={5} style={{ marginBottom: 8 }}>
+                    简历内容
+                  </Typography.Title>
+                  {preview && isPdf ? (
+                    <PdfImagePreview url={preview.url} />
+                  ) : preview && isImage ? (
+                    <div style={{ maxHeight: '900px', overflow: 'auto', textAlign: 'center', background: '#fafafa', padding: 12 }}>
+                      <img src={preview.url} alt={preview.fileName} style={{ maxWidth: '100%' }} />
+                    </div>
+                  ) : preview ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该文件格式暂不支持直接展示" />
+                  ) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在加载简历内容" />
+                  )}
+                </div>
+              );
+            })}
           </Card>
         </Col>
-        <Col xs={24} lg={12}>
-          <Card title="应聘记录（点击切换查看过程）" size="small" style={{ marginBottom: 16 }}>
-            <Table
-              rowKey="id" size="small" pagination={false} dataSource={detail.applications}
-              locale={{ emptyText: '暂无应聘记录' }}
-              rowClassName={(r) => (r.id === selectedAppId ? 'ant-table-row-selected' : '')}
-              onRow={(r) => ({ onClick: () => setSelectedAppId(r.id), style: { cursor: 'pointer' } })}
-              columns={[
-                { title: '职位', dataIndex: 'job_name' },
-                { title: '阶段', dataIndex: 'current_stage', width: 100, render: (v: string) => stageText(v) },
-                { title: '状态', dataIndex: 'status', width: 90 },
-                { title: '进入时间', dataIndex: 'stage_entered_at', width: 150 },
-              ]}
-            />
-          </Card>
+        <Col xs={24} lg={9}>
           <Card
             title="阶段流转记录" size="small" style={{ marginBottom: 16 }}
             extra={
-              canUnlock && detail.applications.some((a) => a.id === selectedAppId && a.status === 'in_progress') ? (
-                <Button
-                  size="small" danger
-                  onClick={() => {
-                    Modal.confirm({
-                      title: '强制解锁（将记录操作日志）',
-                      content: '请输入解锁原因',
-                      onOk: async () => {
-                        const reason = window.prompt('解锁原因');
-                        if (!reason) return;
-                        await unlockApplication(selectedAppId!, reason);
-                        msg.success('已解锁');
-                        void load();
-                      },
-                    });
-                  }}
-                >
-                  强制解锁
-                </Button>
-              ) : null
+              <Space>
+                {canUnlock && detail.applications.some((a) => a.id === selectedAppId && a.status === 'in_progress') && (
+                  <Button
+                    size="small" danger
+                    onClick={() => {
+                      Modal.confirm({
+                        title: '强制解锁（将记录操作日志）',
+                        content: '请输入解锁原因',
+                        onOk: async () => {
+                          const reason = window.prompt('解锁原因');
+                          if (!reason) return;
+                          await unlockApplication(selectedAppId!, reason);
+                          msg.success('已解锁');
+                          void load();
+                        },
+                      });
+                    }}
+                  >
+                    强制解锁
+                  </Button>
+                )}
+              </Space>
             }
           >
-            <StageProgress currentStage={selectedApplication?.current_stage ?? 'pending_screen'} transitions={transitions} />
+            {canShowFlowButton && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                <Space>
+                  <Dropdown.Button
+                  type="primary"
+                  disabled={!canUseFlowButton}
+                  menu={{
+                    items: flowActionItems,
+                    onClick: ({ key }) => {
+                      if (key === 'business') openBusinessAssign();
+                      if (key === 'interview_1') void handleDirectInterview();
+                      if (key === 'interview_2') void handleEnterSecondInterview();
+                      if (key === 'final_interview') void handleEnterFinalInterview();
+                      if (key === 'offer_approval') void handleEnterOfferApproval();
+                      if (key === 'offer' && canCreateOffer) navigate(`/offers?new=1&candidate=${id}`);
+                    },
+                  }}
+                  onClick={() => {
+                    if (canEnterFinalInterview) {
+                      void handleEnterFinalInterview();
+                    } else if (canEnterSecondInterview) {
+                      void handleEnterSecondInterview();
+                    } else if (alreadyInFinalInterview) {
+                      msg.info('候选人已进入三面，请点击“安排面试”');
+                    } else if (alreadyInSecondInterview) {
+                      msg.info('候选人已进入二面，请点击“安排面试”');
+                    } else if (alreadyInHrbpInterview) {
+                      void handleEnterOfferApproval();
+                    } else if (canCreateOffer) {
+                      navigate(`/offers?new=1&candidate=${id}`);
+                    } else {
+                      void handleDirectInterview();
+                    }
+                  }}
+                  >
+                  {flowPrimaryLabel}
+                  </Dropdown.Button>
+                  {inInterviewStage ? (
+                    <Button
+                      type="primary"
+                      ghost
+                      disabled={!canScheduleInterview}
+                      onClick={handleArrangeInterview}
+                    >
+                      安排面试
+                    </Button>
+                  ) : canManage ? (
+                    <Button
+                      type="primary"
+                      ghost
+                      onClick={openBusinessAssign}
+                    >
+                      推荐
+                    </Button>
+                  ) : null}
+                  <Button danger ghost disabled={!canAbandon} onClick={() => setAbandonOpen(true)}>
+                    放弃
+                  </Button>
+                </Space>
+              </div>
+            )}
+            <StageProgress
+              currentStage={selectedApplication?.current_stage ?? 'pending_screen'}
+              interviewRound={selectedApplication?.interview_round}
+              transitions={transitions}
+            />
             {false && transitions.length ? (
               <Timeline
                 items={transitions.map((t) => ({
@@ -505,55 +1029,107 @@ export function CandidateDetailPage() {
               ]}
             />
           </Card>
-          <Card
-            title="人才库" size="small" style={{ marginBottom: 16 }}
-            extra={canManage ? (
-              poolEntry ? (
-                <Popconfirm
-                  title="确认移出人才库？"
-                  onConfirm={async () => {
-                    await removeFromPool(poolEntry.id);
-                    msg.success('已移出人才库');
-                    setPoolEntry(null);
-                  }}
-                >
-                  <Button size="small" danger>移出人才库</Button>
-                </Popconfirm>
-              ) : (
-                <Button size="small" type="primary" onClick={() => setPoolModalOpen(true)}>
-                  加入人才库
-                </Button>
-              )
-            ) : null}
-          >
-            {poolEntry ? (
-              <Descriptions column={1} size="small">
-                <Descriptions.Item label="状态">
-                  {poolEntry.status === 'active' ? '待激活' : '已激活'}
-                </Descriptions.Item>
-                <Descriptions.Item label="分类">{poolEntry.category || '-'}</Descriptions.Item>
-                <Descriptions.Item label="标签">
-                  {poolEntry.tags?.length ? poolEntry.tags.join('、') : '-'}
-                </Descriptions.Item>
-                <Descriptions.Item label="来源">{poolEntry.source_text}</Descriptions.Item>
-                <Descriptions.Item label="加入原因">{poolEntry.reason || '-'}</Descriptions.Item>
-                <Descriptions.Item label="加入时间">{poolEntry.created_at}</Descriptions.Item>
-              </Descriptions>
-            ) : (
-              <Empty description="暂未加入人才库" />
-            )}
-          </Card>
-          <Card title="操作日志" size="small">
+          <Card title="筛选记录" size="small">
+            <div style={{ marginBottom: 12 }}>
+              <Segmented
+                value={screeningCategory}
+                onChange={(value) => setScreeningCategory(value as typeof screeningCategory)}
+                options={[
+                  { label: '全部', value: 'all' },
+                  { label: '推荐相关', value: 'recommendation' },
+                  { label: '面试相关', value: 'interview' },
+                  { label: '录用相关', value: 'offer' },
+                ]}
+              />
+            </div>
             <List
-              size="small" locale={{ emptyText: '暂无日志' }}
-              dataSource={detail.operation_logs.slice(0, 20)}
+              size="small" locale={{ emptyText: '暂无筛选记录' }}
+              dataSource={detail.screening_records
+                .filter((record) => screeningCategory === 'all' || record.category === screeningCategory)
+                .slice(0, 50)}
               renderItem={(l) => (
-                <List.Item>{`${l.operator_name} ${l.action}（${l.detail || ''}） · ${l.created_at}`}</List.Item>
+                <List.Item style={{ display: 'block', padding: '8px 0 12px' }}>
+                  <div style={{
+                    padding: '8px 12px', background: '#f5f6f8', borderRadius: 4,
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    <Typography.Text strong>{l.operator_name || '系统'}</Typography.Text>
+                    <Typography.Text>
+                      {l.type === 'recommendation'
+                        ? '推荐了候选人'
+                        : l.type === 'interview_reschedule' ? '改期了面试' : '推进了候选人'}
+                    </Typography.Text>
+                    <Typography.Text type="secondary" style={{ marginLeft: 'auto' }}>
+                      {l.created_at}
+                    </Typography.Text>
+                  </div>
+                  <div style={{
+                    marginLeft: 16, padding: '8px 12px 2px',
+                    borderLeft: '2px solid #d9dfe8',
+                  }}>
+                    {l.from_stage && l.to_stage && (
+                      <Typography.Text strong>
+                        {l.from_stage} → {l.to_stage}
+                      </Typography.Text>
+                    )}
+                    <div style={{ marginTop: 4, color: '#667085' }}>
+                      {l.detail || (l.type === 'recommendation' ? '已推荐给业务复筛人员' : '阶段已更新')}
+                    </div>
+                  </div>
+                </List.Item>
               )}
             />
           </Card>
         </Col>
       </Row>
+      <Modal
+        title={`投递分析：${detail.name}`}
+        open={deliveryAnalysisOpen}
+        width={1120}
+        footer={null}
+        destroyOnClose
+        onCancel={() => setDeliveryAnalysisOpen(false)}
+      >
+        {deliveryAnalysisLoading ? (
+          <PageLoading tip="正在加载投递分析" />
+        ) : deliveryAnalysis ? (
+          <>
+            <Row gutter={[12, 12]} style={{ marginBottom: 18 }}>
+              <Col xs={12} sm={6}>
+                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.total_deliveries}</Typography.Title><Typography.Text type="secondary">投递次数</Typography.Text></Card>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.highest_stage}</Typography.Title><Typography.Text type="secondary">最高到达阶段</Typography.Text></Card>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.passed_interviews}/{deliveryAnalysis.summary.evaluated_interviews}</Typography.Title><Typography.Text type="secondary">面试评价通过/已评价</Typography.Text></Card>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.interview_pass_rate}%</Typography.Title><Typography.Text type="secondary">面试评价通过率</Typography.Text></Card>
+              </Col>
+            </Row>
+            <Typography.Title level={5} style={{ margin: '8px 0 12px' }}>操作时间线</Typography.Title>
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              scroll={{ x: 900 }}
+              dataSource={deliveryAnalysis.activities}
+              columns={[
+                { title: '时间', dataIndex: 'created_at', width: 170 },
+                { title: '类型', dataIndex: 'kind', width: 100, render: (value: string) => value === 'resume' ? '简历投递' : 'HR操作' },
+                { title: '操作人', dataIndex: 'operator_name', width: 120 },
+                {
+                  title: '操作内容', dataIndex: 'title', width: 180,
+                  render: (value: string, record) => operationActionText(value, record.kind),
+                },
+                { title: '详细说明', dataIndex: 'detail' },
+                { title: '关联职位', dataIndex: 'job_name', width: 150, render: (value: string) => value || '-' },
+              ]}
+            />
+          </>
+        ) : <Empty description="暂无投递分析数据" />}
+      </Modal>
       <Modal
         title="维护候选人简历"
         open={resumeEditOpen}
@@ -670,34 +1246,100 @@ export function CandidateDetailPage() {
         </Form>
       </Modal>
       <Modal
-        title="加入人才库"
-        open={poolModalOpen}
-        onCancel={() => setPoolModalOpen(false)}
-        onOk={async () => {
-          if (!id) return;
-          await addToPool({
-            candidate_id: Number(id),
-            category: poolCategory || undefined,
-            reason: poolReason || undefined,
-            source: 'manual',
-          });
-          msg.success('已加入人才库');
-          setPoolModalOpen(false);
-          fetchPool({ candidate_id: Number(id), page_size: 1 }).then((d) => setPoolEntry(d.list[0] ?? null));
+        title="选择职位并进入录用审批"
+        open={offerJobOpen}
+        onCancel={() => setOfferJobOpen(false)}
+        onOk={() => void confirmDirectOfferApproval()}
+        okButtonProps={{
+          disabled: !offerJobId,
+          loading: offerJobSaving,
         }}
+        okText="确认进入录用审批"
+        cancelText="取消"
       >
-        <p>分类</p>
+        <Typography.Paragraph type="secondary">
+          当前候选人还没有应聘记录。请选择职位，系统会先创建应聘记录，再直接进入录用审批。
+        </Typography.Paragraph>
         <Select
-          style={{ width: '100%', marginBottom: 12 }} allowClear placeholder="选择分类"
-          value={poolCategory || undefined}
-          onChange={(v) => setPoolCategory(v ?? '')}
-          options={[
-            { value: 'tech', label: '技术类' }, { value: 'product', label: '产品类' },
-            { value: 'sales', label: '销售类' }, { value: 'general', label: '综合类' },
-          ]}
+          style={{ width: '100%' }}
+          placeholder="请选择应聘职位"
+          value={offerJobId ?? undefined}
+          onChange={(value) => setOfferJobId(value ?? null)}
+          options={jobs.map((job) => ({ value: job.id, label: job.name }))}
         />
-        <p>加入原因</p>
-        <Input.TextArea rows={2} value={poolReason} onChange={(e) => setPoolReason(e.target.value)} />
+      </Modal>
+      <Modal
+        title="选择业务复筛人员"
+        open={businessAssignOpen}
+        onCancel={() => setBusinessAssignOpen(false)}
+        onOk={() => void handleAssignBusiness()}
+        okButtonProps={{
+          disabled: !(businessScreenerId || selectedApplication?.business_screener_id)
+            || (!selectedApplication && !businessJobId),
+          loading: businessAssignSaving,
+        }}
+        okText="确认推送"
+        cancelText="取消"
+      >
+        <Typography.Paragraph type="secondary">
+          推送后候选人进入“业务复筛”阶段，并由指定业务人员负责后续面试评价。
+        </Typography.Paragraph>
+        {!selectedApplication && (
+          <Select
+            style={{ width: '100%', marginBottom: 12 }}
+            placeholder="请选择应聘职位"
+            value={businessJobId ?? undefined}
+            onChange={(value) => setBusinessJobId(value ?? null)}
+            options={jobs.map((job) => ({ value: job.id, label: job.name }))}
+          />
+        )}
+        <Select
+          style={{ width: '100%' }}
+          placeholder="请选择业务复筛人员"
+          value={businessScreenerId || selectedApplication?.business_screener_id || undefined}
+          onChange={(value) => setBusinessScreenerId(value ?? '')}
+          options={businessUsers.map((item) => ({ value: item.user_id, label: `${item.name}（${item.dept_name}）` }))}
+        />
+      </Modal>
+      <Modal
+        title="放弃简历"
+        open={abandonOpen}
+        width={760}
+        onCancel={() => setAbandonOpen(false)}
+        onOk={() => void handleAbandon()}
+        okText="确定"
+        cancelText="取消"
+        confirmLoading={abandonSaving}
+        okButtonProps={{ disabled: !abandonReason }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18, padding: '8px 0 20px' }}>
+          <Avatar size={72}>{candidate.name?.slice(0, 1) || '候'}</Avatar>
+          <div>
+            <Typography.Title level={3} style={{ margin: 0 }}>{candidate.name}</Typography.Title>
+            <Typography.Text type="secondary">
+              {selectedApplication?.job_name || '当前应聘职位'}
+              {'  ·  '}{candidate.phone || '-'} / {candidate.email || '-'}
+            </Typography.Text>
+          </div>
+        </div>
+        <Typography.Title level={5} style={{ marginBottom: 12 }}>放弃原因</Typography.Title>
+        <Radio.Group
+          value={abandonReason}
+          onChange={(event) => setAbandonReason(event.target.value)}
+          style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '14px 20px' }}
+        >
+          {[
+            '面试未通过', '其他', '意向度低',
+            '学历不达标', '接到其他offer', '工作地点',
+            '工作时间', '综合条件不匹配', '薪酬不匹配',
+            '候选人放弃', '无法联系', '职位关闭',
+          ].map((reason) => <Radio key={reason} value={reason}>{reason}</Radio>)}
+        </Radio.Group>
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
+          <Checkbox checked={abandonToPool} onChange={(event) => setAbandonToPool(event.target.checked)}>
+            把简历移到人才库
+          </Checkbox>
+        </div>
       </Modal>
     </div>
   );

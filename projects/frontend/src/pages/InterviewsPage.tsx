@@ -8,7 +8,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
-import { fetchCandidate, fetchCandidates } from '@/services/candidate';
+import { assignJob, directInterview, fetchCandidate, fetchCandidates } from '@/services/candidate';
+import { fetchJobs } from '@/services/job';
+import type { Job } from '@/services/job';
 import { fetchEvalTemplates } from '@/services/template';
 import {
   INTERVIEW_ROUND_OPTIONS, INTERVIEW_STATUS_TEXT, INTERVIEW_TYPE_TEXT,
@@ -17,7 +19,10 @@ import {
 } from '@/services/interview';
 import type { Interview } from '@/services/interview';
 import { http, unwrap } from '@/services/http';
+import { fetchPlatformUsers } from '@/services/system';
+import type { PlatformUser } from '@/services/system';
 import { msg } from '@/utils/message';
+import { useCurrentUser } from '@/services/user';
 
 const TIME_FMT = 'YYYY-MM-DD HH:mm';
 
@@ -26,6 +31,7 @@ interface AppOption {
   job_name: string;
   current_stage: string;
   status: string;
+  interview_round?: string;
 }
 
 const INTERVIEW_STAGE_KEYS = new Set([
@@ -34,6 +40,7 @@ const INTERVIEW_STAGE_KEYS = new Set([
 ]);
 
 export function InterviewsPage() {
+  const { user } = useCurrentUser();
   const [list, setList] = useState<Interview[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -44,19 +51,37 @@ export function InterviewsPage() {
   const [form] = Form.useForm();
   const [candidates, setCandidates] = useState<{ id: number; name: string }[]>([]);
   const [appOptions, setAppOptions] = useState<AppOption[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [evalTemplates, setEvalTemplates] = useState<{ id: number; name: string }[]>([]);
+  const [interviewers, setInterviewers] = useState<PlatformUser[]>([]);
   const [saving, setSaving] = useState(false);
 
   const [rescheduleTarget, setRescheduleTarget] = useState<Interview | null>(null);
   const [rescheduleForm] = Form.useForm();
   const [feedbackTarget, setFeedbackTarget] = useState<Interview | null>(null);
   const [feedbackForm] = Form.useForm();
+  const feedbackConclusion = Form.useWatch('conclusion', feedbackForm) as string | undefined;
+  const [feedbackFailureAction, setFeedbackFailureAction] = useState<'talent_pool' | 'eliminate'>('talent_pool');
   const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [roundLocked, setRoundLocked] = useState(false);
   const [conclusionTarget, setConclusionTarget] = useState<Interview | null>(null);
   const [conclusionReason, setConclusionReason] = useState('');
+  const [failureAction, setFailureAction] = useState<'talent_pool' | 'eliminate'>('talent_pool');
   const [searchParams] = useSearchParams();
   const autoOpenedCandidate = useRef<number | null>(null);
   const autoOpenedInterview = useRef<number | null>(null);
+
+  const roundForApplication = (application?: Pick<AppOption, 'current_stage' | 'interview_round'>) => {
+    if (!application) return undefined;
+    if (application.interview_round && INTERVIEW_ROUND_OPTIONS.includes(application.interview_round)) {
+      return application.interview_round;
+    }
+    const stageRounds: Record<string, string> = {
+      interview_1: '一面', interview_2: '二面', interview_3: '三面',
+      hr_interview: 'HR面试', re_interview: '复试',
+    };
+    return stageRounds[application.current_stage];
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,15 +105,21 @@ export function InterviewsPage() {
 
   async function openEditor(record: Interview | null) {
     setEditingId(record?.id ?? null);
+    if (!interviewers.length) {
+      setInterviewers((await fetchPlatformUsers()).filter((item) =>
+        item.role === 'interviewer' || item.role === 'business_screener'));
+    }
     if (!candidates.length) {
       setCandidates((await fetchCandidates({ page_size: 100 })).list.map((c) => ({ id: c.id, name: c.name })));
     }
     if (!evalTemplates.length) {
       setEvalTemplates((await fetchEvalTemplates({ page: 1 })).list.map((t) => ({ id: t.id, name: t.name })));
     }
+    await loadJobs();
     if (record) {
       const detail = await fetchInterview(record.id);
       await loadAppOptions(detail.candidate_id);
+      setRoundLocked(Boolean(detail.application_id));
       form.setFieldsValue({
         ...detail,
         start_at: dayjs(detail.start_at),
@@ -97,6 +128,7 @@ export function InterviewsPage() {
     } else {
       form.resetFields();
       setAppOptions([]);
+      setRoundLocked(false);
     }
     setDrawerOpen(true);
   }
@@ -110,8 +142,19 @@ export function InterviewsPage() {
     return activeApps;
   }, []);
 
+  const loadJobs = useCallback(async () => {
+    if (jobs.length) return jobs;
+    const data = await fetchJobs({ page: 1, page_size: 100 });
+    setJobs(data.list);
+    return data.list;
+  }, [jobs]);
+
   const openEditorForCandidate = useCallback(async (candidateId: number, applicationId?: number) => {
     setEditingId(null);
+    if (!interviewers.length) {
+      setInterviewers((await fetchPlatformUsers()).filter((item) =>
+        item.role === 'interviewer' || item.role === 'business_screener'));
+    }
     if (!candidates.length) {
       const candidateRows = (await fetchCandidates({ page_size: 100 })).list;
       setCandidates(candidateRows.map((c) => ({ id: c.id, name: c.name })));
@@ -124,15 +167,21 @@ export function InterviewsPage() {
       ? current
       : [...current, { id: candidate.id, name: candidate.name }]);
     const activeApps = await loadAppOptions(candidateId);
+    if (!activeApps.length) await loadJobs();
+    const selectedApplicationId = activeApps.some((app) => app.id === applicationId)
+      ? applicationId
+      : activeApps.length === 1 ? activeApps[0].id : undefined;
+    const selectedApplication = candidate.applications.find((app) => app.id === selectedApplicationId)
+      || activeApps.find((app) => app.id === selectedApplicationId);
     form.resetFields();
     form.setFieldsValue({
       candidate_id: candidateId,
-      application_id: activeApps.some((app) => app.id === applicationId)
-        ? applicationId
-        : activeApps.length === 1 ? activeApps[0].id : undefined,
+      application_id: selectedApplicationId,
+      round: roundForApplication(selectedApplication) || INTERVIEW_ROUND_OPTIONS[0],
     });
+    setRoundLocked(Boolean(selectedApplicationId && roundForApplication(selectedApplication)));
     setDrawerOpen(true);
-  }, [candidates.length, evalTemplates.length, form, loadAppOptions]);
+  }, [candidates.length, evalTemplates.length, form, interviewers.length, loadAppOptions, loadJobs]);
 
   useEffect(() => {
     const interviewId = Number(searchParams.get('interview_id'));
@@ -154,10 +203,23 @@ export function InterviewsPage() {
 
   async function handleSave() {
     const values = await form.validateFields();
+    let applicationId = values.application_id as number | undefined;
+    if (!applicationId) {
+      const candidateId = Number(values.candidate_id);
+      const jobId = Number(values.job_id);
+      if (!candidateId || !jobId) {
+        msg.error('安排面试前请选择职位');
+        return;
+      }
+      const application = await assignJob(candidateId, jobId, 'interview_arrangement');
+      const enteredInterview = await directInterview(application.id, application.version);
+      applicationId = enteredInterview.id;
+    }
     const startAt = values.start_at as Dayjs;
     const endAt = values.end_at as Dayjs | undefined;
     const payload = {
       ...values,
+      application_id: applicationId,
       start_at: startAt.format(TIME_FMT),
       // 面试时长统一按 1 小时处理，结束时间由系统自动生成。
       end_at: (endAt?.isValid() ? endAt : startAt.add(1, 'hour')).format(TIME_FMT),
@@ -173,15 +235,28 @@ export function InterviewsPage() {
     }
   }
 
-  async function handleFeedbackSave(markNoEval: boolean) {
+  async function openFeedback(record: Interview) {
+    const detail = await fetchInterview(record.id);
+    setFeedbackTarget(detail);
+    setFeedbackFailureAction('talent_pool');
+    feedbackForm.setFieldsValue({
+      version: detail.feedback?.version,
+      conclusion: detail.feedback?.conclusion,
+      comment: detail.feedback?.comment,
+      risk_note: detail.feedback?.risk_note,
+      dimensions: detail.feedback?.dimension_scores ?? [],
+    });
+  }
+
+  async function openConclusion(record: Interview) {
+    const detail = await fetchInterview(record.id);
+    setFailureAction('talent_pool');
+    setConclusionReason('');
+    setConclusionTarget(detail);
+  }
+
+  async function handleFeedbackSave() {
     if (!feedbackTarget) return;
-    if (markNoEval) {
-      await completeInterview(feedbackTarget.id, true, feedbackTarget.version);
-      msg.success('已标记暂不评价并完成面试');
-      setFeedbackTarget(null);
-      void load();
-      return;
-    }
     const values = await feedbackForm.validateFields();
     setFeedbackSaving(true);
     try {
@@ -190,17 +265,24 @@ export function InterviewsPage() {
         conclusion: values.conclusion,
         comment: values.comment ?? '',
         risk_note: values.risk_note ?? '',
-        suggested_salary: values.suggested_salary ?? '',
-        evaluator_name: values.evaluator_name ?? '',
         dimension_scores: (values.dimensions || [])
           .filter((d: { name?: string }) => d?.name)
           .map((d: { name: string; score: number }) => ({ name: d.name, score: d.score ?? 3 })),
       });
-      msg.success('反馈已保存');
-      if (feedbackTarget.status === 'confirmed') {
+      if (feedbackTarget.status !== 'completed' && feedbackTarget.status !== 'cancelled') {
         await completeInterview(feedbackTarget.id, false, feedbackTarget.version);
-        msg.success('面试已完成');
       }
+      const candidate = await fetchCandidate(feedbackTarget.candidate_id);
+      const application = candidate.applications.find((item) => item.id === feedbackTarget.application_id);
+      if (!application) throw new Error('关联的应聘记录不存在');
+      const result = await applyConclusion(feedbackTarget.id, {
+        version: application.version,
+        reason: values.conclusion === 'fail' ? values.comment : undefined,
+        action: values.conclusion === 'fail' ? feedbackFailureAction : undefined,
+      });
+      msg.success(values.conclusion === 'pass'
+        ? `评价已提交，流程已推进至：${result.application.current_stage}`
+        : feedbackFailureAction === 'talent_pool' ? '评价已提交，候选人已加入人才库' : '评价已提交，候选人已淘汰');
       setFeedbackTarget(null);
       void load();
     } finally {
@@ -222,7 +304,9 @@ export function InterviewsPage() {
       return;
     }
     const result = await applyConclusion(conclusionTarget.id, {
-      version: app.version, reason: conclusionReason.trim() || undefined,
+      version: app.version,
+      reason: conclusionReason.trim() || undefined,
+      action: pass ? undefined : failureAction,
     });
     msg.success(pass
       ? `候选人已推进至：${result.application.current_stage}`
@@ -255,9 +339,17 @@ export function InterviewsPage() {
       render: (v: boolean) => (v ? <Tag color="success">已填</Tag> : <Tag>未填</Tag>),
     },
     {
-      title: '操作', width: 90, fixed: 'right' as const,
+      title: '操作', width: 220, fixed: 'right' as const,
       render: (_: unknown, r: Interview) => (
-        <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>
+        <Space size={2}>
+          {user?.user_id === r.interviewer_id && user.role !== 'hr' && r.status !== 'cancelled' && (
+            <Button size="small" type="link" onClick={() => void openFeedback(r)}>提交评价</Button>
+          )}
+          {user?.role === 'hr' && r.status === 'completed' && r.has_feedback && !r.conclusion_applied && (
+            <Button size="small" type="link" onClick={() => void openConclusion(r)}>处理评价</Button>
+          )}
+          {user?.role === 'hr' && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}
+        </Space>
       ),
     },
   ];
@@ -313,22 +405,47 @@ export function InterviewsPage() {
               showSearch optionFilterProp="label" placeholder="选择候选人"
               options={candidates.map((c) => ({ value: c.id, label: c.name }))}
               onChange={(v) => {
-                form.setFieldsValue({ application_id: undefined });
+                form.setFieldsValue({ application_id: undefined, job_id: undefined });
+                form.setFieldValue('round', INTERVIEW_ROUND_OPTIONS[0]);
+                setRoundLocked(false);
                 void loadAppOptions(v);
+                void loadJobs();
               }}
             />
           </Form.Item>
-          <Form.Item name="application_id" label="应聘记录（候选人 + 职位绑定）" rules={[{ required: true, message: '必填' }]}>
-            <Select
-              placeholder="先选择候选人"
-              options={appOptions.map((a) => ({
-                value: a.id, label: `${a.job_name} · ${a.current_stage}`,
-              }))}
-            />
-          </Form.Item>
+          {appOptions.length ? (
+            <Form.Item name="application_id" label="应聘记录（候选人 + 职位绑定）" rules={[{ required: true, message: '必填' }]}>
+              <Select
+                placeholder="选择应聘记录"
+                options={appOptions.map((a) => ({
+                  value: a.id, label: `${a.job_name} · ${a.current_stage}`,
+                }))}
+                onChange={(value) => {
+                  const application = appOptions.find((item) => item.id === value);
+                  const round = roundForApplication(application);
+                  if (round) form.setFieldValue('round', round);
+                  setRoundLocked(Boolean(round));
+                }}
+              />
+            </Form.Item>
+          ) : (
+            <Form.Item name="job_id" label="安排面试职位" rules={[{ required: true, message: '请选择职位' }]}>
+              <Select
+                showSearch optionFilterProp="label"
+                placeholder="在安排面试时选择职位"
+                options={jobs.map((job) => ({
+                  value: job.id,
+                  label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+                }))}
+              />
+            </Form.Item>
+          )}
           <Space style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
             <Form.Item name="round" label="面试轮次" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
-              <Select options={INTERVIEW_ROUND_OPTIONS.map((r) => ({ value: r, label: r }))} />
+              <Select
+                disabled={roundLocked}
+                options={INTERVIEW_ROUND_OPTIONS.map((r) => ({ value: r, label: r }))}
+              />
             </Form.Item>
             <Form.Item name="type" label="面试类型" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
               <Select options={[
@@ -354,8 +471,11 @@ export function InterviewsPage() {
             <Input placeholder="视频/电话面试链接" />
           </Form.Item>
           <Space style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
-            <Form.Item name="interviewer_name" label="面试官" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
-              <Input />
+            <Form.Item name="interviewer_id" label="面试业务人员" rules={[{ required: true, message: '请选择面试业务人员' }]} style={{ width: '100%' }}>
+              <Select
+                showSearch optionFilterProp="label" placeholder="选择面试业务人员"
+                options={interviewers.map((item) => ({ value: item.user_id, label: `${item.name}（${item.role_name}）` }))}
+              />
             </Form.Item>
             <Form.Item name="interviewer_contact" label="面试官联系方式" style={{ width: '100%' }}>
               <Input />
@@ -365,12 +485,6 @@ export function InterviewsPage() {
             <Select
               allowClear placeholder="复用现有评价模板"
               options={evalTemplates.map((t) => ({ value: t.id, label: t.name }))}
-            />
-          </Form.Item>
-          <Form.Item name="summary" label="面试摘要">
-            <Input.TextArea
-              rows={4}
-              placeholder="记录本次面试的核心内容、候选人表现和待跟进事项"
             />
           </Form.Item>
           <Form.Item name="remark" label="备注">
@@ -420,13 +534,12 @@ export function InterviewsPage() {
 
       {/* 反馈弹窗 */}
       <Modal
-        title={`面试反馈：${feedbackTarget?.candidate_name ?? ''} ${feedbackTarget?.round ?? ''}`}
+        title={`提交面试评价：${feedbackTarget?.candidate_name ?? ''} ${feedbackTarget?.round ?? ''}`}
         open={!!feedbackTarget} width={620}
         onCancel={() => setFeedbackTarget(null)}
         footer={[
-          <Button key="skip" onClick={() => void handleFeedbackSave(true)}>暂不评价并完成</Button>,
-          <Button key="save" type="primary" loading={feedbackSaving} onClick={() => void handleFeedbackSave(false)}>
-            保存反馈
+          <Button key="save" type="primary" loading={feedbackSaving} onClick={() => void handleFeedbackSave()}>
+            提交评价
           </Button>,
         ]}
       >
@@ -460,20 +573,29 @@ export function InterviewsPage() {
               { value: 'pass', label: '通过' }, { value: 'hold', label: '待定' }, { value: 'fail', label: '不通过' },
             ]} />
           </Form.Item>
-          <Form.Item name="comment" label="评价内容">
+          <Form.Item name="comment" label={feedbackConclusion === 'fail' ? '淘汰原因' : '评价内容'} rules={feedbackConclusion === 'fail' ? [{ required: true, message: '请填写淘汰原因' }] : []}>
             <Input.TextArea rows={2} />
           </Form.Item>
-          <Form.Item name="risk_note" label="风险提示">
-            <Input.TextArea rows={2} />
+          {feedbackConclusion === 'fail' && (
+            <Form.Item label="不通过后的处理方式" required>
+              <Select
+                value={feedbackFailureAction}
+                onChange={(value: 'talent_pool' | 'eliminate') => setFeedbackFailureAction(value)}
+                options={[
+                  { value: 'talent_pool', label: '加入人才库' },
+                  { value: 'eliminate', label: '直接淘汰' },
+                ]}
+              />
+            </Form.Item>
+          )}
+          {feedbackConclusion !== 'fail' && (
+            <Form.Item name="risk_note" label="风险提示">
+              <Input.TextArea rows={2} />
+            </Form.Item>
+          )}
+          <Form.Item label="评价人">
+            <Input value={feedbackTarget?.interviewer_name || ''} disabled />
           </Form.Item>
-          <Space style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
-            <Form.Item name="suggested_salary" label="建议薪资" style={{ width: '100%' }}>
-              <Input placeholder="例如：30k" />
-            </Form.Item>
-            <Form.Item name="evaluator_name" label="面试官（代录时填写）" style={{ width: '100%' }}>
-              <Input />
-            </Form.Item>
-          </Space>
         </Form>
       </Modal>
 
@@ -493,10 +615,24 @@ export function InterviewsPage() {
           </p>
         )}
         {conclusionTarget?.feedback?.conclusion === 'fail' && (
-          <Input.TextArea
-            rows={3} placeholder="必填淘汰原因"
-            value={conclusionReason} onChange={(e) => setConclusionReason(e.target.value)}
-          />
+          <>
+            <Form.Item label="处理方式" required>
+              <Select
+                value={failureAction}
+                onChange={(value: 'talent_pool' | 'eliminate') => setFailureAction(value)}
+                options={[
+                  { value: 'talent_pool', label: '加入人才库' },
+                  { value: 'eliminate', label: '直接淘汰' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item label="淘汰原因" required>
+              <Input.TextArea
+                rows={3} placeholder="请填写淘汰原因"
+                value={conclusionReason} onChange={(e) => setConclusionReason(e.target.value)}
+              />
+            </Form.Item>
+          </>
         )}
         <div style={{ marginTop: 12, textAlign: 'right' }}>
           <Button onClick={() => setConclusionTarget(null)} style={{ marginRight: 8 }}>取消</Button>
@@ -505,7 +641,9 @@ export function InterviewsPage() {
             danger={conclusionTarget?.feedback?.conclusion === 'fail'}
             onClick={() => void handleApplyConclusion(conclusionTarget?.feedback?.conclusion === 'pass')}
           >
-            确认执行
+            {conclusionTarget?.feedback?.conclusion === 'fail'
+              ? failureAction === 'talent_pool' ? '确认加入人才库' : '确认淘汰'
+              : '确认推进'}
           </Button>
         </div>
       </Modal>

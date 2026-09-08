@@ -14,12 +14,12 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.file_service import save_uploaded_file
 from common.flow import create_application, application_to_dict
+from common.job_catalog import FIXED_JOB_NAMES
 from common.logstore import write_log
 from common.mongo import MongoUnavailable
 from common.response import BizCode, ok, paged
 from common.resume_service import auto_parse_attachment
 from common.roles import HR
-from common.stages import INTERVIEW_ROUNDS
 from common.status import (
     JOB_CLOSED, JOB_DRAFT, JOB_FLOW, JOB_PAUSED, JOB_PENDING, JOB_RECRUITING,
 )
@@ -54,7 +54,6 @@ def _job_view(job: dict) -> dict:
         "description": job.get("description", ""), "qualification": job.get("qualification", ""),
         "skill_tags": job.get("skill_tags", ""), "template_id": job.get("template_id"),
         "channels": job.get("channels", ""), "status": job.get("status", JOB_DRAFT),
-        "interview_rounds": list(job.get("interview_rounds") or ["一面"]),
         "requirement_id": job.get("requirement_id"),
         "owner_id": job.get("owner_id", ""), "owner_name": job.get("owner_name", ""),
         "public_token": job.get("public_token", ""),
@@ -97,14 +96,6 @@ def _fill(job: dict, payload: dict) -> dict:
                 raise BizError(BizCode.NOT_FOUND, "关联招聘需求不存在")
             rid = int(rid)
         fields["requirement_id"] = rid or None
-    if "interview_rounds" in payload:
-        rounds = payload.get("interview_rounds") or []
-        if not isinstance(rounds, list):
-            raise BizError(BizCode.PARAM_INVALID, "面试轮次必须是数组")
-        rounds = list(dict.fromkeys(str(item).strip() for item in rounds if str(item).strip()))
-        if not rounds or any(item not in INTERVIEW_ROUNDS for item in rounds):
-            raise BizError(BizCode.PARAM_INVALID, f"面试轮次必须从以下选项中选择: {'/'.join(INTERVIEW_ROUNDS)}")
-        fields["interview_rounds"] = rounds
     configs = payload.get("stage_configs")
     if configs is not None:
         fields["stage_configs"] = [{
@@ -121,7 +112,7 @@ def _fill(job: dict, payload: dict) -> dict:
 @login_required
 def list_jobs():
     args = request.args
-    query = {}
+    query = {"name": {"$in": list(FIXED_JOB_NAMES)}}
     if args.get("status"):
         query["status"] = args["status"]
     if args.get("dept_id"):
@@ -143,13 +134,13 @@ def list_jobs():
 @bp.get("/api/jobs/export")
 @role_required(HR)
 def export_jobs():
-    items = list(col("jobs").find().sort("_id", 1))
+    items = list(col("jobs").find({"name": {"$in": list(FIXED_JOB_NAMES)}}).sort("_id", 1))
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["编码", "职位名称", "部门", "状态", "招聘人数", "负责人", "创建时间"])
+    writer.writerow(["编码", "职位名称", "部门", "招聘人数", "负责人", "创建时间"])
     for j in items:
         writer.writerow([j.get("code", ""), j.get("name", ""), j.get("dept_name", ""),
-                         j.get("status", ""), j.get("headcount", 0), j.get("owner_name", ""),
+                         j.get("headcount", 0), j.get("owner_name", ""),
                          dt(j.get("created_at"))])
     col("export_logs").insert_one({
         "exporter_id": g.current_user.user_id, "exporter_name": g.current_user.name,
@@ -224,7 +215,7 @@ def copy_job(job_id: int):
     doc = {k: src.get(k) for k in
            ["name", "dept_id", "dept_name", "location", "job_type", "level", "report_to",
             "headcount", "salary_range", "description", "qualification", "skill_tags",
-           "template_id", "channels", "requirement_id", "stage_configs", "interview_rounds"]}
+           "template_id", "channels", "requirement_id", "stage_configs"]}
     doc.update({
         "code": f"JOB-{uuid.uuid4().hex[:8].upper()}",
         "name": f"{src.get('name', '')}（副本）",

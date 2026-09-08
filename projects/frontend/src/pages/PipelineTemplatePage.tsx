@@ -34,6 +34,7 @@ const DEFAULT_RULES: Record<string, Partial<TemplateStage>> = {
   interview_1: { lock_days: 7, requires_interview: true, requires_feedback: true },
   interview_2: { lock_days: 7, requires_interview: true, requires_feedback: true },
   interview_3: { lock_days: 7, requires_interview: true, requires_feedback: true },
+  hrbp_interview: { lock_days: 7 },
   hr_interview: { lock_days: 7, requires_interview: true, requires_feedback: true },
   interview_passed: { lock_days: 30, unprocessed_days: 15, reminder_days_before: 3, expiry_action: 'eliminated', enter_talent_pool: true },
   offer_approval: { lock_days: 30, unprocessed_days: 15, expiry_action: 'eliminated', enter_talent_pool: true },

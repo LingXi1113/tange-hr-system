@@ -121,7 +121,7 @@ def test_public_apply_auto_parses_resume(client):
     login(client, "hr-001")
     candidate = client.get(f"/api/candidates/{body['data']['candidate_id']}").get_json()["data"]
     assert candidate["name"] == "公开候选人"  # 不覆盖投递时已经填写的姓名
-    assert candidate["city"] == "杭州"  # 自动补齐空白字段
+    assert candidate["city"] == ""  # 新增候选人解析不再自动填充城市
     assert candidate["attachments"][0]["parse_status"] == "system"
 
 
@@ -173,3 +173,15 @@ def test_export_jobs_logs(client):
     resp = client.get("/api/jobs/export")
     assert resp.status_code == 200
     assert "职位名称" in resp.get_data(as_text=True)
+
+
+def test_job_directory_only_returns_fixed_positions_without_status_column(client):
+    login(client, "hr-001")
+    make_job(client, name="产品经理")
+    make_job(client, name="临时测试职位")
+    body = client.get("/api/jobs", query_string={"page_size": 100}).get_json()["data"]
+    assert [item["name"] for item in body["list"]] == ["产品经理"]
+    exported = client.get("/api/jobs/export").get_data(as_text=True)
+    assert "产品经理" in exported
+    assert "临时测试职位" not in exported
+    assert "状态" not in exported.splitlines()[0]
