@@ -137,6 +137,29 @@ def test_force_duplicate_candidate_does_not_block_normal_identity_key(client):
         assert col("candidates").find_one({"_id": first["id"]}).get("phone_key") == "13900002012"
 
 
+def test_force_duplicate_candidate_cannot_bypass_active_lock(client):
+    ensure_hr(client)
+    template_id = _template(client, [("new_resume", 2)])
+    job_a = make_job(client, name="重复人锁定职位A", template_id=template_id)
+    job_b = make_job(client, name="重复人锁定职位B", template_id=template_id)
+    publish_job(client, job_a["id"])
+    publish_job(client, job_b["id"])
+
+    first = client.post("/api/candidates", json={
+        "name": "原始候选人", "phone": "13900002014", "email": "same-person@example.com",
+    }).get_json()["data"]["candidate"]
+    assign(client, first["id"], job_a["id"])
+
+    # 保留后端的人工强制建档能力，但重复档案不能绕过原候选人的有效锁定。
+    forced = client.post("/api/candidates", json={
+        "name": "重复上传候选人", "phone": "13900002014", "force": 1,
+    }).get_json()["data"]["candidate"]
+    response = client.post(
+        f"/api/candidates/{forced['id']}/applications", json={"job_id": job_b["id"]},
+    )
+    assert response.get_json()["code"] == 1005
+
+
 def test_candidate_edit_rejects_stale_version(client):
     ensure_hr(client)
     candidate_id = make_candidate(client, phone="13900002013", email="candidate-version@example.com")

@@ -144,24 +144,14 @@ export function CandidatesPage() {
     const result = await saveCandidate(null, payload);
     if (result.duplicated && result.duplicates?.length) {
       Modal.confirm({
-        title: '查重提示：已存在相似候选人',
-        content: `匹配到：${result.duplicates.map((d) => `${d.name}（${d.phone}）`).join('、')}。继续使用已有候选人，或强制新建？`,
+        title: '查重提示：候选人已存在',
+        content: `匹配到：${result.duplicates.map((d) => `${d.name}（${d.phone}）`).join('、')}。同一候选人不能重复建档，请使用已有候选人。`,
         okText: '使用已有',
-        cancelText: '强制新建',
+        cancelText: '取消',
         onOk: async () => {
           if (selectedJobId) await assignJob(result.duplicates![0].id, Number(selectedJobId));
           closeCreateDrawer();
           navigate(`/candidates/${result.duplicates![0].id}`);
-        },
-        onCancel: async () => {
-          const forced = await saveCandidate(null, { ...payload, force: 1 });
-          if (forced.candidate?.id) {
-            if (selectedJobId) await assignJob(forced.candidate.id, Number(selectedJobId));
-            await attachResume(forced.candidate.id);
-          }
-          msg.success('已新建候选人');
-          closeCreateDrawer();
-          void load();
         },
       });
       return;

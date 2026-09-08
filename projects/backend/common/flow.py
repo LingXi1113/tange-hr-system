@@ -34,6 +34,7 @@ from .response import BizCode
 from .consistency import reconcile_application_status
 from .background_failures import record_background_failure, resolve_background_failure
 from .indexes import ensure_core_indexes
+from .candidate_identity import normalize_email, normalize_phone
 
 
 def _now():
@@ -196,6 +197,41 @@ def active_lock_for_candidate(candidate_id: int, session=None):
     }, session=session)
 
 
+def active_lock_for_candidate_identity(candidate_doc: dict, session=None):
+    """Find a lock belonging to another candidate record with the same identity.
+
+    A forced duplicate candidate intentionally has no unique identity keys, so a
+    candidate-id-only lock check could otherwise let the same person bypass the
+    lock by uploading the resume again.  Keep this check at the application
+    boundary as a second line of defence for imports and direct API callers.
+    """
+    candidate_id = candidate_doc.get("_id")
+    conditions = []
+    phone = str(candidate_doc.get("phone") or "").strip()
+    phone_key = normalize_phone(phone)
+    if phone:
+        conditions.append({"phone": phone})
+        if phone_key:
+            conditions.append({"phone_key": phone_key})
+    email = str(candidate_doc.get("email") or "").strip()
+    email_key = normalize_email(email)
+    if email:
+        conditions.append({"email": email})
+        if email_key:
+            conditions.append({"email_key": email_key})
+    if not conditions:
+        return None
+
+    query = {"$or": conditions}
+    if candidate_id is not None:
+        query["_id"] = {"$ne": candidate_id}
+    for matched in col("candidates").find(query, {"_id": 1}, session=session):
+        lock = active_lock_for_candidate(matched["_id"], session=session)
+        if lock:
+            return lock
+    return None
+
+
 def start_stage_lock(application_doc: dict, session=None, lock_days_override=None):
     job_doc = get_by_id("jobs", application_doc["job_id"], session=session)
     days = stage_lock_days(job_doc or {}, application_doc["current_stage"])
@@ -280,6 +316,8 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
     check_job_accepting(job_doc, hr_assignment=hr_assignment)
     check_duplicate_application(candidate_doc["_id"], job_doc["_id"], session=session)
     lock = active_lock_for_candidate(candidate_doc["_id"], session=session)
+    if not lock:
+        lock = active_lock_for_candidate_identity(candidate_doc, session=session)
     if lock:
         raise BizError(
             BizCode.LOCKED,
