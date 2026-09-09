@@ -13,10 +13,13 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 from werkzeug.utils import secure_filename
 
-from common.access import CANDIDATE_READ_ROLES, RESUME_ACCESS_ROLES, can_view_pii, redact_candidate
+from common.access import (
+    CANDIDATE_READ_ROLES, RESUME_ACCESS_ROLES, can_view_pii, redact_candidate,
+    require_candidate_lock_owner,
+)
 from common.candidate_identity import ensure_candidate_indexes, identity_keys, identity_update
 from common.db import col, get_by_id, insert_doc, paginate, update_doc, dt
-from common.decorators import login_required, role_required
+from common.decorators import role_required
 from common.errors import BizError
 from common.file_service import (
     read_file_bytes,
@@ -75,6 +78,12 @@ def _candidate_view(c: dict, mask: bool = True) -> dict:
     # mask 参数仅保留兼容性，不能让普通角色通过 mask=0 关闭脱敏。
     data = redact_candidate(c, include_pii=can_view_pii() and not mask)
     data["version"] = int(c.get("version", 1))
+    return data
+
+
+def _duplicate_candidate_view(c: dict) -> dict:
+    data = _candidate_view(c, mask=False)
+    data["lock"] = lock_info_for_candidate(c["_id"])
     return data
 
 
@@ -152,6 +161,15 @@ def get_candidate(cid: int):
         "parse_status": a.get("parse_status", ""), "created_at": dt(a.get("created_at")),
     } for a in col("attachments").find({"candidate_id": cid}).sort("_id", 1)]
     data["lock"] = lock_info_for_candidate(cid)
+    pool_entry = col("talent_pool").find_one(
+        {"candidate_id": cid, "status": {"$ne": "removed"}},
+        {"_id": 1, "status": 1, "source": 1, "reason": 1},
+    )
+    data["talent_pool_entry"] = (
+        {"id": pool_entry["_id"], "status": pool_entry.get("status", "active"),
+         "source": pool_entry.get("source", ""), "reason": pool_entry.get("reason", "")}
+        if pool_entry else None
+    )
     data["applications"] = []
     apps = list(col("applications").find({"candidate_id": cid}).sort("_id", -1))
     for app in apps:
@@ -291,7 +309,7 @@ def create_candidate():
     if duplicates and not payload.get("force"):
         return ok({
             "duplicated": True,
-            "duplicates": [_candidate_view(c, mask=False) for c in duplicates],
+            "duplicates": [_duplicate_candidate_view(c) for c in duplicates],
         })
     doc = {
         "name": "", "gender": "", "phone": "", "email": "", "city": "",
@@ -312,7 +330,7 @@ def create_candidate():
         duplicates = _find_duplicates(phone, email)
         return ok({
             "duplicated": True,
-            "duplicates": [_candidate_view(d, mask=False) for d in duplicates],
+            "duplicates": [_duplicate_candidate_view(d) for d in duplicates],
         })
     write_log("candidate", "create", g.current_user.user_id, g.current_user.name,
               biz_id=str(c["_id"]), detail=c.get("name", ""))
@@ -324,6 +342,7 @@ def create_candidate():
 def update_candidate(cid: int):
     ensure_candidate_indexes()
     c = _get_candidate_or_404(cid)
+    require_candidate_lock_owner(cid)
     payload = request.get_json(silent=True) or {}
     if "phone" in payload or "email" in payload:
         duplicates = _find_duplicates(
@@ -383,6 +402,7 @@ def update_candidate(cid: int):
 def delete_candidate(cid: int):
     """删除候选人（二次确认）：级联清理所有招聘数据和文件对象。"""
     _get_candidate_or_404(cid)
+    require_candidate_lock_owner(cid)
     if request.args.get("confirm") != "1":
         raise BizError(BizCode.PARAM_INVALID, "删除需要二次确认（confirm=1）")
     return ok(purge_candidate(current_app, cid, g.current_user.user_id, g.current_user.name))
@@ -392,6 +412,7 @@ def delete_candidate(cid: int):
 @role_required(HR, SUPER_ADMIN)
 def assign_job(cid: int):
     c = _get_candidate_or_404(cid)
+    require_candidate_lock_owner(cid)
     payload = request.get_json(silent=True) or {}
     job = get_by_id("jobs", int(payload.get("job_id") or 0))
     if job is None:
@@ -592,31 +613,6 @@ def application_transitions(app_id: int):
     } for t in rows])
 
 
-@bp.post("/api/applications/<int:app_id>/unlock")
-@login_required
-def unlock_application(app_id: int):
-    user = g.current_user
-    if "unlock" not in user.roles:
-        raise BizError(BizCode.FORBIDDEN, "当前用户无强制解锁权限")
-    payload = request.get_json(silent=True) or {}
-    reason = (payload.get("reason") or "").strip()
-    if not reason:
-        raise BizError(BizCode.PARAM_INVALID, "强制解锁必须填写原因")
-    app = get_by_id("applications", app_id)
-    if app is None:
-        raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
-    locks = list(col("lock_records").find({"application_id": app_id, "released": False}))
-    if not locks:
-        raise BizError(BizCode.STATE_INVALID, "该应聘记录当前无生效锁定")
-    col("lock_records").update_many({"application_id": app_id, "released": False}, {"$set": {
-        "released": True, "force_unlocked": True, "unlock_reason": reason,
-        "unlock_operator_id": user.user_id, "unlock_operator_name": user.name,
-    }})
-    write_log("application", "force_unlock", user.user_id, user.name,
-              biz_id=str(app_id), detail=reason)
-    return ok(None)
-
-
 # ---------------- 导入导出 ----------------
 
 @bp.get("/api/candidates/import-template")
@@ -760,6 +756,7 @@ def resume_upload():
     candidate_id = int(request.form.get("candidate_id") or 0)
     if candidate_id:
         _get_candidate_or_404(candidate_id)
+        require_candidate_lock_owner(candidate_id)
     try:
         meta = save_uploaded_file(
             current_app, file, biz_type="resume",

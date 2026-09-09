@@ -592,15 +592,14 @@ def seed_demo_business_data(now: datetime | None = None):
                 "reason": "演示流程推进", "operator_id": "hr-001", "operator_name": "张薇",
             }, app["created_at"] + step * day / 2)
 
-    # 客保锁定：三个不同阶段的有效锁，便于验证锁定提示和强制解锁。
+    # 候选人锁定：三个不同阶段的有效锁，便于验证锁定提示。
     for app_key, stage_key, days in (("a1", "pending_screen", 3), ("a5", "interview_passed", 20), ("a7", "pending_onboard", 35)):
         app = applications[app_key]
         _demo_insert("lock_records", {
             "application_id": app["_id"], "candidate_id": app["candidate_id"],
             "stage_key": stage_key, "start_at": now - day,
             "end_at": now + days * day, "released": False,
-            "auto_released": False, "force_unlocked": False,
-            "unlock_reason": "", "unlock_operator_id": "", "unlock_operator_name": "",
+            "auto_released": False,
         }, now - day)
 
     # 5. 面试：覆盖待安排、已邀请、已确认、已完成、已取消、已改期和反馈。

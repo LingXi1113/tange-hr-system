@@ -46,20 +46,104 @@ def test_lock_blocks_new_application(client):
     resp = client.post(f"/api/candidates/{cid}/applications", json={"job_id": job2["id"]})
     assert resp.get_json()["code"] == 1005
 
-    # hr-001 无解锁权限
-    resp = client.post(f"/api/applications/{app1['id']}/unlock", json={"reason": "急招"})
-    assert resp.get_json()["code"] == 1006
-
-    # hr-002（李娜）有解锁权限：解锁后可分配
+    # 其他 HR 不能解锁，也不能绕过锁定继续分配。
     login(client, "hr-002")
-    assert client.post(f"/api/applications/{app1['id']}/unlock", json={"reason": "急招支援"}).get_json()["code"] == 0
-    login(client, "hr-001")
-    app2 = assign(client, cid, job2["id"])
-    assert app2["job_id"] == job2["id"]
+    resp = client.post(f"/api/applications/{app1['id']}/unlock", json={"reason": "不应存在的解锁入口"})
+    assert resp.status_code == 404
+    resp = client.post(f"/api/candidates/{cid}/applications", json={"job_id": job2["id"]})
+    assert resp.get_json()["code"] == 1006
 
     # 详情页显示锁定起止时间
     detail = client.get(f"/api/candidates/{cid}").get_json()["data"]
     assert detail["lock"] and detail["lock"]["start_at"]
+
+
+def test_other_hr_cannot_operate_locked_candidate(client):
+    ensure_hr(client)
+    template_id = make_template(client)
+    job = make_job(client, name="锁定归属职位", template_id=template_id)
+    publish_job(client, job["id"])
+    candidate_id = make_candidate(client, phone="13933334445", email="lock-owner@example.com")
+    application = assign(client, candidate_id, job["id"])
+
+    login(client, "hr-002")
+    duplicate = client.post("/api/candidates", json={
+        "name": "重复上传候选人", "phone": "13933334445",
+    }).get_json()
+    locked_view = duplicate["data"]["duplicates"][0]
+    assert locked_view["lock"]["owner_id"] == "hr-001"
+
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert detail["lock"]["owner_id"] == "hr-001"
+    update = client.put(f"/api/candidates/{candidate_id}", json={
+        "name": "不应被修改", "version": detail["version"],
+    }).get_json()
+    assert update["code"] == 1006
+
+    forced = client.post("/api/candidates", json={
+        "name": "绕过查重的重复档案", "phone": "13933334445", "force": 1,
+    }).get_json()["data"]["candidate"]
+    forced_update = client.put(f"/api/candidates/{forced['id']}", json={
+        "name": "重复档案也不应被修改", "version": forced["version"],
+    }).get_json()
+    assert forced_update["code"] == 1006
+
+    move = client.post(f"/api/applications/{application['id']}/move", json={
+        "to_stage": "business_screen", "reason": "其他 HR 不应推进", "version": application["version"],
+    }).get_json()
+    assert move["code"] == 1006
+
+
+def test_other_hr_cannot_operate_candidate_owned_before_application(client):
+    ensure_hr(client)
+    candidate_id = make_candidate(
+        client, phone="13933334446", email="owner-before-application@example.com",
+    )
+
+    login(client, "hr-002")
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert detail["lock"]["owner_id"] == "hr-001"
+    assert detail["lock"]["stage_key"] == "candidate_owner"
+    update = client.put(f"/api/candidates/{candidate_id}", json={
+        "name": "不应被李娜修改", "version": detail["version"],
+    }).get_json()
+    assert update["code"] == 1006
+
+
+def test_other_hr_can_restore_abandoned_application_and_take_lock(client):
+    ensure_hr(client)
+    template_id = make_template(client)
+    job = make_job(client, name="恢复流程职位", template_id=template_id)
+    publish_job(client, job["id"])
+    candidate_id = make_candidate(client, phone="13933334447", email="restore@example.com")
+    application = assign(client, candidate_id, job["id"])
+
+    abandoned = client.post(f"/api/applications/{application['id']}/abandon", json={
+        "reason": "候选人暂时放弃", "version": application["version"], "to_pool": True,
+    }).get_json()
+    assert abandoned["code"] == 0
+    pool = client.get("/api/talent-pool", query_string={"candidate_id": candidate_id}).get_json()
+    assert pool["data"]["total"] == 1
+
+    login(client, "hr-002")
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert detail["applications"][0]["current_stage"] == "abandoned"
+    assert detail["talent_pool_entry"]["id"] == pool["data"]["list"][0]["id"]
+    restored = client.post(f"/api/applications/{application['id']}/restore", json={
+        "version": detail["applications"][0]["version"],
+    }).get_json()
+    assert restored["code"] == 0
+    # 该兼容性模板只有 new_resume；真实新模板会优先恢复到 pending_screen。
+    assert restored["data"]["current_stage"] == "new_resume"
+    assert restored["data"]["status"] == "in_progress"
+    assert restored["data"]["owner_id"] == "hr-002"
+
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    assert detail["lock"]["owner_id"] == "hr-002"
+    remove = client.delete(
+        f"/api/talent-pool/{detail['talent_pool_entry']['id']}?confirm=1",
+    ).get_json()
+    assert remove["code"] == 0
 
 
 def test_hr_assignment_enters_hr_screen_and_locks_for_seven_days(client):

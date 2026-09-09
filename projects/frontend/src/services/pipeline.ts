@@ -34,3 +34,11 @@ export async function abandonApplication(id: number, reason: string, version: nu
   const resp = await http.post(`/api/applications/${id}/abandon`, { reason, version, to_pool: toPool });
   return unwrap<Application>(resp);
 }
+
+export async function restoreApplication(id: number, version: number) {
+  const resp = await http.post(`/api/applications/${id}/restore`, {
+    version,
+    reason: 'HR恢复流程',
+  });
+  return unwrap<Application>(resp);
+}

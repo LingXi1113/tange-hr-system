@@ -15,7 +15,7 @@ from flask import Blueprint, Response, current_app, g, request
 
 from common.background_failures import record_background_failure
 from common.db import col, get_by_id, insert_doc, next_id, update_doc
-from common.access import CANDIDATE_READ_ROLES, can_view_pii
+from common.access import CANDIDATE_READ_ROLES, can_view_pii, require_candidate_lock_owner
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import create_application
@@ -103,6 +103,7 @@ def _add_one(candidate_id: int, payload: dict) -> dict:
     candidate = get_by_id("candidates", candidate_id)
     if candidate is None:
         raise BizError(BizCode.NOT_FOUND, f"候选人不存在: {candidate_id}")
+    require_candidate_lock_owner(candidate_id)
     if col("talent_pool").find_one({"candidate_id": candidate_id}):
         raise BizError(BizCode.DUPLICATED, f"候选人「{candidate.get('name', '')}」已在人才库中")
     source = payload.get("source", "manual")
@@ -198,6 +199,7 @@ def update_entry(entry_id: int):
     doc = get_by_id("talent_pool", entry_id)
     if doc is None:
         raise BizError(BizCode.NOT_FOUND, "人才库记录不存在")
+    require_candidate_lock_owner(doc["candidate_id"])
     payload = request.get_json(silent=True) or {}
     fields = {}
     if "category" in payload:
@@ -244,6 +246,7 @@ def batch_tags():
         doc = get_by_id("talent_pool", int(eid))
         if doc is None:
             continue
+        require_candidate_lock_owner(doc["candidate_id"])
         new_tags = tags if mode == "replace" else list(dict.fromkeys(
             list(doc.get("tags", [])) + tags))
         update_doc("talent_pool", doc["_id"], {"tags": new_tags})
@@ -261,6 +264,7 @@ def remove_entry(entry_id: int):
     doc = get_by_id("talent_pool", entry_id)
     if doc is None:
         raise BizError(BizCode.NOT_FOUND, "人才库记录不存在")
+    require_candidate_lock_owner(doc["candidate_id"])
     col("talent_pool").delete_one({"_id": entry_id})
     write_log("talent_pool", "remove", g.current_user.user_id, g.current_user.name,
               biz_id=str(entry_id), detail=f"candidate={doc['candidate_id']}")
@@ -274,6 +278,10 @@ def batch_remove():
     entry_ids = payload.get("entry_ids") or []
     if not entry_ids:
         raise BizError(BizCode.PARAM_INVALID, "缺少 entry_ids")
+    for entry_id in entry_ids:
+        doc = get_by_id("talent_pool", int(entry_id))
+        if doc:
+            require_candidate_lock_owner(doc["candidate_id"])
     result = col("talent_pool").delete_many({"_id": {"$in": [int(i) for i in entry_ids]}})
     write_log("talent_pool", "batch_remove", g.current_user.user_id, g.current_user.name,
               detail=f"removed={result.deleted_count}")
@@ -289,6 +297,7 @@ def activate(entry_id: int):
         raise BizError(BizCode.NOT_FOUND, "人才库记录不存在")
     if doc.get("status") != "active":
         raise BizError(BizCode.STATE_INVALID, "仅待激活状态可重新激活")
+    require_candidate_lock_owner(doc["candidate_id"])
     payload = request.get_json(silent=True) or {}
     job = get_by_id("jobs", int(payload.get("job_id") or 0))
     if job is None:

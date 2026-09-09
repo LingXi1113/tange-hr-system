@@ -192,12 +192,18 @@ export function PipelinePage() {
                     <span>{col.name}</span>
                     <span className="col-count">{colCards.length}</span>
                   </div>
-                  {colCards.map((card) => (
+                  {colCards.map((card) => {
+                    const lockedByOther = Boolean(
+                      user?.role === 'hr'
+                        && card.lock?.owner_id
+                        && card.lock.owner_id !== user.user_id,
+                    );
+                    return (
                     <div className="hrates-card" key={card.id}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <strong>{card.candidate_name}</strong>
                         {card.lock && (
-                          <Tooltip title={`锁定中：${card.lock.start_at} ~ ${card.lock.end_at}`}>
+                          <Tooltip title={`锁定中：${card.lock.start_at} ~ ${card.lock.end_at}${card.lock.owner_name ? ` · 负责人：${card.lock.owner_name}` : ''}`}>
                             <LockOutlined style={{ color: '#FF5219' }} />
                           </Tooltip>
                         )}
@@ -209,6 +215,7 @@ export function PipelinePage() {
                         <Space size={4}>
                           <Button
                             size="small" type="link" style={{ padding: 0 }}
+                            disabled={lockedByOther}
                             onClick={() => {
                               setMoveTarget(card);
                               setMoveStage('');
@@ -219,6 +226,7 @@ export function PipelinePage() {
                           </Button>
                           <Button
                             size="small" type="link" danger style={{ padding: 0 }}
+                            disabled={lockedByOther}
                             onClick={() => confirmEliminate(card)}
                           >
                             淘汰
@@ -229,7 +237,8 @@ export function PipelinePage() {
                         <Tag color="default">已淘汰：{card.eliminate_reason || '-'}</Tag>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}

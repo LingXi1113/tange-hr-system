@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, g, request
 
 from common.db import col, get_by_id, dt
+from common.access import require_candidate_lock_owner
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
@@ -15,6 +16,7 @@ from common.flow import (
     lock_info_for_candidate,
     move_application,
     release_expired_locks,
+    restore_abandoned_application,
 )
 from common.logstore import write_log
 from common.response import BizCode, ok
@@ -142,6 +144,7 @@ def move(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     payload = request.get_json(silent=True) or {}
     try:
         version = int(payload.get("version", -1))
@@ -195,6 +198,7 @@ def assign_business(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     _ensure_hr_can_arrange(app)
     payload = request.get_json(silent=True) or {}
     try:
@@ -227,6 +231,7 @@ def direct_interview(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     current_roles = set(getattr(g.current_user, "roles", []) or [])
     current_roles.add(getattr(g.current_user, "role", ""))
     if BUSINESS_SCREENER in current_roles:
@@ -271,6 +276,7 @@ def next_interview(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     if app.get("status") != APP_IN_PROGRESS or app.get("current_stage") not in {
         "interview_passed", "interviewing", "interview_1", "interview_2",
     }:
@@ -348,6 +354,7 @@ def eliminate(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     payload = request.get_json(silent=True) or {}
     try:
         version = int(payload.get("version", app.get("version", 1)))
@@ -368,6 +375,7 @@ def abandon(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    require_candidate_lock_owner(app["candidate_id"])
     payload = request.get_json(silent=True) or {}
     reason = (payload.get("reason") or "").strip()
     if not reason:
@@ -388,4 +396,26 @@ def abandon(app_id: int):
             operator_id=g.current_user.user_id, operator_name=g.current_user.name,
             category="放弃", tags=[reason],
         )
+    return ok(application_to_dict(updated))
+
+
+@bp.post("/api/applications/<int:app_id>/restore")
+@role_required(HR, SUPER_ADMIN)
+def restore(app_id: int):
+    """Any HR may restore an abandoned application and take ownership."""
+    app = get_by_id("applications", app_id)
+    if app is None:
+        raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
+    payload = request.get_json(silent=True) or {}
+    try:
+        version = int(payload.get("version", app.get("version", 1)))
+    except (TypeError, ValueError):
+        raise BizError(BizCode.PARAM_INVALID, "version 必须为数字")
+    updated = restore_abandoned_application(
+        app,
+        operator_id=g.current_user.user_id,
+        operator_name=g.current_user.name,
+        version=version,
+        reason=(payload.get("reason") or "HR恢复流程").strip(),
+    )
     return ok(application_to_dict(updated))

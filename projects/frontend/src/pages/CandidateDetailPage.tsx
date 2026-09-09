@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, List, Modal, Radio, Row,
   Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
@@ -10,7 +10,7 @@ import { PageLoading } from '@/components/PageLoading';
 import {
   assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
   fetchTransitions, parseResume,
-  saveCandidate, unlockApplication, uploadResume,
+  saveCandidate, uploadResume,
 } from '@/services/candidate';
 import { fetchInterviews, INTERVIEW_STATUS_TEXT } from '@/services/interview';
 import type { Interview } from '@/services/interview';
@@ -24,7 +24,8 @@ import { fetchPlatformUsers } from '@/services/system';
 import type { PlatformUser } from '@/services/system';
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
-import { abandonApplication, moveApplication } from '@/services/pipeline';
+import { abandonApplication, moveApplication, restoreApplication } from '@/services/pipeline';
+import { removeFromPool } from '@/services/talentPool';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
@@ -32,7 +33,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const STAGE_TEXT: Record<string, string> = {
   // PRD v1.1 默认九阶段
-  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '业务复筛',
+  new_resume: '简历初筛', pending_screen: '简历初筛', hr_screen_passed: '业务复筛',
   pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试阶段',
   offer_pending: '录用通知', pending_onboard: '待入职', onboarded: '已入职',
   // 终态
@@ -73,7 +74,6 @@ const OPERATION_ACTION_TEXT: Record<string, string> = {
   apply_conclusion_fail: '应用未通过结论',
   eliminate: '淘汰候选人',
   abandon: '放弃候选人',
-  force_unlock: '强制解锁',
   status_reconcile: '修正流程状态',
   add: '加入人才库',
   add_auto: '自动加入人才库',
@@ -149,10 +149,19 @@ function StageProgress({ currentStage, interviewRound, transitions }: {
   const visibleStage = visibleInterviewStage && ['interviewing', 'interview_passed'].includes(currentStage)
     ? visibleInterviewStage
     : currentStage;
-  const reached = [visibleStage, ...transitions.flatMap((item) => [item.from_stage, item.to_stage])]
+  // 阶段条以当前阶段为准。历史流转只用于旧数据没有可识别当前阶段时的兜底，
+  // 不能用历史最高阶段覆盖“恢复到简历初筛”等回退后的当前状态。
+  const directIndex = stageFlowIndex(visibleStage);
+  const historyIndexes = transitions
+    .flatMap((item) => [item.from_stage, item.to_stage])
     .map(stageFlowIndex)
     .filter((index) => index >= 0);
-  const currentIndex = reached.length ? Math.max(...reached) : -1;
+  const isTerminated = ['abandoned', 'eliminated', 'talent_pool'].includes(currentStage);
+  const currentIndex = isTerminated
+    ? -1
+    : directIndex >= 0
+      ? directIndex
+      : (historyIndexes.length ? Math.max(...historyIndexes) : -1);
 
   return (
     <div style={{ overflowX: 'auto', padding: '18px 8px 6px' }}>
@@ -390,11 +399,18 @@ export function CandidateDetailPage() {
   if (loading && !detail) return <PageLoading />;
   if (!detail) return <Empty description="候选人不存在" />;
 
-  const canUnlock = user?.roles?.includes('unlock');
-  const canManage = ['hr', 'super_admin'].some((role) => user?.role === role || user?.roles?.includes(role));
+  const lockOwnerId = detail.lock?.owner_id || detail.owner_id;
+  const lockOwnerName = detail.lock?.owner_name || detail.owner_name;
+  const lockedByOther = Boolean(
+    user?.role === 'hr'
+      && lockOwnerId
+      && lockOwnerId !== user.user_id,
+  );
+  const canManage = !lockedByOther
+    && ['hr', 'super_admin'].some((role) => user?.role === role || user?.roles?.includes(role));
   const canResume = ['hr', 'super_admin', 'business_screener', 'interviewer'].some(
     (role) => user?.role === role || user?.roles?.includes(role),
-  );
+  ) && !lockedByOther;
   const candidate = detail;
   const selectedApplication = detail.applications.find((application) => application.id === selectedAppId)
     ?? detail.applications[0];
@@ -503,6 +519,11 @@ export function CandidateDetailPage() {
       && ['in_progress', 'pending_onboard'].includes(selectedApplication.status)
       && !['abandoned', 'eliminated', 'talent_pool', 'onboarded'].includes(selectedApplication.current_stage),
   );
+  const isHr = user?.role === 'hr';
+  const isAbandoned = selectedApplication?.current_stage === 'abandoned'
+    && selectedApplication.status === 'closed';
+  const canRestore = Boolean(isHr && isAbandoned);
+  const canRemoveFromPool = Boolean(canManage && isAbandoned && detail.talent_pool_entry);
   const flowActionItems = [
     ...(canManage ? [{ key: 'business', label: '推给业务复筛', disabled: !canArrangeFlow }] : []),
     { key: 'interview_1', label: '进入一面（业务）', disabled: !canDirectInterview },
@@ -515,9 +536,26 @@ export function CandidateDetailPage() {
       disabled: !canOfferFlowAction,
     },
     { key: 'offer', label: '创建 Offer', disabled: !canCreateOffer },
+    { key: 'restore', label: '恢复到流程', disabled: !canRestore },
     { key: 'pending_onboard', label: '进入待入职', disabled: true },
     { key: 'onboarded', label: '进入入职', disabled: true },
   ];
+
+  async function handleRestore() {
+    if (!selectedApplication || !canRestore) return;
+    await restoreApplication(selectedApplication.id, selectedApplication.version);
+    msg.success('流程已恢复到简历初筛，当前 HR 已成为负责人');
+    await load();
+    setTransitions(await fetchTransitions(selectedApplication.id));
+  }
+
+  async function handleRemoveFromPool() {
+    const entry = detail?.talent_pool_entry;
+    if (!entry || !canRemoveFromPool) return;
+    await removeFromPool(entry.id);
+    msg.success('已移除人才库');
+    await load();
+  }
 
   function openResumeEditor(values?: Partial<ResumeFormValues>) {
     resumeForm.setFieldsValue({
@@ -709,7 +747,14 @@ export function CandidateDetailPage() {
           {detail.name}
           {detail.lock && (
             <Tag color="error" style={{ marginLeft: 8 }}>
-              锁定中 · {detail.lock.start_at} ~ {detail.lock.end_at}
+              {detail.lock.stage_key === 'candidate_owner'
+                ? `负责人锁定${lockOwnerName ? ` · ${lockOwnerName}` : ''}`
+                : `锁定中 · ${detail.lock.start_at} ~ ${detail.lock.end_at}${lockOwnerName ? ` · 负责人：${lockOwnerName}` : ''}`}
+            </Tag>
+          )}
+          {lockedByOther && (
+            <Tag color="warning" style={{ marginLeft: 8 }}>
+              当前仅可查看，不能操作
             </Tag>
           )}
         </h2>
@@ -719,9 +764,16 @@ export function CandidateDetailPage() {
         <Row align="middle" justify="space-between" gutter={[16, 12]}>
           <Col flex="1 1 520px">
             <Space align="start" size={14}>
-              <Avatar size={64} style={{ background: '#eef2f5', color: '#8a969f', fontSize: 28 }}>
-                {detail.name.slice(0, 1)}
-              </Avatar>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <Avatar size={64} style={{ background: '#eef2f5', color: '#8a969f', fontSize: 28 }}>
+                  {detail.name.slice(0, 1)}
+                </Avatar>
+                {detail.lock && (
+                  <Tag color="error" icon={<LockOutlined />} style={{ margin: 0, fontSize: 12 }}>
+                    已锁定
+                  </Tag>
+                )}
+              </div>
               <div>
                 <Typography.Title level={3} style={{ margin: 0 }}>{detail.name}</Typography.Title>
                 <Typography.Text type="secondary">
@@ -746,8 +798,11 @@ export function CandidateDetailPage() {
         <Col xs={24} lg={15}>
           <Card
             title="基本信息" size="small" style={{ marginBottom: 16 }}
-            extra={canManage ? (
-              <Button size="small" icon={<EditOutlined />} onClick={() => openResumeEditor()}>
+            extra={canManage || lockedByOther ? (
+              <Button
+                size="small" icon={<EditOutlined />} disabled={!canManage}
+                onClick={() => openResumeEditor()}
+              >
                 编辑基本信息
               </Button>
             ) : null}
@@ -809,6 +864,8 @@ export function CandidateDetailPage() {
                   >
                     <Button size="small" icon={<UploadOutlined />}>上传简历</Button>
                   </Upload>
+                ) : lockedByOther ? (
+                  <Button size="small" icon={<UploadOutlined />} disabled>上传简历</Button>
                 ) : null}
               </Space>
             )}
@@ -856,37 +913,13 @@ export function CandidateDetailPage() {
         <Col xs={24} lg={9}>
           <Card
             title="阶段流转记录" size="small" style={{ marginBottom: 16 }}
-            extra={
-              <Space>
-                {canUnlock && detail.applications.some((a) => a.id === selectedAppId && a.status === 'in_progress') && (
-                  <Button
-                    size="small" danger
-                    onClick={() => {
-                      Modal.confirm({
-                        title: '强制解锁（将记录操作日志）',
-                        content: '请输入解锁原因',
-                        onOk: async () => {
-                          const reason = window.prompt('解锁原因');
-                          if (!reason) return;
-                          await unlockApplication(selectedAppId!, reason);
-                          msg.success('已解锁');
-                          void load();
-                        },
-                      });
-                    }}
-                  >
-                    强制解锁
-                  </Button>
-                )}
-              </Space>
-            }
           >
             {canShowFlowButton && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
                 <Space>
                   <Dropdown.Button
                   type="primary"
-                  disabled={!canUseFlowButton}
+                  disabled={!canUseFlowButton && !canRestore}
                   menu={{
                     items: flowActionItems,
                     onClick: ({ key }) => {
@@ -896,6 +929,7 @@ export function CandidateDetailPage() {
                       if (key === 'final_interview') void handleEnterFinalInterview();
                       if (key === 'offer_approval') void handleEnterOfferApproval();
                       if (key === 'offer' && canCreateOffer) navigate(`/offers?new=1&candidate=${id}`);
+                      if (key === 'restore') void handleRestore();
                     },
                   }}
                   onClick={() => {
@@ -911,12 +945,14 @@ export function CandidateDetailPage() {
                       void handleEnterOfferApproval();
                     } else if (canCreateOffer) {
                       navigate(`/offers?new=1&candidate=${id}`);
+                    } else if (canRestore) {
+                      void handleRestore();
                     } else {
                       void handleDirectInterview();
                     }
                   }}
                   >
-                  {flowPrimaryLabel}
+                  {canRestore ? '恢复到流程' : flowPrimaryLabel}
                   </Dropdown.Button>
                   {inInterviewStage ? (
                     <Button
@@ -927,10 +963,11 @@ export function CandidateDetailPage() {
                     >
                       安排面试
                     </Button>
-                  ) : canManage ? (
+                  ) : canManage || lockedByOther ? (
                     <Button
                       type="primary"
                       ghost
+                      disabled={!canManage}
                       onClick={openBusinessAssign}
                     >
                       推荐
@@ -939,6 +976,11 @@ export function CandidateDetailPage() {
                   <Button danger ghost disabled={!canAbandon} onClick={() => setAbandonOpen(true)}>
                     放弃
                   </Button>
+                  {detail.talent_pool_entry && isAbandoned && (
+                    <Button danger ghost disabled={!canRemoveFromPool} onClick={() => void handleRemoveFromPool()}>
+                      移除人才库
+                    </Button>
+                  )}
                 </Space>
               </div>
             )}
@@ -957,9 +999,10 @@ export function CandidateDetailPage() {
           </Card>
           <Card
             title="面试记录（当前应聘记录）" size="small" style={{ marginBottom: 16 }}
-            extra={canScheduleInterview ? (
+            extra={canScheduleInterview || lockedByOther ? (
               <Button
                 size="small" type="primary"
+                disabled={!canScheduleInterview}
                 onClick={() => navigate(
                   currentInterview
                     ? `/interviews?interview_id=${currentInterview.id}&open=1`
@@ -1004,9 +1047,10 @@ export function CandidateDetailPage() {
           </Card>
           <Card
             title="Offer 记录" size="small" style={{ marginBottom: 16 }}
-            extra={canManage ? (
+            extra={canManage || lockedByOther ? (
               <Button
                 size="small" type="primary"
+                disabled={!canManage}
                 onClick={() => navigate(`/offers?new=1&candidate=${id}`)}
               >
                 创建 Offer

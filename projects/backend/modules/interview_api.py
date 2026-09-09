@@ -15,6 +15,7 @@ from pymongo.errors import DuplicateKeyError
 from flask import Blueprint, current_app, g, request
 
 from common.background_failures import record_background_failure, resolve_background_failure
+from common.access import require_candidate_lock_owner
 from common.db import col, get_by_id, insert_doc, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
@@ -290,6 +291,7 @@ def get_interview(interview_id: int):
 def create_interview():
     payload = request.get_json(silent=True) or {}
     candidate, job, app_doc = _resolve_bindings(payload)
+    require_candidate_lock_owner(candidate["_id"])
     interviewer = _resolve_interviewer(payload)
 
     round_ = (payload.get("round") or "").strip()
@@ -357,6 +359,7 @@ def update_interview(interview_id: int):
         raise BizError(BizCode.STATE_INVALID, "已完成/已取消的面试不能编辑")
     payload = request.get_json(silent=True) or {}
     app_doc = require_interview_application(get_by_id("applications", doc.get("application_id")))
+    require_candidate_lock_owner(app_doc["candidate_id"])
     job_doc = get_by_id("jobs", doc.get("job_id")) or {}
     expected_round = _expected_round_for_stage(app_doc, job_doc)
     if expected_round is None:
@@ -433,6 +436,7 @@ STATUS_ACTION = {"invite": IV_INVITED, "confirm": IV_CONFIRMED, "cancel": IV_CAN
 @role_required(HR)
 def change_status(interview_id: int):
     doc = _get_or_404(interview_id)
+    require_candidate_lock_owner(doc["candidate_id"])
     payload = request.get_json(silent=True) or {}
     action = payload.get("action", "")
     target = STATUS_ACTION.get(action)
@@ -451,6 +455,7 @@ def change_status(interview_id: int):
 def reschedule(interview_id: int):
     """改期：保留原记录与修改原因，状态置为已改期。"""
     doc = _get_or_404(interview_id)
+    require_candidate_lock_owner(doc["candidate_id"])
     if doc["status"] in (IV_COMPLETED, IV_CANCELLED):
         raise BizError(BizCode.STATE_INVALID, "已完成/已取消的面试不能改期")
     payload = request.get_json(silent=True) or {}

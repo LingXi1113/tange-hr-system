@@ -12,6 +12,8 @@ export interface LockInfo {
   stage_key: string;
   start_at: string;
   end_at: string;
+  owner_id?: string;
+  owner_name?: string;
 }
 
 export interface CandidateRow {
@@ -23,6 +25,7 @@ export interface CandidateRow {
   city: string;
   tags: string;
   source: string;
+  owner_id?: string;
   owner_name: string;
   current_stage: string;
   created_at: string;
@@ -52,6 +55,7 @@ export interface CandidateDetail extends CandidateRow {
   work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
   remark: string;
   attachments: { id: number; file_name: string; file_type: string; parse_status: string; created_at: string }[];
+  talent_pool_entry: { id: number; status: string; source?: string; reason?: string } | null;
   applications: Application[];
   screening_records: {
     type: 'stage' | 'recommendation' | 'interview_reschedule';
@@ -166,11 +170,6 @@ export async function enterNextInterview(applicationId: number, version: number)
 export async function fetchTransitions(applicationId: number) {
   const resp = await http.get(`/api/applications/${applicationId}/transitions`);
   return unwrap<{ from_stage: string; to_stage: string; reason: string; operator_name: string; created_at: string }[]>(resp);
-}
-
-export async function unlockApplication(applicationId: number, reason: string) {
-  const resp = await http.post(`/api/applications/${applicationId}/unlock`, { reason });
-  return unwrap(resp);
 }
 
 export async function importCandidates(file: File) {

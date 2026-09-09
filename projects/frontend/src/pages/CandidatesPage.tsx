@@ -25,7 +25,7 @@ const SOURCE_TEXT: Record<string, string> = {
 
 // 接口保存阶段编码，候选人页面统一展示业务中文名称。
 const STAGE_TEXT: Record<string, string> = {
-  new_resume: '待筛选', pending_screen: '待筛选', hr_screen_passed: '人力筛选',
+  new_resume: '简历初筛', pending_screen: '简历初筛', hr_screen_passed: '人力筛选',
   business_screen: '业务筛选', pending_interview: '待面试', interviewing: '面试中',
   interview_1: '一面', interview_2: '二面', interview_3: '三面', hrbp_interview: 'HRBP确认', hr_interview: '人力面',
   interview_passed: '面试阶段', offer_approval: '最终筛选', offer_pending: '录用通知', offer: '录用通知',
@@ -149,9 +149,15 @@ export function CandidatesPage() {
         okText: '使用已有',
         cancelText: '取消',
         onOk: async () => {
-          if (selectedJobId) await assignJob(result.duplicates![0].id, Number(selectedJobId));
+          const existing = result.duplicates![0];
+          const ownerId = existing.lock?.owner_id || existing.owner_id;
+          if (ownerId && ownerId !== user?.user_id) {
+            msg.error(`该候选人正在由 ${existing.lock?.owner_name || existing.owner_name || '其他 HR'} 处理，当前不能进入或操作`);
+            return;
+          }
+          if (selectedJobId) await assignJob(existing.id, Number(selectedJobId));
           closeCreateDrawer();
-          navigate(`/candidates/${result.duplicates![0].id}`);
+          navigate(`/candidates/${existing.id}`);
         },
       });
       return;
@@ -216,12 +222,18 @@ export function CandidatesPage() {
         <Space size={4}>
           {canManage && <Popconfirm
             title="删除候选人？将彻底删除其资料、附件及全部招聘关联数据"
+            disabled={Boolean((record.lock?.owner_id || record.owner_id) && user?.role === 'hr'
+              && (record.lock?.owner_id || record.owner_id) !== user.user_id)}
             onConfirm={async () => {
               await deleteCandidate(record.id);
               msg.success('候选人及关联数据已彻底删除');
               void load();
             }}
-          ><Button size="small" type="link" danger>删除</Button></Popconfirm>}
+          ><Button
+            size="small" type="link" danger
+            disabled={Boolean((record.lock?.owner_id || record.owner_id) && user?.role === 'hr'
+              && (record.lock?.owner_id || record.owner_id) !== user.user_id)}
+          >删除</Button></Popconfirm>}
         </Space>
       ),
     },

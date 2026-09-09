@@ -14,7 +14,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from common.db import col, get_by_id, insert_doc, update_doc, dt
-from common.access import OFFER_FILE_ACCESS_ROLES, OFFER_READ_ROLES
+from common.access import OFFER_FILE_ACCESS_ROLES, OFFER_READ_ROLES, require_candidate_lock_owner
 from common.decorators import role_required
 from common.errors import BizError
 from common.file_service import get_storage, save_uploaded_file
@@ -211,6 +211,7 @@ def create_offer():
     ensure_core_indexes()
     payload = request.get_json(silent=True) or {}
     candidate, job, app_doc = _resolve_bindings(payload)
+    require_candidate_lock_owner(candidate["_id"])
     _check_stage_gate(app_doc)
     _check_single_active(app_doc["_id"])
 
@@ -266,6 +267,7 @@ def update_offer(offer_id: int):
     app_doc = get_by_id("applications", doc.get("application_id"))
     if app_doc is None:
         raise BizError(BizCode.STATE_INVALID, "Offer 关联的应聘记录不存在")
+    require_candidate_lock_owner(app_doc["candidate_id"])
     require_offer_application(app_doc, action="create")
     payload = request.get_json(silent=True) or {}
     fields = {}
@@ -328,6 +330,7 @@ def change_status(offer_id: int):
     app_doc = get_by_id("applications", doc.get("application_id"))
     if app_doc is None:
         raise BizError(BizCode.STATE_INVALID, "Offer 关联的应聘记录不存在")
+    require_candidate_lock_owner(app_doc["candidate_id"])
     check_action = action if action in {"submit", "send", "accept"} else "create"
     require_offer_application(app_doc, action=check_action)
     reason = (payload.get("reason") or "").strip()

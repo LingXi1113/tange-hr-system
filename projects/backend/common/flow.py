@@ -1,7 +1,7 @@
 """招聘流程核心服务（MongoDB 版）：阶段序列、锁定期、应聘记录创建与流转。
 
 规则：
-- 锁定计时：进入阶段开始、离开结束、到期自动释放、强制解锁记日志；
+- 锁定计时：进入阶段开始、离开结束、到期自动释放；
 - 锁定期内限制候选人被重复分配到其他职位；
 - 阶段流转必须写入 stage_transitions，并用 version 乐观锁防并发。
 """
@@ -247,14 +247,12 @@ def start_stage_lock(application_doc: dict, session=None, lock_days_override=Non
         "application_id": application_doc["_id"],
         "candidate_id": application_doc["candidate_id"],
         "stage_key": application_doc["current_stage"],
+        "owner_id": application_doc.get("owner_id", ""),
+        "owner_name": application_doc.get("owner_name", ""),
         "start_at": now,
         "end_at": now + timedelta(days=days),
         "released": False,
         "auto_released": False,
-        "force_unlocked": False,
-        "unlock_reason": "",
-        "unlock_operator_id": "",
-        "unlock_operator_name": "",
         "created_at": now,
     }
     col("lock_records").insert_one(lock, session=session)
@@ -271,12 +269,37 @@ def release_stage_lock(application_doc: dict, session=None):
 
 def lock_info_for_candidate(candidate_id: int):
     lock = active_lock_for_candidate(candidate_id)
-    if not lock:
+    candidate = get_by_id("candidates", candidate_id) or {}
+    if not lock and candidate:
+        lock = active_lock_for_candidate_identity(candidate)
+    application = get_by_id("applications", lock.get("application_id")) if lock else {}
+    application = application or {}
+    owner_id = (
+        (lock or {}).get("owner_id", "")
+        or application.get("owner_id", "")
+        or candidate.get("owner_id", "")
+    )
+    owner_name = (
+        (lock or {}).get("owner_name", "")
+        or application.get("owner_name", "")
+        or candidate.get("owner_name", "")
+    )
+    if not lock and not owner_id:
         return None
+    if not lock:
+        return {
+            "stage_key": "candidate_owner",
+            "start_at": "",
+            "end_at": "",
+            "owner_id": owner_id,
+            "owner_name": owner_name,
+        }
     return {
         "stage_key": lock["stage_key"],
         "start_at": lock["start_at"].strftime("%Y-%m-%d %H:%M:%S"),
         "end_at": lock["end_at"].strftime("%Y-%m-%d %H:%M:%S"),
+        "owner_id": owner_id,
+        "owner_name": owner_name,
     }
 
 
@@ -690,6 +713,104 @@ def move_application(application_doc: dict, to_stage: str, reason: str,
     except Exception:
         if session is None:
             _rollback_application_transition(app_doc, updated, before_locks, transition_id, lock_doc)
+        raise
+    updated["_workflow_rollback"] = {
+        "before_app": app_doc,
+        "updated_app": updated,
+        "before_locks": before_locks,
+        "transition_id": transition_id,
+        "new_lock": lock_doc,
+    }
+    return updated
+
+
+def restore_abandoned_application(application_doc: dict, operator_id: str,
+                                  operator_name: str, version: int = None,
+                                  reason: str = "HR恢复流程"):
+    """Reopen an abandoned application at the initial screening stage.
+
+    Restoration is intentionally available to any HR: the HR who clicks the
+    action becomes the new owner and receives the fresh stage lock.
+    """
+    app_doc = _refresh(application_doc) or application_doc
+    app_doc = reconcile_application_status(app_doc)
+    if app_doc.get("status") != APP_CLOSED or app_doc.get("current_stage") != "abandoned":
+        raise BizError(BizCode.STATE_INVALID, "只有已放弃的应聘记录可以恢复流程")
+    expected_version = app_doc.get("version", 1) if version is None else version
+    if expected_version != app_doc.get("version", 1):
+        raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")
+
+    job_doc = get_by_id("jobs", app_doc["job_id"]) or {}
+    sequence = job_stage_sequence(job_doc)
+    valid_keys = {stage.stage_key for stage in sequence}
+    # 恢复流程应停留在“简历初筛”，而不是回到“新简历”。
+    # 旧岗位模板可能没有 pending_screen，因此仅在兼容旧模板时回退到 new_resume。
+    target_stage = (
+        "pending_screen" if "pending_screen" in valid_keys
+        else "new_resume" if "new_resume" in valid_keys
+        else ""
+    )
+    if target_stage not in valid_keys:
+        raise BizError(BizCode.STATE_INVALID, "当前职位流程没有配置简历初筛阶段")
+
+    now = _now()
+    candidate_before = get_by_id("candidates", app_doc["candidate_id"]) or {}
+    before_locks = list(col("lock_records").find({
+        "application_id": app_doc["_id"], "released": False,
+    }))
+    updated = col("applications").find_one_and_update(
+        {"_id": app_doc["_id"], "version": expected_version, "status": APP_CLOSED,
+         "current_stage": "abandoned"},
+        {"$set": {
+            "current_stage": target_stage,
+            "status": APP_IN_PROGRESS,
+            "owner_id": operator_id,
+            "owner_name": operator_name,
+            "business_screener_id": "",
+            "business_screener_name": "",
+            "interview_round": "",
+            "stage_entered_at": now,
+            "updated_at": now,
+         }, "$inc": {"version": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")
+
+    lock_doc = None
+    transition_id = next_id("stage_transitions")
+    try:
+        release_stage_lock(updated)
+        col("candidates").update_one(
+            {"_id": updated["candidate_id"]},
+            {"$set": {"owner_id": operator_id, "owner_name": operator_name,
+                       "updated_at": now}},
+        )
+        col("stage_transitions").insert_one({
+            "_id": transition_id,
+            "application_id": updated["_id"],
+            "from_stage": "abandoned",
+            "to_stage": target_stage,
+            "reason": reason,
+            "operator_id": operator_id,
+            "operator_name": operator_name,
+            "created_at": now,
+        })
+        lock_doc = start_stage_lock(updated)
+        write_log("application", "restore", operator_id, operator_name,
+                  biz_id=str(updated["_id"]), detail=reason)
+    except Exception:
+        restore_fields = {key: value for key, value in app_doc.items() if key != "_id"}
+        col("applications").update_one(
+            {"_id": updated["_id"], "version": expected_version + 1},
+            {"$set": restore_fields},
+        )
+        candidate_fields = {key: value for key, value in candidate_before.items() if key != "_id"}
+        if candidate_fields:
+            col("candidates").update_one({"_id": candidate_before["_id"]}, {"$set": candidate_fields})
+        col("stage_transitions").delete_one({"_id": transition_id})
+        if lock_doc:
+            col("lock_records").delete_one({"_id": lock_doc["_id"]})
         raise
     updated["_workflow_rollback"] = {
         "before_app": app_doc,
