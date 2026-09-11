@@ -183,6 +183,9 @@ def test_apply_conclusion_pass_advances_stage(client):
     assert body["code"] == 0, body
     assert body["data"]["action"] == "pass"
     assert body["data"]["application"]["current_stage"] == "interview_passed"
+    screening = client.get(f"/api/candidates/{cid}").get_json()["data"]["screening_records"]
+    assert any(item["title"] == "面试评价通过" for item in screening)
+    assert any(item["title"] == "提交面试评价" for item in screening)
     # version 冲突
     iid2 = _complete_with_feedback(client, app["id"], "pass", offset_hours=48)
     r = client.post(f"/api/interviews/{iid2}/apply-conclusion", json={"version": 999})

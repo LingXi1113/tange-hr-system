@@ -251,25 +251,47 @@ def get_candidate(cid: int):
 
     interview_docs = list(col("interviews").find({
         "application_id": {"$in": app_ids},
-    }, {"_id": 1, "round": 1}))
+    }, {"_id": 1, "round": 1, "application_id": 1}))
     interview_rounds = {str(item.get("_id")): item.get("round", "") for item in interview_docs}
     interview_ids = list(interview_rounds)
     if interview_ids:
-        reschedule_logs = col("operation_logs").find({
+        interview_action_titles = {
+            "create": "安排面试",
+            "update": "编辑面试",
+            "invite": "发出面试邀请",
+            "confirm": "确认面试",
+            "complete": "完成面试",
+            "cancel": "取消面试",
+            "reschedule": "面试改期",
+            "feedback": "提交面试评价",
+            "apply_conclusion_pass": "面试评价通过",
+            "apply_conclusion_fail": "面试评价不通过",
+        }
+        interview_logs = col("operation_logs").find({
             "biz_type": "interview",
             "biz_id": {"$in": interview_ids},
-            "action": "reschedule",
         }).sort("_id", -1).limit(100)
-        for log in reschedule_logs:
+        for log in interview_logs:
             round_name = interview_rounds.get(str(log.get("biz_id")), "")
+            action = log.get("action", "")
+            title = interview_action_titles.get(action, "面试操作")
+            detail = log.get("detail", "")
+            if action == "reschedule":
+                detail = f"{round_name}：改期原因：{detail}" if round_name else f"改期原因：{detail}"
+            elif action == "complete" and detail == "状态变更为 completed":
+                detail = "面试已完成"
+            elif action == "feedback" and detail.startswith("结论="):
+                detail = f"{round_name}：{detail}" if round_name else detail
+            elif not detail:
+                detail = f"{round_name}：{title}" if round_name else title
             screening_records.append({
-                "type": "interview_reschedule",
+                "type": "interview",
                 "category": "interview",
-                "title": "面试改期",
+                "title": title,
                 "from_stage": "",
-                "to_stage": "",
+                "to_stage": round_name,
                 "operator_name": log.get("operator_name", ""),
-                "detail": f"{round_name}：改期原因：{log.get('detail', '')}" if round_name else f"改期原因：{log.get('detail', '')}",
+                "detail": detail,
                 "created_at": dt(log.get("created_at")),
             })
     screening_records.sort(key=lambda item: item.get("created_at", ""), reverse=True)

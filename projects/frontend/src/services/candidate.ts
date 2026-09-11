@@ -58,7 +58,7 @@ export interface CandidateDetail extends CandidateRow {
   talent_pool_entry: { id: number; status: string; source?: string; reason?: string } | null;
   applications: Application[];
   screening_records: {
-    type: 'stage' | 'recommendation' | 'interview_reschedule';
+    type: 'stage' | 'recommendation' | 'interview' | 'interview_reschedule';
     category: 'recommendation' | 'interview' | 'offer';
     title: string;
     from_stage: string;

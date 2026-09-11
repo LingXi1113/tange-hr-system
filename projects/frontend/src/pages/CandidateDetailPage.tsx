@@ -116,10 +116,6 @@ const INTERVIEW_STAGE_KEYS = new Set([
   'interview_1', 'interview_2', 'interview_3', 'hr_interview', 're_interview',
 ]);
 
-const INTERVIEW_HISTORY_STAGE_KEYS = new Set([
-  ...INTERVIEW_STAGE_KEYS, 'interview_passed', 'hrbp_interview', 'offer_pending', 'pending_onboard', 'onboarded',
-]);
-
 const INTERVIEW_STAGE_ROUNDS: Record<string, string> = {
   interview_1: '一面', interview_2: '二面', interview_3: '三面',
   hr_interview: 'HR面试', re_interview: '复试',
@@ -334,8 +330,8 @@ export function CandidateDetailPage() {
   }, [selectedAppId]);
 
   useEffect(() => {
-    const selectedStage = detail?.applications.find((application) => application.id === selectedAppId)?.current_stage;
-    if (selectedAppId && INTERVIEW_HISTORY_STAGE_KEYS.has(selectedStage ?? '')) {
+    // 面试不通过后应聘记录会进入人才库/终止阶段，但历史面试仍需保留展示。
+    if (selectedAppId) {
       let active = true;
       setInterviews([]);
       fetchInterviews({ application_id: selectedAppId, page_size: 50 }).then((d) => {
@@ -399,10 +395,11 @@ export function CandidateDetailPage() {
   if (loading && !detail) return <PageLoading />;
   if (!detail) return <Empty description="候选人不存在" />;
 
-  const lockOwnerId = detail.lock?.owner_id || detail.owner_id;
-  const lockOwnerName = detail.lock?.owner_name || detail.owner_name;
+  const lockOwnerId = detail.lock?.owner_id;
+  const lockOwnerName = detail.lock?.owner_name;
   const lockedByOther = Boolean(
-    user?.role === 'hr'
+    detail.lock
+      && user?.role === 'hr'
       && lockOwnerId
       && lockOwnerId !== user.user_id,
   );
@@ -519,10 +516,14 @@ export function CandidateDetailPage() {
       && ['in_progress', 'pending_onboard'].includes(selectedApplication.status)
       && !['abandoned', 'eliminated', 'talent_pool', 'onboarded'].includes(selectedApplication.current_stage),
   );
-  const isHr = user?.role === 'hr';
+  const currentApplicationStage = selectedApplication?.current_stage || detail.current_stage;
+  const isInterrupted = ['abandoned', 'eliminated', 'talent_pool'].includes(currentApplicationStage);
+  const hasHrPermission = ['hr', 'super_admin'].some(
+    (role) => user?.role === role || user?.roles?.includes(role),
+  );
+  const canRestore = Boolean(isInterrupted && hasHrPermission);
   const isAbandoned = selectedApplication?.current_stage === 'abandoned'
     && selectedApplication.status === 'closed';
-  const canRestore = Boolean(isHr && isAbandoned);
   const canRemoveFromPool = Boolean(canManage && isAbandoned && detail.talent_pool_entry);
   const flowActionItems = [
     ...(canManage ? [{ key: 'business', label: '推给业务复筛', disabled: !canArrangeFlow }] : []),
@@ -928,8 +929,8 @@ export function CandidateDetailPage() {
                       if (key === 'interview_2') void handleEnterSecondInterview();
                       if (key === 'final_interview') void handleEnterFinalInterview();
                       if (key === 'offer_approval') void handleEnterOfferApproval();
-                      if (key === 'offer' && canCreateOffer) navigate(`/offers?new=1&candidate=${id}`);
                       if (key === 'restore') void handleRestore();
+                      if (key === 'offer' && canCreateOffer) navigate(`/offers?new=1&candidate=${id}`);
                     },
                   }}
                   onClick={() => {
@@ -1040,7 +1041,13 @@ export function CandidateDetailPage() {
                 },
                 {
                   title: '状态', dataIndex: 'status', width: 80,
-                  render: (v: string) => INTERVIEW_STATUS_TEXT[v] ?? v,
+                  render: (v: string, r: Interview) => (
+                    <Space size={4} wrap>
+                      <Tag>{INTERVIEW_STATUS_TEXT[v] ?? v}</Tag>
+                      {r.feedback_conclusion === 'fail' && <Tag color="error">不通过</Tag>}
+                      {r.feedback_conclusion === 'pass' && <Tag color="success">通过</Tag>}
+                    </Space>
+                  ),
                 },
               ]}
             />
@@ -1101,7 +1108,9 @@ export function CandidateDetailPage() {
                     <Typography.Text>
                       {l.type === 'recommendation'
                         ? '推荐了候选人'
-                        : l.type === 'interview_reschedule' ? '改期了面试' : '推进了候选人'}
+                        : ['interview', 'interview_reschedule'].includes(l.type)
+                          ? l.title
+                          : '推进了候选人'}
                     </Typography.Text>
                     <Typography.Text type="secondary" style={{ marginLeft: 'auto' }}>
                       {l.created_at}

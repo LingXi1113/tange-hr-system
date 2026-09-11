@@ -402,7 +402,7 @@ def abandon(app_id: int):
 @bp.post("/api/applications/<int:app_id>/restore")
 @role_required(HR, SUPER_ADMIN)
 def restore(app_id: int):
-    """Any HR may restore an abandoned application and take ownership."""
+    """Any HR may restart an interrupted application and take ownership."""
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")

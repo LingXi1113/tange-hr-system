@@ -274,6 +274,19 @@ def lock_info_for_candidate(candidate_id: int):
         lock = active_lock_for_candidate_identity(candidate)
     application = get_by_id("applications", lock.get("application_id")) if lock else {}
     application = application or {}
+    # 终态应聘记录即使遗留旧锁定数据，也不能继续把候选人显示为已锁定。
+    # 阶段流转会释放正常锁，这里再做一次兜底清理，兼容历史数据。
+    if lock and application.get("status") not in (APP_IN_PROGRESS, APP_PENDING_ONBOARD):
+        col("lock_records").update_one(
+            {"_id": lock["_id"], "released": False},
+            {"$set": {"released": True, "auto_released": True, "end_at": _now()}},
+        )
+        lock = None
+        application = {}
+    # 没有实际锁时，只有仍有进行中的应聘记录才使用候选人负责人字段。
+    # 淘汰/放弃/人才库后的旧负责人只是历史信息，不再代表锁定。
+    if not lock and col("applications").find_one({"candidate_id": candidate_id}):
+        return None
     owner_id = (
         (lock or {}).get("owner_id", "")
         or application.get("owner_id", "")
@@ -727,15 +740,20 @@ def move_application(application_doc: dict, to_stage: str, reason: str,
 def restore_abandoned_application(application_doc: dict, operator_id: str,
                                   operator_name: str, version: int = None,
                                   reason: str = "HR恢复流程"):
-    """Reopen an abandoned application at the initial screening stage.
+    """Reopen an interrupted application at the initial screening stage.
 
-    Restoration is intentionally available to any HR: the HR who clicks the
-    action becomes the new owner and receives the fresh stage lock.
+    Restoration is intentionally available to any HR for terminal workflow
+    states that can be restarted. The HR who clicks the action becomes the
+    new owner and receives the fresh stage lock.
     """
     app_doc = _refresh(application_doc) or application_doc
     app_doc = reconcile_application_status(app_doc)
-    if app_doc.get("status") != APP_CLOSED or app_doc.get("current_stage") != "abandoned":
-        raise BizError(BizCode.STATE_INVALID, "只有已放弃的应聘记录可以恢复流程")
+    interrupted_stages = {"abandoned", "eliminated", "talent_pool"}
+    if (
+        app_doc.get("current_stage") not in interrupted_stages
+        or app_doc.get("status") not in {APP_CLOSED, APP_ELIMINATED}
+    ):
+        raise BizError(BizCode.STATE_INVALID, "只有已中断的应聘记录可以恢复流程")
     expected_version = app_doc.get("version", 1) if version is None else version
     if expected_version != app_doc.get("version", 1):
         raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")
@@ -755,12 +773,14 @@ def restore_abandoned_application(application_doc: dict, operator_id: str,
 
     now = _now()
     candidate_before = get_by_id("candidates", app_doc["candidate_id"]) or {}
+    from_stage = app_doc.get("current_stage", "")
     before_locks = list(col("lock_records").find({
         "application_id": app_doc["_id"], "released": False,
     }))
     updated = col("applications").find_one_and_update(
-        {"_id": app_doc["_id"], "version": expected_version, "status": APP_CLOSED,
-         "current_stage": "abandoned"},
+        {"_id": app_doc["_id"], "version": expected_version,
+         "status": {"$in": [APP_CLOSED, APP_ELIMINATED]},
+         "current_stage": {"$in": list(interrupted_stages)}},
         {"$set": {
             "current_stage": target_stage,
             "status": APP_IN_PROGRESS,
@@ -789,7 +809,7 @@ def restore_abandoned_application(application_doc: dict, operator_id: str,
         col("stage_transitions").insert_one({
             "_id": transition_id,
             "application_id": updated["_id"],
-            "from_stage": "abandoned",
+            "from_stage": from_stage,
             "to_stage": target_stage,
             "reason": reason,
             "operator_id": operator_id,

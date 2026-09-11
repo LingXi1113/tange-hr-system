@@ -28,6 +28,7 @@ const TIME_FMT = 'YYYY-MM-DD HH:mm';
 
 interface AppOption {
   id: number;
+  job_id: number;
   job_name: string;
   current_stage: string;
   status: string;
@@ -48,6 +49,7 @@ export function InterviewsPage() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingJobId, setEditingJobId] = useState<number | null>(null);
   const [form] = Form.useForm();
   const [candidates, setCandidates] = useState<{ id: number; name: string }[]>([]);
   const [appOptions, setAppOptions] = useState<AppOption[]>([]);
@@ -105,6 +107,7 @@ export function InterviewsPage() {
 
   async function openEditor(record: Interview | null) {
     setEditingId(record?.id ?? null);
+    setEditingJobId(null);
     if (!interviewers.length) {
       setInterviewers((await fetchPlatformUsers()).filter((item) =>
         item.role === 'interviewer' || item.role === 'business_screener'));
@@ -119,6 +122,7 @@ export function InterviewsPage() {
     if (record) {
       const detail = await fetchInterview(record.id);
       await loadAppOptions(detail.candidate_id);
+      setEditingJobId(detail.job_id);
       setRoundLocked(Boolean(detail.application_id));
       form.setFieldsValue({
         ...detail,
@@ -129,6 +133,7 @@ export function InterviewsPage() {
       form.resetFields();
       setAppOptions([]);
       setRoundLocked(false);
+      setEditingJobId(null);
     }
     setDrawerOpen(true);
   }
@@ -151,6 +156,7 @@ export function InterviewsPage() {
 
   const openEditorForCandidate = useCallback(async (candidateId: number, applicationId?: number) => {
     setEditingId(null);
+    setEditingJobId(null);
     if (!interviewers.length) {
       setInterviewers((await fetchPlatformUsers()).filter((item) =>
         item.role === 'interviewer' || item.role === 'business_screener'));
@@ -176,10 +182,12 @@ export function InterviewsPage() {
     form.resetFields();
     form.setFieldsValue({
       candidate_id: candidateId,
-      application_id: selectedApplicationId,
+      // 新建面试由职位选择驱动，保存时再创建/绑定应聘记录。
+      application_id: undefined,
+      job_id: selectedApplication?.job_id,
       round: roundForApplication(selectedApplication) || INTERVIEW_ROUND_OPTIONS[0],
     });
-    setRoundLocked(Boolean(selectedApplicationId && roundForApplication(selectedApplication)));
+    setRoundLocked(false);
     setDrawerOpen(true);
   }, [candidates.length, evalTemplates.length, form, interviewers.length, loadAppOptions, loadJobs]);
 
@@ -204,16 +212,25 @@ export function InterviewsPage() {
   async function handleSave() {
     const values = await form.validateFields();
     let applicationId = values.application_id as number | undefined;
+    const candidateId = Number(values.candidate_id);
+    const jobId = Number(values.job_id);
+    if (editingId && editingJobId && jobId !== editingJobId) {
+      // 更换职位时不能继续使用原应聘记录，改为切换到新职位对应的记录。
+      applicationId = undefined;
+    }
     if (!applicationId) {
-      const candidateId = Number(values.candidate_id);
-      const jobId = Number(values.job_id);
       if (!candidateId || !jobId) {
         msg.error('安排面试前请选择职位');
         return;
       }
-      const application = await assignJob(candidateId, jobId, 'interview_arrangement');
-      const enteredInterview = await directInterview(application.id, application.version);
-      applicationId = enteredInterview.id;
+      const existingApplication = appOptions.find((item) => item.job_id === jobId);
+      if (existingApplication) {
+        applicationId = existingApplication.id;
+      } else {
+        const application = await assignJob(candidateId, jobId, 'interview_arrangement');
+        const enteredInterview = await directInterview(application.id, application.version);
+        applicationId = enteredInterview.id;
+      }
     }
     const startAt = values.start_at as Dayjs;
     const endAt = values.end_at as Dayjs | undefined;
@@ -226,8 +243,9 @@ export function InterviewsPage() {
     };
     setSaving(true);
     try {
-      await saveInterview(editingId, payload);
-      msg.success(editingId ? '面试已更新' : '面试已创建');
+      const saveId = editingId && editingJobId === jobId ? editingId : null;
+      await saveInterview(saveId, payload);
+      msg.success(saveId ? '面试已更新' : '面试已创建');
       setDrawerOpen(false);
       void load();
     } finally {
@@ -400,6 +418,7 @@ export function InterviewsPage() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="version" hidden><Input /></Form.Item>
+          <Form.Item name="application_id" hidden><Input /></Form.Item>
           <Form.Item name="candidate_id" label="候选人" rules={[{ required: true, message: '必填' }]}>
             <Select
               showSearch optionFilterProp="label" placeholder="选择候选人"
@@ -413,33 +432,23 @@ export function InterviewsPage() {
               }}
             />
           </Form.Item>
-          {appOptions.length ? (
-            <Form.Item name="application_id" label="应聘记录（候选人 + 职位绑定）" rules={[{ required: true, message: '必填' }]}>
-              <Select
-                placeholder="选择应聘记录"
-                options={appOptions.map((a) => ({
-                  value: a.id, label: `${a.job_name} · ${a.current_stage}`,
-                }))}
-                onChange={(value) => {
-                  const application = appOptions.find((item) => item.id === value);
-                  const round = roundForApplication(application);
-                  if (round) form.setFieldValue('round', round);
-                  setRoundLocked(Boolean(round));
-                }}
-              />
-            </Form.Item>
-          ) : (
-            <Form.Item name="job_id" label="安排面试职位" rules={[{ required: true, message: '请选择职位' }]}>
-              <Select
-                showSearch optionFilterProp="label"
-                placeholder="在安排面试时选择职位"
-                options={jobs.map((job) => ({
-                  value: job.id,
-                  label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
-                }))}
-              />
-            </Form.Item>
-          )}
+          <Form.Item name="job_id" label="职位" rules={[{ required: true, message: '请选择职位' }]}>
+            <Select
+              showSearch optionFilterProp="label"
+              placeholder="选择面试职位"
+              options={jobs.map((job) => ({
+                value: job.id,
+                label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+              }))}
+              onChange={(value: number) => {
+                const application = appOptions.find((item) => item.job_id === value);
+                const round = roundForApplication(application)
+                  || (value === editingJobId ? form.getFieldValue('round') : INTERVIEW_ROUND_OPTIONS[0]);
+                if (round) form.setFieldValue('round', round);
+                setRoundLocked(Boolean(editingId && value === editingJobId && round));
+              }}
+            />
+          </Form.Item>
           <Space style={{ width: '100%' }} styles={{ item: { width: '50%' } }}>
             <Form.Item name="round" label="面试轮次" rules={[{ required: true, message: '必填' }]} style={{ width: '100%' }}>
               <Select
