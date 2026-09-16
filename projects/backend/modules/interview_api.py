@@ -15,17 +15,19 @@ from pymongo.errors import DuplicateKeyError
 from flask import Blueprint, current_app, g, request
 
 from common.background_failures import record_background_failure, resolve_background_failure
+from common.access import require_candidate_lock_owner
 from common.db import col, get_by_id, insert_doc, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
     advance_interview_round, application_to_dict, configured_interview_rounds,
-    expected_interview_round, move_application,
+    effective_interview_round, eliminate_application, expected_interview_round, move_application,
+    job_stage_sequence,
 )
 from common.interview_guard import candidate_schedule_guard
 from common.logstore import write_log
 from common.response import BizCode, ok
-from common.roles import HR
+from common.roles import BUSINESS_SCREENER, HR, INTERVIEWER, SUPER_ADMIN
 from common.stages import INTERVIEW_ROUNDS
 from common.status import APP_IN_PROGRESS
 from common.consistency import require_interview_application
@@ -34,6 +36,7 @@ from common.stage_rules import add_application_to_talent_pool
 bp = Blueprint("interview_api", __name__, url_prefix="/api/interviews")
 
 INTERVIEW_TYPES = ("onsite", "video", "phone")
+INTERVIEWER_ROLES = {BUSINESS_SCREENER, INTERVIEWER}
 
 # 面试记录必须挂在当前面试阶段；旧版阶段名继续兼容，并与面试轮次一一对应。
 INTERVIEW_STAGE_ROUNDS = {
@@ -46,10 +49,10 @@ IV_PENDING, IV_INVITED, IV_CONFIRMED, IV_COMPLETED, IV_CANCELLED, IV_RESCHEDULED
     "pending", "invited", "confirmed", "completed", "cancelled", "rescheduled",
 )
 INTERVIEW_FLOW = {
-    IV_PENDING: [IV_INVITED, IV_RESCHEDULED, IV_CANCELLED],
-    IV_INVITED: [IV_CONFIRMED, IV_RESCHEDULED, IV_CANCELLED],
+    IV_PENDING: [IV_INVITED, IV_COMPLETED, IV_RESCHEDULED, IV_CANCELLED],
+    IV_INVITED: [IV_CONFIRMED, IV_COMPLETED, IV_RESCHEDULED, IV_CANCELLED],
     IV_CONFIRMED: [IV_COMPLETED, IV_RESCHEDULED, IV_CANCELLED],
-    IV_RESCHEDULED: [IV_INVITED, IV_CONFIRMED, IV_CANCELLED],
+    IV_RESCHEDULED: [IV_INVITED, IV_CONFIRMED, IV_COMPLETED, IV_CANCELLED],
     IV_COMPLETED: [],
     IV_CANCELLED: [],
 }
@@ -136,8 +139,10 @@ def _interview_view(doc: dict) -> dict:
         "end_at": dt(doc.get("end_at"))[:16],
         "location": doc.get("location", ""),
         "meeting_link": doc.get("meeting_link", ""),
+        "interviewer_id": doc.get("interviewer_id", ""),
         "interviewer_name": doc.get("interviewer_name", ""),
         "interviewer_contact": doc.get("interviewer_contact", ""),
+        "created_by": doc.get("created_by", ""),
         "template_id": doc.get("template_id"),
         # summary 为面试内容摘要；旧数据没有该字段时兼容展示原备注。
         "summary": doc.get("summary", doc.get("remark", "")),
@@ -179,7 +184,7 @@ def _feedback_view(doc: dict) -> dict:
         "conclusion": doc.get("conclusion", ""),
         "comment": doc.get("comment", ""),
         "risk_note": doc.get("risk_note", ""),
-        "suggested_salary": doc.get("suggested_salary", ""),
+        "evaluator_id": doc.get("evaluator_id", ""),
         "evaluator_name": doc.get("evaluator_name", ""),
         "skip_eval": doc.get("skip_eval", False),
         "version": doc.get("version", 1),
@@ -190,6 +195,33 @@ def _feedback_view(doc: dict) -> dict:
 
 def _get_feedback(interview_id: int):
     return col("interview_feedback").find_one({"interview_id": interview_id})
+
+
+def _resolve_interviewer(payload: dict):
+    """面试必须指派给真实业务人员，避免只填写任意姓名导致无法追责。"""
+    from platform_identity import get_identity
+
+    identity = get_identity(current_app)
+    interviewer_id = (payload.get("interviewer_id") or "").strip()
+    interviewer_name = (payload.get("interviewer_name") or "").strip()
+    user = identity.get_user(interviewer_id) if interviewer_id else None
+    if user is None and interviewer_name:
+        user = next((item for item in identity.list_users()
+                     if item.name == interviewer_name and item.role in INTERVIEWER_ROLES), None)
+    if user is None or user.role not in INTERVIEWER_ROLES:
+        raise BizError(BizCode.PARAM_INVALID, "请选择有效的面试业务人员")
+    return user
+
+
+def _require_interviewer_access(doc: dict):
+    """只有当前这场面试的业务面试人员可以填写或确认反馈。"""
+    user = g.current_user
+    if user.role not in INTERVIEWER_ROLES:
+        raise BizError(BizCode.FORBIDDEN, "只有被指派的面试业务人员可以填写面试评价")
+    assigned_id = doc.get("interviewer_id", "")
+    allowed = assigned_id == user.user_id if assigned_id else doc.get("interviewer_name", "") == user.name
+    if not allowed:
+        raise BizError(BizCode.FORBIDDEN, "只有本场面试的业务人员可以填写面试评价")
 
 
 def _expected_round_for_stage(app_doc: dict, job_doc: dict):
@@ -203,7 +235,7 @@ def _expected_round_for_stage(app_doc: dict, job_doc: dict):
     if configured_rounds:
         return expected_interview_round(app_doc, job_doc)
     # 历史职位未配置面试轮次时，首个面试阶段默认只能安排一面。
-    current_round = app_doc.get("interview_round", "")
+    current_round = effective_interview_round(app_doc, job_doc)
     return current_round if current_round in INTERVIEW_ROUNDS else "一面"
 
 
@@ -260,6 +292,8 @@ def get_interview(interview_id: int):
 def create_interview():
     payload = request.get_json(silent=True) or {}
     candidate, job, app_doc = _resolve_bindings(payload)
+    require_candidate_lock_owner(candidate["_id"])
+    interviewer = _resolve_interviewer(payload)
 
     round_ = (payload.get("round") or "").strip()
     if round_ not in INTERVIEW_ROUNDS:
@@ -300,7 +334,8 @@ def create_interview():
             "end_at": end_at,
             "location": (payload.get("location") or "").strip(),
             "meeting_link": (payload.get("meeting_link") or "").strip(),
-            "interviewer_name": (payload.get("interviewer_name") or "").strip(),
+            "interviewer_id": interviewer.user_id,
+            "interviewer_name": interviewer.name,
             "interviewer_contact": (payload.get("interviewer_contact") or "").strip(),
             "template_id": template_id,
             "summary": (payload.get("summary") or "").strip(),
@@ -325,6 +360,7 @@ def update_interview(interview_id: int):
         raise BizError(BizCode.STATE_INVALID, "已完成/已取消的面试不能编辑")
     payload = request.get_json(silent=True) or {}
     app_doc = require_interview_application(get_by_id("applications", doc.get("application_id")))
+    require_candidate_lock_owner(app_doc["candidate_id"])
     job_doc = get_by_id("jobs", doc.get("job_id")) or {}
     expected_round = _expected_round_for_stage(app_doc, job_doc)
     if expected_round is None:
@@ -333,8 +369,11 @@ def update_interview(interview_id: int):
     if requested_round != expected_round:
         raise BizError(BizCode.STATE_INVALID, f"当前阶段只能保留{expected_round}面试")
     fields = {}
-    for field in ["location", "meeting_link", "interviewer_name",
-                  "interviewer_contact", "summary", "remark"]:
+    if "interviewer_id" in payload or "interviewer_name" in payload:
+        interviewer = _resolve_interviewer(payload)
+        fields["interviewer_id"] = interviewer.user_id
+        fields["interviewer_name"] = interviewer.name
+    for field in ["location", "meeting_link", "interviewer_contact", "summary", "remark"]:
         if field in payload:
             fields[field] = (payload[field] or "").strip()
     if "round" in payload:
@@ -398,6 +437,7 @@ STATUS_ACTION = {"invite": IV_INVITED, "confirm": IV_CONFIRMED, "cancel": IV_CAN
 @role_required(HR)
 def change_status(interview_id: int):
     doc = _get_or_404(interview_id)
+    require_candidate_lock_owner(doc["candidate_id"])
     payload = request.get_json(silent=True) or {}
     action = payload.get("action", "")
     target = STATUS_ACTION.get(action)
@@ -416,6 +456,7 @@ def change_status(interview_id: int):
 def reschedule(interview_id: int):
     """改期：保留原记录与修改原因，状态置为已改期。"""
     doc = _get_or_404(interview_id)
+    require_candidate_lock_owner(doc["candidate_id"])
     if doc["status"] in (IV_COMPLETED, IV_CANCELLED):
         raise BizError(BizCode.STATE_INVALID, "已完成/已取消的面试不能改期")
     payload = request.get_json(silent=True) or {}
@@ -465,42 +506,104 @@ def reschedule(interview_id: int):
     return ok(_interview_view(doc))
 
 
+def _move_to_interview_passed(app_doc: dict, reason: str):
+    """通过面试时先补齐默认流程中的“面试中”阶段，避免直接跳阶段。"""
+    current = app_doc
+    if current.get("current_stage") == "pending_interview":
+        current = move_application(
+            current, to_stage="interviewing", reason="面试开始",
+            operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+            version=current.get("version", 1),
+        )
+    return move_application(
+        current, to_stage="interview_passed", reason=reason,
+        operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+        version=current.get("version", 1),
+    )
+
+
+def _move_after_final_interview(app_doc: dict, reason: str):
+    """三面通过后进入 HRBP 确认；旧模板没有该阶段时保留兼容行为。"""
+    job_doc = get_by_id("jobs", app_doc["job_id"]) or {}
+    if any(stage.stage_key == "hrbp_interview" for stage in job_stage_sequence(job_doc)):
+        return move_application(
+            app_doc, to_stage="hrbp_interview", reason=reason,
+            operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+            version=app_doc.get("version", 1), bypass_rules=True,
+        )
+    return _move_to_interview_passed(app_doc, reason)
+
+
+def _advance_pass_conclusion(doc: dict, app_doc: dict, feedback: dict):
+    """面试评价通过后自动推进应聘流程，避免还需要 HR 二次点击。"""
+    job_doc = get_by_id("jobs", app_doc["job_id"]) or {}
+    configured_rounds = configured_interview_rounds(job_doc)
+    reason = f"面试{doc['round']}通过"
+    version = app_doc.get("version", 1)
+    if configured_rounds:
+        expected_round = expected_interview_round(app_doc, job_doc)
+        if doc.get("round") != expected_round:
+            raise BizError(BizCode.STATE_INVALID, f"当前应完成{expected_round}的面试评价")
+        round_index = configured_rounds.index(expected_round)
+        if round_index < len(configured_rounds) - 1:
+            updated = advance_interview_round(
+                app_doc, configured_rounds[round_index + 1], reason,
+                g.current_user.user_id, g.current_user.name, version,
+            )
+        else:
+            updated = _move_after_final_interview(app_doc, reason)
+    else:
+        if doc.get("round") in {"三面", "HR面试", "终面", "终面（HR）"}:
+            updated = _move_after_final_interview(app_doc, reason)
+        else:
+            updated = _move_to_interview_passed(app_doc, reason)
+    col("interviews").update_one({"_id": doc["_id"]}, {"$set": {
+        "conclusion_applied": True,
+        "conclusion_action": "pass",
+        "conclusion_applied_at": datetime.now(),
+        "conclusion_applied_by": g.current_user.user_id,
+    }})
+    return updated
+
+
 @bp.post("/<int:interview_id>/complete")
-@role_required(HR)
+@login_required
 def complete_interview(interview_id: int):
-    """完成面试：必须已有反馈，或显式标记暂不评价。"""
+    """完成面试：必须由本场业务面试人员提交评价。"""
     doc = _get_or_404(interview_id)
+    _require_interviewer_access(doc)
     payload = request.get_json(silent=True) or {}
+    if doc["status"] == IV_COMPLETED:
+        feedback = _get_feedback(interview_id)
+        if feedback is None:
+            raise BizError(BizCode.PARAM_INVALID, "请先填写面试评价")
+        if feedback.get("conclusion") == "pass" and not doc.get("conclusion_applied"):
+            app_doc = get_by_id("applications", doc.get("application_id"))
+            if app_doc is None:
+                raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
+            _advance_pass_conclusion(doc, app_doc, feedback)
+        return ok(_interview_view(doc))
     if IV_COMPLETED not in INTERVIEW_FLOW.get(doc["status"], []):
         raise BizError(BizCode.STATE_INVALID,
                        f"当前状态 {doc['status']} 不允许完成（需先确认）")
     feedback = _get_feedback(interview_id)
     if feedback is None:
-        if not payload.get("skip_eval"):
-            raise BizError(BizCode.PARAM_INVALID, "请先填写面试反馈，或选择\"暂不评价\"")
-        try:
-            fb_doc = insert_doc("interview_feedback", {
-                "interview_id": interview_id,
-                "dimension_scores": [], "conclusion": "", "comment": "",
-                "risk_note": "", "suggested_salary": "",
-                "evaluator_name": "", "skip_eval": True,
-                "created_by": g.current_user.user_id,
-                "version": 1,
-            })
-        except DuplicateKeyError:
-            fb_doc = _get_feedback(interview_id)
-        write_log("interview", "feedback_skip", g.current_user.user_id, g.current_user.name,
-                  biz_id=str(interview_id), detail="暂不评价")
-        feedback = fb_doc
-    _change_status(doc, "complete", IV_COMPLETED)
+        raise BizError(BizCode.PARAM_INVALID, "请先由本场面试业务人员填写面试评价")
+    doc = _change_status(doc, "complete", IV_COMPLETED)
+    if feedback.get("conclusion") == "pass":
+        app_doc = get_by_id("applications", doc.get("application_id"))
+        if app_doc is None:
+            raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
+        _advance_pass_conclusion(doc, app_doc, feedback)
     return ok(_interview_view(doc))
 
 
 @bp.post("/<int:interview_id>/feedback")
-@role_required(HR)
+@login_required
 def save_feedback(interview_id: int):
-    """填写/更新面试反馈（HR 可代录）。"""
+    """填写/更新面试反馈：仅本场被指派的业务面试人员可操作。"""
     doc = _get_or_404(interview_id)
+    _require_interviewer_access(doc)
     require_interview_application(get_by_id("applications", doc.get("application_id")))
     if doc["status"] == IV_CANCELLED:
         raise BizError(BizCode.STATE_INVALID, "已取消的面试不能填写反馈")
@@ -525,8 +628,8 @@ def save_feedback(interview_id: int):
         "conclusion": conclusion,
         "comment": (payload.get("comment") or "").strip(),
         "risk_note": (payload.get("risk_note") or "").strip(),
-        "suggested_salary": (payload.get("suggested_salary") or "").strip(),
-        "evaluator_name": (payload.get("evaluator_name") or "").strip(),
+        "evaluator_id": g.current_user.user_id,
+        "evaluator_name": g.current_user.name,
         "skip_eval": False,
     }
     existing = _get_feedback(interview_id)
@@ -554,17 +657,28 @@ def save_feedback(interview_id: int):
 
 
 @bp.post("/<int:interview_id>/apply-conclusion")
-@role_required(HR)
+@login_required
 def apply_conclusion(interview_id: int):
     """反馈联动阶段：通过→面试通过；不通过→淘汰（必填原因）；待定不流转。"""
     doc = _get_or_404(interview_id)
+    if g.current_user.role not in {HR, SUPER_ADMIN}:
+        _require_interviewer_access(doc)
     if doc.get("conclusion_applied"):
-        raise BizError(BizCode.STATE_INVALID, "该面试结论已经应用，不能重复推进")
+        app_doc = get_by_id("applications", doc.get("application_id"))
+        if app_doc is None:
+            raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
+        return ok({
+            "action": doc.get("conclusion_action", ""),
+            "application": application_to_dict(app_doc),
+        })
     if doc["status"] != IV_COMPLETED:
         raise BizError(BizCode.STATE_INVALID, "仅已完成的面试可应用结论")
     feedback = _get_feedback(interview_id)
     if feedback is None or feedback.get("skip_eval"):
         raise BizError(BizCode.STATE_INVALID, "该面试无有效反馈，不能应用结论")
+    if doc.get("interviewer_id") and feedback.get("evaluator_id") \
+            and feedback.get("evaluator_id") != doc.get("interviewer_id"):
+        raise BizError(BizCode.STATE_INVALID, "必须使用本场面试业务人员的评价结论")
     conclusion = feedback.get("conclusion")
     if conclusion == "hold":
         raise BizError(BizCode.STATE_INVALID, "结论为待定，不触发阶段变化")
@@ -575,6 +689,39 @@ def apply_conclusion(interview_id: int):
         raise BizError(BizCode.NOT_FOUND, "关联应聘记录不存在")
     if app_doc.get("status") != APP_IN_PROGRESS:
         raise BizError(BizCode.STATE_INVALID, "应聘记录已结束，不能流转阶段")
+
+    if conclusion == "fail":
+        reason = (payload.get("reason") or "").strip()
+        if not reason:
+            raise BizError(BizCode.PARAM_INVALID, "面试不通过必须填写淘汰原因")
+        action = (payload.get("action") or "eliminate").strip()
+        if action not in {"talent_pool", "eliminate"}:
+            raise BizError(BizCode.PARAM_INVALID, "不通过后的处理方式无效")
+        if action == "talent_pool":
+            updated = move_application(
+                app_doc, to_stage="talent_pool", reason=reason,
+                operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+                version=app_doc.get("version", 1), bypass_rules=True,
+            )
+            add_application_to_talent_pool(
+                updated, reason, source="elimination_added",
+                operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+            )
+        else:
+            updated = eliminate_application(
+                app_doc, reason=reason,
+                operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+                version=app_doc.get("version", 1),
+            )
+        write_log("interview", "apply_conclusion_fail", g.current_user.user_id,
+                  g.current_user.name, biz_id=str(interview_id), detail=f"{action}: {reason}")
+        col("interviews").update_one({"_id": interview_id}, {"$set": {
+            "conclusion_applied": True, "conclusion_action": action,
+            "conclusion_applied_at": datetime.now(),
+            "conclusion_applied_by": g.current_user.user_id,
+        }})
+        return ok({"action": "fail" if action == "eliminate" else action,
+                   "application": application_to_dict(updated)})
 
     if conclusion == "pass":
         try:
@@ -595,19 +742,15 @@ def apply_conclusion(interview_id: int):
                     g.current_user.user_id, g.current_user.name, version,
                 )
             else:
-                updated = move_application(
-                    app_doc, to_stage="interview_passed",
-                    reason=(payload.get("reason") or "").strip() or f"面试{doc['round']}通过",
-                    operator_id=g.current_user.user_id, operator_name=g.current_user.name,
-                    version=version,
+                updated = _move_after_final_interview(
+                    app_doc,
+                    (payload.get("reason") or "").strip() or f"面试{doc['round']}通过",
                 )
         else:
-            updated = move_application(
-                app_doc, to_stage="interview_passed",
-                reason=(payload.get("reason") or "").strip() or f"面试{doc['round']}通过",
-                operator_id=g.current_user.user_id, operator_name=g.current_user.name,
-                version=version,
-            )
+            reason = (payload.get("reason") or "").strip() or f"面试{doc['round']}通过"
+            updated = _move_after_final_interview(app_doc, reason) \
+                if doc.get("round") in {"三面", "HR面试", "终面", "终面（HR）"} \
+                else _move_to_interview_passed(app_doc, reason)
         write_log("interview", "apply_conclusion_pass", g.current_user.user_id,
                   g.current_user.name, biz_id=str(interview_id))
         col("interviews").update_one({"_id": interview_id}, {"$set": {

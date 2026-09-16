@@ -12,6 +12,8 @@ export interface LockInfo {
   stage_key: string;
   start_at: string;
   end_at: string;
+  owner_id?: string;
+  owner_name?: string;
 }
 
 export interface CandidateRow {
@@ -21,14 +23,20 @@ export interface CandidateRow {
   phone: string;
   email: string;
   city: string;
+  age?: number | null;
+  highest_education?: string;
+  major?: string;
   tags: string;
   source: string;
+  owner_id?: string;
   owner_name: string;
   current_stage: string;
   created_at: string;
   version: number;
   latest_application: ApplicationInfo | null;
   lock: LockInfo | null;
+  education_summary: { school?: string; major?: string; degree?: string; graduate_at?: string };
+  work_summary: { company?: string; position?: string; start?: string; end?: string; desc?: string };
 }
 
 export interface Application extends ApplicationInfo {
@@ -37,11 +45,14 @@ export interface Application extends ApplicationInfo {
   job_id: number;
   source: string;
   owner_name: string;
-  interview_round?: string;
+  business_screener_id?: string;
+  business_screener_name?: string;
   stage_entered_at: string;
+  created_at?: string;
   eliminate_reason: string;
   expected_salary: string;
   onboard_time: string;
+  interview_round?: string;
   version: number;
 }
 
@@ -50,8 +61,18 @@ export interface CandidateDetail extends CandidateRow {
   work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
   remark: string;
   attachments: { id: number; file_name: string; file_type: string; parse_status: string; created_at: string }[];
+  talent_pool_entry: { id: number; status: string; source?: string; reason?: string } | null;
   applications: Application[];
-  operation_logs: { biz_type: string; action: string; operator_name: string; detail: string; created_at: string }[];
+  screening_records: {
+    type: 'stage' | 'recommendation' | 'interview' | 'interview_reschedule';
+    category: 'recommendation' | 'interview' | 'offer';
+    title: string;
+    from_stage: string;
+    to_stage: string;
+    operator_name: string;
+    detail: string;
+    created_at: string;
+  }[];
 }
 
 export async function fetchCandidates(params: Record<string, unknown> = {}) {
@@ -59,9 +80,70 @@ export async function fetchCandidates(params: Record<string, unknown> = {}) {
   return unwrap<PagedData<CandidateRow>>(resp);
 }
 
+export interface CandidateClassificationSummary {
+  stage_counts: Record<string, number>;
+  categories: {
+    unprocessed: number;
+    pending: number;
+    recommended: number;
+  };
+  unassigned: number;
+}
+
+export async function fetchCandidateClassificationSummary() {
+  const resp = await http.get('/api/candidates/classification-summary');
+  return unwrap<CandidateClassificationSummary>(resp);
+}
+
 export async function fetchCandidate(id: number) {
   const resp = await http.get(`/api/candidates/${id}`);
   return unwrap<CandidateDetail>(resp);
+}
+
+export interface DeliveryAnalysis {
+  summary: {
+    total_deliveries: number;
+    highest_stage: string;
+    interviews: number;
+    evaluated_interviews: number;
+    passed_interviews: number;
+    interview_pass_rate: number;
+  };
+  applications: (Application & {
+    created_at: string;
+    stage_name: string;
+    highest_stage_name: string;
+    transitions: {
+      from_stage: string;
+      to_stage: string;
+      to_stage_name: string;
+      reason: string;
+      operator_name: string;
+      created_at: string;
+    }[];
+    interviews: {
+      id: number;
+      round: string;
+      status: string;
+      interviewer_name: string;
+      start_at: string;
+      conclusion: string;
+    }[];
+  })[];
+  activities: {
+    id: string;
+    kind: 'resume' | 'operation';
+    title: string;
+    detail: string;
+    operator_name: string;
+    job_name: string;
+    created_at: string;
+  }[];
+}
+
+export async function fetchDeliveryAnalysis(id: number) {
+  const resp = await http.get(`/api/candidates/${id}/delivery-analysis`);
+  return unwrap<DeliveryAnalysis>(resp);
 }
 
 export interface DuplicateResult {
@@ -82,14 +164,33 @@ export async function deleteCandidate(id: number, hard = true) {
   return unwrap(resp);
 }
 
+export async function assignJob(candidateId: number, jobId: number, source = 'manual') {
+  const resp = await http.post(`/api/candidates/${candidateId}/applications`, {
+    job_id: jobId, source,
+  });
+  return unwrap<Application>(resp);
+}
+
+export async function assignBusinessScreener(applicationId: number, businessScreenerId: string, version: number) {
+  const resp = await http.post(`/api/applications/${applicationId}/assign-business`, {
+    business_screener_id: businessScreenerId, version,
+  });
+  return unwrap<Application>(resp);
+}
+
+export async function directInterview(applicationId: number, version: number) {
+  const resp = await http.post(`/api/applications/${applicationId}/direct-interview`, { version });
+  return unwrap<Application>(resp);
+}
+
+export async function enterNextInterview(applicationId: number, version: number) {
+  const resp = await http.post(`/api/applications/${applicationId}/next-interview`, { version });
+  return unwrap<Application>(resp);
+}
+
 export async function fetchTransitions(applicationId: number) {
   const resp = await http.get(`/api/applications/${applicationId}/transitions`);
   return unwrap<{ from_stage: string; to_stage: string; reason: string; operator_name: string; created_at: string }[]>(resp);
-}
-
-export async function unlockApplication(applicationId: number, reason: string) {
-  const resp = await http.post(`/api/applications/${applicationId}/unlock`, { reason });
-  return unwrap(resp);
 }
 
 export async function importCandidates(file: File) {
@@ -116,6 +217,9 @@ export async function parseResumeUpload(file: File) {
       phone: string;
       email: string;
       city: string;
+      age: number | null;
+      highest_education: string;
+      major: string;
       education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
       work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
     };
@@ -143,6 +247,9 @@ export async function parseResume(attachmentId: number) {
       phone?: string;
       email?: string;
       city?: string;
+      age?: number | null;
+      highest_education?: string;
+      major?: string;
       education?: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
       work_experience?: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
     };

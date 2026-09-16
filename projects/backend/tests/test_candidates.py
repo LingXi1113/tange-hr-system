@@ -30,6 +30,28 @@ def test_masked_by_default(client):
     assert rows2[0]["phone"] == "13922223333"
 
 
+def test_candidate_classification_summary_and_filters(client):
+    ensure_hr(client)
+    unassigned_id = make_candidate(client, phone="13922224444", email="unassigned@example.com")
+    client.put(f"/api/candidates/{unassigned_id}", json={"tags": "待定"})
+
+    job = make_job(client, name="Classification job")
+    publish_job(client, job["id"])
+    recommended_id = make_candidate(client, phone="13922225555", email="recommended@example.com")
+    assign(client, recommended_id, job["id"], source="referral")
+
+    summary = client.get("/api/candidates/classification-summary").get_json()["data"]
+    assert summary["unassigned"] == 1
+    assert summary["categories"]["pending"] == 1
+    assert summary["categories"]["recommended"] == 1
+    assert summary["categories"]["unprocessed"] == 2
+
+    pending = client.get("/api/candidates", query_string={"category": "pending"}).get_json()["data"]
+    recommended = client.get("/api/candidates", query_string={"category": "recommended"}).get_json()["data"]
+    assert pending["total"] == 1
+    assert recommended["total"] == 1
+
+
 def test_lock_blocks_new_application(client):
     ensure_hr(client)
     tpl = make_template(client)  # new_resume 锁定 2 天

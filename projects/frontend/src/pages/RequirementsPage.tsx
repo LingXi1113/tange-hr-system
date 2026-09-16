@@ -8,8 +8,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
-import { fetchDepartments, fetchPlatformUsers } from '@/services/system';
-import type { PlatformDepartment, PlatformUser } from '@/services/system';
+import { fetchPlatformUsers } from '@/services/system';
+import type { PlatformUser } from '@/services/system';
 import {
   REQ_STATUS_TEXT, fetchRequirements, requirementAction, saveRequirement,
 } from '@/services/requirement';
@@ -28,6 +28,21 @@ const TYPE_OPTIONS = [
   { value: 'temp_project', label: '临时项目' },
 ];
 
+const ENTITY_OPTIONS = [
+  { value: 'entity-shuze', label: '广东数则科技有限公司' },
+  { value: 'entity-zhenai', label: '真爱美家' },
+];
+
+const DEPARTMENT_OPTIONS = [
+  { value: 'dept-general', label: '总经办' },
+  { value: 'dept-rd', label: '研发部' },
+  { value: 'dept-market', label: '市场部' },
+  { value: 'dept-solution', label: '方案部' },
+  { value: 'dept-channel', label: '渠道部' },
+  { value: 'dept-international', label: '国际部' },
+  { value: 'dept-organization', label: '组织部' },
+];
+
 export function RequirementsPage() {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
@@ -40,7 +55,6 @@ export function RequirementsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm();
   const [users, setUsers] = useState<PlatformUser[]>([]);
-  const [departments, setDepartments] = useState<PlatformDepartment[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -76,7 +90,6 @@ export function RequirementsPage() {
       form.resetFields();
     }
     if (!users.length) setUsers(await fetchPlatformUsers());
-    if (!departments.length) setDepartments(await fetchDepartments());
     if (!jobs.length) setJobs((await fetchJobs({ page_size: 100 })).list);
     setDrawerOpen(true);
   }
@@ -126,6 +139,7 @@ export function RequirementsPage() {
 
   const columns = [
     { title: '需求名称', dataIndex: 'name', render: (v: string, r: Requirement) => <a onClick={() => navigate(`/requirements/${r.id}`)}>{v}</a> },
+    { title: '所属主体', dataIndex: 'entity_name', width: 190, render: (value: string) => value || '-' },
     { title: '部门', dataIndex: 'dept_name', width: 120 },
     { title: '人数', dataIndex: 'headcount', width: 70 },
     { title: '类型', dataIndex: 'request_type', width: 100, render: (v: string) => TYPE_OPTIONS.find((t) => t.value === v)?.label ?? v },
@@ -206,13 +220,26 @@ export function RequirementsPage() {
           <Form.Item name="name" label="需求名称" rules={[{ required: true, message: '必填' }]}>
             <Input />
           </Form.Item>
+          <Form.Item name="entity_id" label="所属主体" rules={[{ required: true, message: '请选择所属主体' }]}>
+            <Select
+              placeholder="请选择所属主体"
+              options={ENTITY_OPTIONS}
+              onChange={(value) => {
+                const entity = ENTITY_OPTIONS.find((item) => item.value === value);
+                form.setFieldsValue({ entity_name: entity?.label ?? '' });
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="entity_name" hidden>
+            <Input />
+          </Form.Item>
           <Form.Item name="dept_id" label="所属部门" rules={[{ required: true, message: '必填' }]}>
             <Select
-              showSearch optionFilterProp="label" placeholder="取自即先平台部门"
-              options={departments.map((d) => ({ value: d.dept_id, label: d.name }))}
-              onChange={(v) => {
-                const dept = departments.find((d) => d.dept_id === v);
-                form.setFieldsValue({ dept_name: dept?.name ?? '' });
+              showSearch optionFilterProp="label" placeholder="请选择所属部门"
+              options={DEPARTMENT_OPTIONS}
+              onChange={(value) => {
+                const department = DEPARTMENT_OPTIONS.find((item) => item.value === value);
+                form.setFieldsValue({ dept_name: department?.label ?? '' });
               }}
             />
           </Form.Item>

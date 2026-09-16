@@ -102,6 +102,15 @@ async function protectedBlob(url: string, params?: Record<string, unknown>) {
   return blob;
 }
 
+/** 获取受保护文件的临时预览地址，供页面内嵌预览使用。 */
+export async function createProtectedFileUrl(url: string, params?: Record<string, unknown>) {
+  const blob = await protectedBlob(url, params);
+  return {
+    url: URL.createObjectURL(blob),
+    mimeType: blob.type || 'application/octet-stream',
+  };
+}
+
 export async function downloadProtectedFile(url: string, filename: string, params?: Record<string, unknown>) {
   const blob = await protectedBlob(url, params);
   const objectUrl = URL.createObjectURL(blob);

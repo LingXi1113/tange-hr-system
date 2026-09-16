@@ -12,6 +12,7 @@ from common.db import col, get_by_id
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode
+from common.stages import template_interview_rounds
 from common.status import (
     APP_CLOSED,
     APP_ELIMINATED,
@@ -87,8 +88,13 @@ def require_interview_application(application: dict) -> dict:
 
 def require_completed_interview_for_offer(application: dict) -> dict:
     """Offer 前置条件：最后一轮面试必须完成且明确判定为通过。"""
-    rounds = (get_by_id("jobs", application.get("job_id")) or {}).get("interview_rounds")
-    rounds = [str(item).strip() for item in rounds or [] if str(item).strip()]
+    job = get_by_id("jobs", application.get("job_id")) or {}
+    template = None
+    if job.get("template_id"):
+        template = get_by_id("pipeline_templates", int(job["template_id"]))
+    if template is None:
+        template = col("pipeline_templates").find_one({"status": "active"}, sort=[("_id", 1)])
+    rounds = template_interview_rounds((template or {}).get("stages", []))
     query = {
         "application_id": application["_id"],
         "status": "completed",
@@ -109,10 +115,11 @@ def require_offer_application(application: dict, action: str = "create") -> dict
     stage = application.get("current_stage", "")
     if action == "accept" and stage != "offer_pending":
         raise BizError(BizCode.STATE_INVALID, "只有处于 Offer 阶段的应聘记录才能接受 Offer")
-    if action in {"create", "submit", "send"} and stage not in {"interview_passed", "offer_pending"}:
-        raise BizError(BizCode.STATE_INVALID, "当前招聘阶段不允许处理 Offer")
-    if action in {"create", "submit", "send"} and stage in {"interview_passed", "offer_pending"}:
-        require_completed_interview_for_offer(application)
+    if action in {"create", "submit", "send"} and stage not in {"offer_pending", "offer_approval"}:
+        raise BizError(BizCode.STATE_INVALID, "请先由 HR 确认进入录用审批")
+    # 应聘记录进入 offer_pending，即代表当前 HR 已确认通过 HRBP 审批并进入 Offer 流程。
+    # Offer 相关操作以应聘阶段为唯一准入条件，不再重复依赖面试记录，避免阶段已推进
+    # 但面试记录补录、轮次配置差异导致无法创建 Offer。
     return application
 
 

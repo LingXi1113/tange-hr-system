@@ -38,7 +38,7 @@ const menuItems: MenuProps['items'] = [
   { key: '/offers', icon: <FileTextOutlined />, label: 'Offer管理' },
   { key: '/onboarding', icon: <SolutionOutlined />, label: '入职资料' },
   { key: '/talent-pool', icon: <DatabaseOutlined />, label: '人才库' },
-  { key: '/reports', icon: <BarChartOutlined />, label: '招聘报表' },
+  { key: '/reports', icon: <BarChartOutlined />, label: '统计' },
   {
     key: 'group-settings',
     icon: <ToolOutlined />,

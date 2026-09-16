@@ -17,9 +17,23 @@ export interface DashboardActivity {
   created_at: string;
 }
 
+export interface DashboardMetricItem {
+  key: string;
+  label: string;
+  count: number;
+  route: string;
+}
+
+export interface DashboardMetricGroup {
+  key: string;
+  title: string;
+  items: DashboardMetricItem[];
+}
+
 export interface DashboardSummary {
   todos: Record<string, number>;
   todo_items: DashboardTodoItem[];
+  workbench_metrics: DashboardMetricGroup[];
   overview: Record<string, number>;
   funnel: { stage_key: string; name: string; count: number }[];
   notification_unread: number;

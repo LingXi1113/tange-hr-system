@@ -38,6 +38,7 @@ def _req_view(req: dict) -> dict:
     linked_job = col("jobs").find_one({"requirement_id": req["_id"]}, sort=[("_id", 1)])
     return {
         "id": req["_id"], "name": req.get("name", ""),
+        "entity_id": req.get("entity_id", ""), "entity_name": req.get("entity_name", ""),
         "dept_id": req.get("dept_id", ""), "dept_name": req.get("dept_name", ""),
         "headcount": req.get("headcount", 0), "request_type": req.get("request_type", ""),
         "priority": req.get("priority", ""), "due_date": date_str(req.get("due_date")),
@@ -103,7 +104,7 @@ def _unlink_primary_job(req_id: int):
 
 def _fill(req: dict, payload: dict) -> dict:
     fields = {}
-    for field in ["name", "dept_id", "dept_name", "request_type", "priority",
+    for field in ["name", "entity_id", "entity_name", "dept_id", "dept_name", "request_type", "priority",
                   "owner_id", "owner_name", "reason", "requirements", "remark"]:
         if field in payload:
             fields[field] = payload[field]
@@ -204,7 +205,8 @@ def create_requirement():
         "status": REQ_DRAFT,
         "owner_id": payload.get("owner_id") or g.current_user.user_id,
         "owner_name": payload.get("owner_name") or g.current_user.name,
-        "name": "", "dept_id": "", "dept_name": "", "headcount": 0,
+        "name": "", "entity_id": "", "entity_name": "",
+        "dept_id": "", "dept_name": "", "headcount": 0,
         "request_type": "", "priority": "", "due_date": None,
         "reason": "", "requirements": "", "remark": "",
     }

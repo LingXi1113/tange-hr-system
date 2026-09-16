@@ -6,6 +6,7 @@
 """
 from flask import g
 
+from common.db import col
 from common.errors import BizError
 from common.response import BizCode
 from common.roles import (
@@ -51,6 +52,62 @@ def can_view_pii() -> bool:
     return has_role(*PII_ROLES)
 
 
+def candidate_lock_owner(candidate_id: int):
+    """Return the current lock and its owning HR, if the candidate is locked."""
+    from common.flow import active_lock_for_candidate, active_lock_for_candidate_identity
+
+    candidate = col("candidates").find_one({"_id": candidate_id}) or {}
+    lock = active_lock_for_candidate(candidate_id)
+    if not lock:
+        if candidate:
+            lock = active_lock_for_candidate_identity(candidate)
+    if lock:
+        application = col("applications").find_one(
+            {"_id": lock.get("application_id")},
+            {"owner_id": 1, "owner_name": 1},
+        ) or {}
+        owner_id = (
+            lock.get("owner_id", "")
+            or application.get("owner_id", "")
+            or candidate.get("owner_id", "")
+        )
+        owner_name = (
+            lock.get("owner_name", "")
+            or application.get("owner_name", "")
+            or candidate.get("owner_name", "")
+        )
+        return {**lock, "owner_id": owner_id, "owner_name": owner_name}
+
+    # A newly uploaded candidate may not have an application or stage lock yet.
+    # The HR who created the candidate still owns the record, so another HR
+    # must not be able to edit, assign, or advance it through a direct request.
+    if candidate.get("owner_id"):
+        return {
+            "candidate_id": candidate_id,
+            "stage_key": "candidate_owner",
+            "owner_id": candidate.get("owner_id", ""),
+            "owner_name": candidate.get("owner_name", ""),
+        }
+    if not lock:
+        return None
+
+
+def require_candidate_lock_owner(candidate_id: int) -> None:
+    """Prevent another HR from operating a candidate during the lock period.
+
+    Business interviewers and designated business screeners still need to work
+    on the application, so this ownership rule applies only to HR actions.
+    Super admins remain able to operate across owners.
+    """
+    user = getattr(g, "current_user", None)
+    if user is None or user.role != HR:
+        return
+    lock = candidate_lock_owner(candidate_id)
+    if lock and lock.get("owner_id") and lock["owner_id"] != user.user_id:
+        owner = lock.get("owner_name") or lock.get("owner_id")
+        raise BizError(BizCode.FORBIDDEN, f"候选人当前由 {owner} 锁定，只有锁定该候选人的 HR 可以操作")
+
+
 def mask_phone(value: str) -> str:
     value = value or ""
     return value[:3] + "****" + value[-4:] if len(value) >= 7 else value
@@ -73,6 +130,9 @@ def redact_candidate(candidate: dict, include_pii: bool = False) -> dict:
         "id": candidate["_id"],
         "name": candidate.get("name", ""),
         "gender": candidate.get("gender", ""),
+        "age": candidate.get("age"),
+        "highest_education": candidate.get("highest_education", ""),
+        "major": candidate.get("major", ""),
         "phone": candidate.get("phone", "") if show_pii else mask_phone(candidate.get("phone", "")),
         "email": candidate.get("email", "") if show_pii else mask_email(candidate.get("email", "")),
         "city": candidate.get("city", ""),

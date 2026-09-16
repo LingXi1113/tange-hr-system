@@ -5,6 +5,8 @@ export interface Job {
   id: number;
   code: string;
   name: string;
+  entity_id: string;
+  entity_name: string;
   dept_id: string;
   dept_name: string;
   location: string;
@@ -17,12 +19,23 @@ export interface Job {
   qualification: string;
   skill_tags: string;
   template_id: number | null;
+  template_name: string;
   channels: string;
   interview_rounds: string[];
   status: string;
   requirement_id: number | null;
+  requirement_name: string;
   owner_id: string;
   owner_name: string;
+  shared_to_super_admin: boolean;
+  progress: {
+    received: number;
+    invited: number;
+    interviewed: number;
+    offered: number;
+    pending_onboard: number;
+    onboarded: number;
+  };
   public_token: string;
   public_url: string;
   stage_configs?: StageConfig[];
@@ -67,6 +80,16 @@ export async function jobAction(id: number, action: string) {
 export async function copyJob(id: number) {
   const resp = await http.post(`/api/jobs/${id}/copy`);
   return unwrap<Job>(resp);
+}
+
+export async function shareJob(id: number) {
+  const resp = await http.post(`/api/jobs/${id}/share`);
+  return unwrap<Job>(resp);
+}
+
+export async function deleteJob(id: number) {
+  const resp = await http.delete(`/api/jobs/${id}`);
+  return unwrap<{ id: number }>(resp);
 }
 
 export interface PublicJob {

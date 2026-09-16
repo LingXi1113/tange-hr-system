@@ -17,6 +17,12 @@ import { OffersPage } from '@/pages/OffersPage';
 import { PipelinePage } from '@/pages/PipelinePage';
 import { RequirementDetailPage } from '@/pages/RequirementDetailPage';
 import { ReportsPage } from '@/pages/ReportsPage';
+import { JobProgressReportPage } from '@/pages/JobProgressReportPage';
+import { PositionProgressReportPage } from '@/pages/PositionProgressReportPage';
+import { ChannelEffectReportPage } from '@/pages/ChannelEffectReportPage';
+import { StageFunnelReportPage } from '@/pages/StageFunnelReportPage';
+import { InterviewerEfficiencyReportPage } from '@/pages/InterviewerEfficiencyReportPage';
+import { TalentProfileReportPage } from '@/pages/TalentProfileReportPage';
 import { RequirementsPage } from '@/pages/RequirementsPage';
 import { TalentPoolPage } from '@/pages/TalentPoolPage';
 import { LoginPage } from '@/pages/LoginPage';
@@ -67,6 +73,12 @@ export function RouterView() {
           </Route>
           <Route element={<RequireRole roles={['hr']} />}>
             <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/reports/hr-progress" element={<JobProgressReportPage />} />
+            <Route path="/reports/job-progress" element={<PositionProgressReportPage />} />
+            <Route path="/reports/channel-effect" element={<ChannelEffectReportPage />} />
+            <Route path="/reports/stage-funnel" element={<StageFunnelReportPage />} />
+            <Route path="/reports/interviewer-efficiency" element={<InterviewerEfficiencyReportPage />} />
+            <Route path="/reports/talent-profile" element={<TalentProfileReportPage />} />
           </Route>
           <Route element={<RequireRole roles={['hr', 'super_admin']} />}>
             <Route path="/eval-template" element={<EvalTemplatePage />} />

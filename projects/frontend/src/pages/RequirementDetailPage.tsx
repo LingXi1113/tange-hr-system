@@ -36,6 +36,7 @@ export function RequirementDetailPage() {
         <Col xs={24} lg={14}>
           <Card title="基础信息" size="small" style={{ marginBottom: 16 }}>
             <Descriptions column={2} size="small">
+              <Descriptions.Item label="所属主体">{detail.entity_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="所属部门">{detail.dept_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="招聘人数">{detail.headcount}</Descriptions.Item>
               <Descriptions.Item label="需求类型">{detail.request_type}</Descriptions.Item>

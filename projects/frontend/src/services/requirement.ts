@@ -4,6 +4,8 @@ import type { PagedData } from './template';
 export interface Requirement {
   id: number;
   name: string;
+  entity_id: string;
+  entity_name: string;
   dept_id: string;
   dept_name: string;
   headcount: number;

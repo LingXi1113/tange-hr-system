@@ -15,7 +15,9 @@ export interface Interview {
   location: string;
   meeting_link: string;
   interviewer_name: string;
+  interviewer_id: string;
   interviewer_contact: string;
+  created_by?: string;
   template_id: number | null;
   summary: string;
   remark: string;
@@ -38,8 +40,8 @@ export interface InterviewFeedback {
   conclusion: string;
   comment: string;
   risk_note: string;
-  suggested_salary: string;
   evaluator_name: string;
+  evaluator_id?: string;
   skip_eval: boolean;
   version: number;
   created_at: string;
@@ -93,7 +95,7 @@ export async function saveFeedback(id: number, payload: Record<string, unknown>)
   return unwrap<InterviewFeedback>(resp);
 }
 
-export async function applyConclusion(id: number, payload: { version: number; reason?: string }) {
+export async function applyConclusion(id: number, payload: { version: number; reason?: string; action?: 'talent_pool' | 'eliminate' }) {
   const resp = await http.post(`/api/interviews/${id}/apply-conclusion`, payload);
   return unwrap<{ action: string; application: { id: number; current_stage: string; status: string } }>(resp);
 }

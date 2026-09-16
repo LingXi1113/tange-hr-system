@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 EMPTY_FIELDS = {
     "name": "", "gender": "", "phone": "", "email": "", "city": "",
+    "age": None, "highest_education": "", "major": "",
     "education": [], "work_experience": [],
 }
 

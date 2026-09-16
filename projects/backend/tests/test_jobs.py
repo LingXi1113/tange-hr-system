@@ -33,6 +33,24 @@ def test_job_status_flow(client):
     assert client.post(f"/api/jobs/{job['id']}/status", json={"action": "resume"}).get_json()["code"] == 1003
 
 
+def test_job_owner_permissions_share_and_delete(client):
+    login(client, "hr-001")
+    job = make_job(client, name="Owner controlled job")
+
+    login(client, "hr-002")
+    assert client.put(f"/api/jobs/{job['id']}", json={"location": "Other city"}).get_json()["code"] == 1006
+    assert client.post(f"/api/jobs/{job['id']}/copy").get_json()["code"] == 1006
+    assert client.post(f"/api/jobs/{job['id']}/share").get_json()["code"] == 1006
+    assert client.delete(f"/api/jobs/{job['id']}").get_json()["code"] == 1006
+
+    login(client, "hr-001")
+    shared = client.post(f"/api/jobs/{job['id']}/share").get_json()
+    assert shared["code"] == 0
+    assert shared["data"]["shared_to_super_admin"] is True
+    assert shared["data"]["progress"]["received"] == 0
+    assert client.delete(f"/api/jobs/{job['id']}").get_json()["code"] == 0
+
+
 def _apply(client, token, **overrides):
     data = {
         "name": "投递候选人", "phone": "13700002222", "email": "apply@example.com",

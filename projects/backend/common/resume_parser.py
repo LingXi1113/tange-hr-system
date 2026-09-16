@@ -8,20 +8,32 @@ conservative: results are drafts and must remain editable by HR.
 import logging
 import os
 import re
+import unicodedata
+from datetime import date
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 PDF_EXTS = {".pdf"}
 WORD_EXTS = {".docx", ".doc"}
 logger = logging.getLogger(__name__)
 
+DEGREE_LEVELS = {
+    "初中": 1,
+    "高中": 2,
+    "中专": 2,
+    "大专": 3,
+    "本科": 4,
+    "硕士": 5,
+    "博士": 6,
+}
+
 DEGREE_RE = re.compile(
     r"博士后|博士研究生|博士在读|工商管理硕士|工程硕士|专业硕士|在职研究生|硕士研究生|研究生|本科|大专|高职|中专|高中|初中|博士|硕士|学士|MBA|EMBA",
 )
 SCHOOL_RE = re.compile(
-    r"[\u4e00-\u9fffA-Za-z0-9·()（）&.\-]{2,50}(?:大学|学院|学校|分校|电大)",
+    r"[\u4e00-\u9fffA-Za-z0-9·&.\-]{2,50}?(?:大学|学院|学校|分校|电大)",
 )
 DATE_RE = re.compile(
-    r"(?:19|20)\d{2}\s*(?:年|[./-])\s*(?:\d{1,2}\s*月?)?|(?:至今|现在)",
+    r"(?:19|20)\d{2}(?:\s*(?:年|[./-])\s*(?:0?[1-9]|1[0-2])(?!\d)\s*月?)?|(?:至今|现在)",
 )
 MAJOR_LABEL_RE = re.compile(
     r"(?:专业|主修|研究方向|所学专业|专业方向)\s*[：:]\s*([^\r\n]{2,40})",
@@ -131,6 +143,32 @@ def _clean_school(value: str) -> str:
     return value.strip(" ：:，,;；|·")
 
 
+def _normalize_resume_text(text: str) -> str:
+    """Normalize visually identical compatibility glyphs emitted by some PDFs.
+
+    For example, pdfminer may return ``中⼭⼤学`` where the mountain/big
+    characters are Kangxi radicals instead of normal CJK characters.
+    """
+    value = unicodedata.normalize("NFKC", str(text or ""))
+    return value.replace("\u00a0", " ").replace("\u200b", "")
+
+
+def _school_candidates(line: str) -> list[str]:
+    matches = []
+    for value in SCHOOL_RE.findall(line):
+        school = _clean_school(value)
+        if school and school not in matches:
+            matches.append(school)
+    # A university and its internal faculty often occur on the same line.
+    # In that case the university is the educational institution; the faculty
+    # must not replace it (e.g. 中山大学 计算机学院/计算机科学与技术).
+    universities = [
+        item for item in matches
+        if item.endswith(("大学", "学校", "分校", "电大"))
+    ]
+    return universities or matches
+
+
 def _pick_degree(text: str) -> str:
     matches = DEGREE_RE.findall(text)
     if not matches:
@@ -145,31 +183,161 @@ def _pick_major(text: str) -> str:
     return re.split(r"(?:学历|学位|学校|毕业时间)\s*[：:]", matched.group(1))[0].strip(" ：:，,;；|")
 
 
+def normalize_degree(value: str) -> str:
+    """Normalize common degree names for storage and reporting."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if "博士" in value:
+        return "博士"
+    if any(token in value.upper() for token in ("硕士", "研究生", "MBA", "EMBA")):
+        return "硕士"
+    if "本科" in value or "学士" in value:
+        return "本科"
+    if any(token in value for token in ("大专", "专科", "高职")):
+        return "大专"
+    if "中专" in value:
+        return "中专"
+    if "高中" in value:
+        return "高中"
+    if "初中" in value:
+        return "初中"
+    return ""
+
+
+def _infer_degree_from_school(school: str) -> str:
+    """Infer only institution types whose education level is unambiguous enough."""
+    school = str(school or "").strip()
+    if any(token in school for token in ("职业技术学院", "职业学院", "高等专科学校", "专科学校")):
+        return "大专"
+    if any(token in school for token in ("中等专业学校", "中等职业学校")):
+        return "中专"
+    return ""
+
+
+def _education_rank(record: dict) -> tuple[int, str]:
+    degree = normalize_degree(record.get("degree", ""))
+    return DEGREE_LEVELS.get(degree, 0), str(record.get("graduate_at") or "")
+
+
+def highest_education_from_records(records: list[dict], text: str = "") -> str:
+    """Return the highest normalized education level found in records/text."""
+    candidates = [normalize_degree(item.get("degree", "")) for item in records]
+    candidates.extend(normalize_degree(item) for item in DEGREE_RE.findall(text or ""))
+    candidates = [item for item in candidates if item]
+    return max(candidates, key=lambda item: DEGREE_LEVELS.get(item, 0), default="")
+
+
+def major_from_records(records: list[dict], text: str = "") -> str:
+    """Prefer the major attached to the highest (then latest) education record."""
+    with_major = [item for item in records if str(item.get("major") or "").strip()]
+    if with_major:
+        selected = max(with_major, key=_education_rank)
+        return str(selected.get("major") or "").strip()
+    return _pick_major(text or "")
+
+
+def _extract_age(text: str) -> int | None:
+    """Extract an explicit age or derive it from a labelled birth date/year."""
+    direct_patterns = (
+        r"(?:年龄|age)\s*[：:]?\s*(\d{2})\s*(?:岁|周岁)?",
+        r"(?<!\d)(\d{2})\s*岁(?!\d)",
+    )
+    for pattern in direct_patterns:
+        matched = re.search(pattern, text, flags=re.IGNORECASE)
+        if matched:
+            value = int(matched.group(1))
+            if 16 <= value <= 75:
+                return value
+
+    birth = re.search(
+        r"(?:出生日期|出生年月|生日|出生)\s*[：:]?\s*((?:19|20)\d{2})"
+        r"(?:\s*[年./-]\s*(\d{1,2}))?(?:\s*[月./-]\s*(\d{1,2}))?",
+        text,
+        flags=re.IGNORECASE,
+    ) or re.search(r"((?:19|20)\d{2})\s*年\s*生", text)
+    if not birth:
+        return None
+    year = int(birth.group(1))
+    month = int(birth.group(2)) if birth.lastindex and birth.lastindex >= 2 and birth.group(2) else 1
+    day = int(birth.group(3)) if birth.lastindex and birth.lastindex >= 3 and birth.group(3) else 1
+    today = date.today()
+    value = today.year - year - ((today.month, today.day) < (month, day))
+    return value if 16 <= value <= 75 else None
+
+
+def _major_from_school_line(line: str, school: str) -> str:
+    """Handle compact rows such as '2020-2024 某大学 计算机 本科'."""
+    value = line.replace(school, " ")
+    value = WORK_PERIOD_RE.sub(" ", value)
+    value = re.sub(r"(?:19|20)\d{2}\s*(?:[年./-]\s*\d{1,2}\s*月?)?", " ", value)
+    value = DEGREE_RE.sub(" ", value)
+    value = re.sub(r"[（(]\s*(?:985|211|双一流|一本|二本)\s*[）)]", " ", value, flags=re.I)
+    value = re.sub(r"\bGPA\s*[:：]?\s*[\d.]+(?:\s*/\s*[\d.]+)?", " ", value, flags=re.I)
+    value = re.sub(r"(?:专业|主修|研究方向|所学专业|专业方向)\s*[：:]?", " ", value)
+    value = re.sub(r"[\u4e00-\u9fffA-Za-z]{2,30}(?:学院|学部|系)(?=\s|[/|｜·，,;；]|$)", " ", value)
+    parts = [
+        re.sub(r"\s+", " ", item).strip(" ：:-~—–")
+        for item in re.split(r"[/|｜·，,;；]+", value)
+    ]
+    candidates = [
+        item for item in parts
+        if 2 <= len(item) <= 30
+        and not _is_section_heading(item)
+        and "课程" not in item
+        and not item.endswith(("校园", "校区"))
+        and not item.upper().startswith("GPA")
+    ]
+    if candidates:
+        return candidates[-1]
+    return ""
+
+
 def _extract_education(text: str) -> list[dict]:
     """Associate nearby date/degree/major tokens with each school."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     records = []
     for index, line in enumerate(lines):
-        schools = SCHOOL_RE.findall(line)
+        schools = _school_candidates(line)
         if not schools:
             continue
         start = max(index - 2, 0)
         end = min(index + 3, len(lines))
         context = "\n".join(lines[start:end])
-        dates = [_normalize_date(item) for item in DATE_RE.findall(context)]
-        degree = _pick_degree(context)
-        major = _pick_major(context)
+        line_dates = [_normalize_date(item) for item in DATE_RE.findall(line)]
+        context_dates = [_normalize_date(item) for item in DATE_RE.findall(context)]
+        context_degree = _pick_degree(context)
+        context_major = _pick_major(context)
         for school in schools:
             school = _clean_school(school)
             if not school:
                 continue
+            record_degree = _pick_degree(line) or context_degree
+            record_degree = normalize_degree(record_degree) or _infer_degree_from_school(school) or record_degree
+            record_major = (
+                _pick_major(line)
+                or _major_from_school_line(line, school)
+                or context_major
+            )
             records.append({
                 "school": school,
-                "major": major,
-                "degree": degree,
-                "graduate_at": dates[-1] if dates else "",
+                "major": record_major,
+                "degree": record_degree,
+                "graduate_at": (line_dates or context_dates)[-1] if (line_dates or context_dates) else "",
             })
 
+    best_school_scores = {}
+    for record in records:
+        score = sum(bool(record.get(key)) for key in ("major", "degree", "graduate_at"))
+        best_school_scores[record["school"]] = max(
+            score,
+            best_school_scores.get(record["school"], -1),
+        )
+    records = [
+        record for record in records
+        if sum(bool(record.get(key)) for key in ("major", "degree", "graduate_at"))
+        == best_school_scores[record["school"]]
+    ]
     unique = []
     seen = set()
     for record in records:
@@ -390,11 +558,15 @@ def _sanitize_name(value: str) -> str:
 
 def parse_resume_fields(text: str, filename: str = "") -> dict:
     """Extract name, contacts and education; city is intentionally omitted."""
-    fields = {"name": "", "phone": "", "email": "", "city": "", "education": []}
+    fields = {
+        "name": "", "phone": "", "email": "", "city": "", "age": None,
+        "highest_education": "", "major": "", "education": [],
+    }
     if not text:
         fields.update({"gender": "", "work_experience": []})
         return fields
     fields.update({"gender": "", "work_experience": []})
+    text = _normalize_resume_text(text)
 
     compact = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
     phone = re.search(r"1[3-9](?:[\s-]*\d){9}", text)
@@ -445,6 +617,9 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
 
     fields["name"] = _sanitize_name(fields["name"])
     fields["education"] = _extract_education(text)
+    fields["age"] = _extract_age(text)
+    fields["highest_education"] = highest_education_from_records(fields["education"], text)
+    fields["major"] = major_from_records(fields["education"], text)
     fields["work_experience"] = _extract_work_experience(text)
     return fields
 
@@ -470,7 +645,10 @@ def _sanitize_name(value: str) -> str:
 def parse_resume_file(file_path: str, original_filename: str = ""):
     """Return (fields, parse_status): system=parsed, failed=manual review."""
     ext = os.path.splitext(file_path)[1].lower()
-    empty = {"name": "", "phone": "", "email": "", "city": "", "education": []}
+    empty = {
+        "name": "", "phone": "", "email": "", "city": "", "age": None,
+        "highest_education": "", "major": "", "education": [],
+    }
     empty.update({"gender": "", "work_experience": []})
     if ext in IMAGE_EXTS:
         return empty, "failed"

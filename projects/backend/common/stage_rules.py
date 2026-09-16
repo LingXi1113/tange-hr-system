@@ -75,7 +75,8 @@ def _add_to_talent_pool(application_doc: dict, reason: str):
 def add_application_to_talent_pool(application_doc: dict, reason: str,
                                     source: str = "elimination_added",
                                     operator_id: str = "system",
-                                    operator_name: str = "系统", session=None):
+                                    operator_name: str = "系统", session=None,
+                                    category: str = "", tags: list | None = None):
     """将应聘记录关联的候选人幂等加入人才库。
 
     面试不通过和 Offer 拒绝都必须走同一条入库路径，避免出现候选人已经
@@ -96,8 +97,8 @@ def add_application_to_talent_pool(application_doc: dict, reason: str,
     try:
         doc = insert_doc("talent_pool", {
             "candidate_id": candidate_id,
-            "category": "",
-            "tags": [],
+            "category": (category or "").strip(),
+            "tags": [str(tag).strip() for tag in (tags or []) if str(tag).strip()],
             "source": source,
             "reason": (reason or "").strip(),
             "recommended_job_id": application_doc.get("job_id"),

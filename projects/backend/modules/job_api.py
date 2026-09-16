@@ -9,7 +9,7 @@ from flask import Blueprint, Response, current_app, g, request
 from pymongo.errors import DuplicateKeyError
 
 from common.candidate_identity import ensure_candidate_indexes, identity_keys
-from common.db import col, get_by_id, insert_doc, paginate, update_doc, dt
+from common.db import col, delete_doc, get_by_id, insert_doc, paginate, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.file_service import save_uploaded_file
@@ -44,19 +44,74 @@ def _get_or_404(job_id: int) -> dict:
     return job
 
 
+def _require_owner(job: dict):
+    if job.get("owner_id") != g.current_user.user_id:
+        raise BizError(BizCode.FORBIDDEN, "只有创建该职位的 HR 可以执行此操作")
+
+
+def _job_progress(job_id: int) -> dict:
+    applications = list(col("applications").find(
+        {"job_id": job_id}, {"_id": 1, "current_stage": 1, "status": 1},
+    ))
+    application_ids = [item["_id"] for item in applications]
+    if not application_ids:
+        return {
+            "received": 0, "invited": 0, "interviewed": 0,
+            "offered": 0, "pending_onboard": 0, "onboarded": 0,
+        }
+    invited_ids = set(col("interviews").distinct(
+        "application_id", {"application_id": {"$in": application_ids}},
+    ))
+    interviewed_ids = set(col("interviews").distinct(
+        "application_id", {
+            "application_id": {"$in": application_ids},
+            "status": {"$in": ["completed", "passed", "failed"]},
+        },
+    ))
+    offered_ids = set(col("offers").distinct(
+        "application_id", {
+            "application_id": {"$in": application_ids},
+            "status": {"$in": ["sent", "accepted", "rejected", "expired", "withdrawn"]},
+        },
+    ))
+    return {
+        "received": len(applications),
+        "invited": len(invited_ids),
+        "interviewed": len(interviewed_ids),
+        "offered": len(offered_ids),
+        "pending_onboard": sum(
+            1 for item in applications
+            if item.get("current_stage") == "pending_onboard"
+            or item.get("status") == "pending_onboard"
+        ),
+        "onboarded": sum(
+            1 for item in applications
+            if item.get("current_stage") == "onboarded"
+            or item.get("status") == "onboarded"
+        ),
+    }
+
+
 def _job_view(job: dict) -> dict:
+    template = get_by_id("pipeline_templates", job.get("template_id")) or {}
+    requirement = get_by_id("requirements", job.get("requirement_id")) or {}
     return {
         "id": job["_id"], "code": job.get("code", ""), "name": job.get("name", ""),
+        "entity_id": job.get("entity_id", ""), "entity_name": job.get("entity_name", ""),
         "dept_id": job.get("dept_id", ""), "dept_name": job.get("dept_name", ""),
         "location": job.get("location", ""), "job_type": job.get("job_type", ""),
         "level": job.get("level", ""), "report_to": job.get("report_to", ""),
         "headcount": job.get("headcount", 1), "salary_range": job.get("salary_range", ""),
         "description": job.get("description", ""), "qualification": job.get("qualification", ""),
         "skill_tags": job.get("skill_tags", ""), "template_id": job.get("template_id"),
+        "template_name": template.get("name", "默认招聘流程"),
         "channels": job.get("channels", ""), "status": job.get("status", JOB_DRAFT),
         "interview_rounds": list(job.get("interview_rounds") or ["一面"]),
         "requirement_id": job.get("requirement_id"),
+        "requirement_name": requirement.get("name", ""),
         "owner_id": job.get("owner_id", ""), "owner_name": job.get("owner_name", ""),
+        "shared_to_super_admin": bool(job.get("shared_to_super_admin", False)),
+        "progress": _job_progress(job["_id"]),
         "public_token": job.get("public_token", ""),
         "public_url": f"/#/public/job/{job['public_token']}" if job.get("public_token") else "",
         "created_at": dt(job.get("created_at")), "updated_at": dt(job.get("updated_at")),
@@ -72,7 +127,7 @@ def _job_with_configs(job: dict) -> dict:
 
 def _fill(job: dict, payload: dict) -> dict:
     fields = {}
-    for field in ["name", "dept_id", "dept_name", "location", "job_type", "level",
+    for field in ["name", "entity_id", "entity_name", "dept_id", "dept_name", "location", "job_type", "level",
                   "report_to", "salary_range", "description", "qualification",
                   "skill_tags", "channels", "owner_id", "owner_name"]:
         if field in payload:
@@ -190,7 +245,8 @@ def create_job():
         "owner_id": payload.get("owner_id") or g.current_user.user_id,
         "owner_name": payload.get("owner_name") or g.current_user.name,
         "public_token": uuid.uuid4().hex,
-        "name": "", "dept_id": "", "dept_name": "", "location": "",
+        "name": "", "entity_id": "", "entity_name": "",
+        "dept_id": "", "dept_name": "", "location": "",
         "job_type": "full_time", "level": "", "report_to": "", "headcount": 1,
         "salary_range": "", "description": "", "qualification": "",
         "skill_tags": "", "template_id": None, "channels": "", "requirement_id": None,
@@ -209,6 +265,7 @@ def create_job():
 @role_required(HR)
 def update_job(job_id: int):
     job = _get_or_404(job_id)
+    _require_owner(job)
     if job["status"] == JOB_CLOSED:
         raise BizError(BizCode.STATE_INVALID, "已关闭职位不能编辑")
     fields = _fill(job, request.get_json(silent=True) or {})
@@ -221,8 +278,9 @@ def update_job(job_id: int):
 @role_required(HR)
 def copy_job(job_id: int):
     src = _get_or_404(job_id)
+    _require_owner(src)
     doc = {k: src.get(k) for k in
-           ["name", "dept_id", "dept_name", "location", "job_type", "level", "report_to",
+           ["name", "entity_id", "entity_name", "dept_id", "dept_name", "location", "job_type", "level", "report_to",
             "headcount", "salary_range", "description", "qualification", "skill_tags",
            "template_id", "channels", "requirement_id", "stage_configs", "interview_rounds"]}
     doc.update({
@@ -244,6 +302,7 @@ def copy_job(job_id: int):
 @role_required(HR)
 def change_job_status(job_id: int):
     job = _get_or_404(job_id)
+    _require_owner(job)
     payload = request.get_json(silent=True) or {}
     action = payload.get("action", "")
     target = JOB_ACTION.get(action)
@@ -256,6 +315,34 @@ def change_job_status(job_id: int):
     write_log("job", action, g.current_user.user_id, g.current_user.name,
               biz_id=str(job_id), detail=f"状态变更为 {target}")
     return ok(_job_view(job))
+
+
+@bp.post("/api/jobs/<int:job_id>/share")
+@role_required(HR)
+def share_job(job_id: int):
+    job = _get_or_404(job_id)
+    _require_owner(job)
+    update_doc("jobs", job_id, {
+        "shared_to_super_admin": True,
+        "shared_by": g.current_user.user_id,
+    })
+    job["shared_to_super_admin"] = True
+    write_log("job", "share_to_super_admin", g.current_user.user_id, g.current_user.name,
+              biz_id=str(job_id), detail=job.get("name", ""))
+    return ok(_job_view(job))
+
+
+@bp.delete("/api/jobs/<int:job_id>")
+@role_required(HR)
+def delete_job(job_id: int):
+    job = _get_or_404(job_id)
+    _require_owner(job)
+    if col("applications").find_one({"job_id": job_id}):
+        raise BizError(BizCode.STATE_INVALID, "该职位已有候选人记录，不能删除，可改为关闭职位")
+    delete_doc("jobs", job_id)
+    write_log("job", "delete", g.current_user.user_id, g.current_user.name,
+              biz_id=str(job_id), detail=job.get("name", ""))
+    return ok({"id": job_id})
 
 
 # ---------------- 公开页（免鉴权） ----------------
