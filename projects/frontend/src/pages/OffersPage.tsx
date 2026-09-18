@@ -41,7 +41,14 @@ export function OffersPage() {
   const [list, setList] = useState<Offer[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState<{ status: string; job_id?: number; page: number }>({ status: '', page: 1 });
+  const [filters, setFilters] = useState<{
+    status: string; job_id?: number; ready_to_send: string; page: number;
+  }>(() => ({
+    status: searchParams.get('status') ?? '',
+    job_id: searchParams.get('job_id') ? Number(searchParams.get('job_id')) : undefined,
+    ready_to_send: searchParams.get('ready_to_send') ?? '',
+    page: 1,
+  }));
 
   const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
   const [candidates, setCandidates] = useState<{ id: number; name: string }[]>([]);
@@ -64,6 +71,7 @@ export function OffersPage() {
       const data = await fetchOffers({
         status: filters.status || undefined,
         job_id: filters.job_id || undefined,
+        ready_to_send: filters.ready_to_send || undefined,
         page: filters.page, page_size: 10,
       });
       setList(data.list);
@@ -304,6 +312,17 @@ export function OffersPage() {
             onChange={(v) => setFilters((f) => ({ ...f, job_id: v, page: 1 }))}
             options={jobs.map((j) => ({ value: j.id, label: j.name }))}
           />
+          {filters.ready_to_send === '1' && (
+            <Tag
+              color="blue"
+              closable
+              onClose={() => setFilters((current) => ({
+                ...current, ready_to_send: '', page: 1,
+              }))}
+            >
+              当前子分类：审批完成、待发送
+            </Tag>
+          )}
         </Space>
         {loading ? <PageLoading /> : (
           <Table

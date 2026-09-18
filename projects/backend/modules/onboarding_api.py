@@ -118,6 +118,13 @@ def list_onboarding():
     if args.get("job_id"):
         query["job_id"] = int(args["job_id"])
     records = list(col("onboarding_records").find(query).sort("_id", -1))
+    if args.get("application_stage"):
+        application_stage = args["application_stage"]
+        records = [
+            record for record in records
+            if (get_by_id("applications", record["application_id"]) or {}).get("current_stage")
+            == application_stage
+        ]
     if args.get("keyword"):
         keyword = args["keyword"]
         records = [record for record in records

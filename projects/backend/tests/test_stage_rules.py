@@ -76,7 +76,10 @@ def test_expired_stage_rule_moves_to_talent_pool(client):
         assert process_expired_stage_rules() == 1
         updated = col("applications").find_one({"_id": app["id"]})
         assert updated["current_stage"] == "talent_pool"
-        assert col("talent_pool").find_one({"candidate_id": cid}) is not None
+        pool_entry = col("talent_pool").find_one({"candidate_id": cid})
+        assert pool_entry is not None
+        assert pool_entry["source"] == "archived"
+        assert pool_entry["recommended_job_id"] == job["id"]
 
 
 def test_stage_rule_sends_reminder_before_deadline(client):
@@ -104,3 +107,43 @@ def test_stage_rule_sends_reminder_before_deadline(client):
         )
         assert process_expired_stage_rules() == 0
         assert col("notifications").find_one({"scene": "stage_rule_remind"}) is not None
+
+
+def test_unassigned_candidate_is_archived_for_hr_after_protection_period(client):
+    ensure_hr(client)
+    cid = make_candidate(client, phone="13600001004", email="unassigned-expired@example.com")
+    with client.application.app_context():
+        from common.db import col
+
+        col("candidates").update_one(
+            {"_id": cid},
+            {"$set": {"created_at": datetime.now() - timedelta(days=6)}},
+        )
+        process_expired_stage_rules()
+        entry = col("talent_pool").find_one({"candidate_id": cid})
+        assert entry is not None
+        assert entry["source"] == "archived"
+        assert entry["recommended_job_id"] is None
+
+
+def test_expired_customer_protection_archives_under_current_job(client):
+    ensure_hr(client)
+    job = make_job(client, name="客保归档职位")
+    publish_job(client, job["id"])
+    cid = make_candidate(client, phone="13600001005", email="lock-expired@example.com")
+    app = assign(client, cid, job["id"])
+    with client.application.app_context():
+        from common.db import col, next_id
+
+        col("lock_records").insert_one({
+            "_id": next_id("lock_records"), "application_id": app["id"],
+            "candidate_id": cid, "stage_key": "new_resume",
+            "start_at": datetime.now() - timedelta(days=8),
+            "end_at": datetime.now() - timedelta(days=1),
+            "released": True, "auto_released": True,
+        })
+        process_expired_stage_rules()
+        entry = col("talent_pool").find_one({"candidate_id": cid})
+        assert entry is not None
+        assert entry["source"] == "archived"
+        assert entry["recommended_job_id"] == job["id"]

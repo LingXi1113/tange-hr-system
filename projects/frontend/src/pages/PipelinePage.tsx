@@ -1,12 +1,12 @@
 import { DownloadOutlined, LockOutlined } from '@ant-design/icons';
-import { Button, Checkbox, Empty, Input, Modal, Select, Space, Tag, Tooltip } from 'antd';
+import { Button, Empty, Input, Modal, Select, Space, Tag, Tooltip } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { eliminateApplication, fetchBoard, moveApplication } from '@/services/pipeline';
 import type { BoardCard, BoardColumn } from '@/services/pipeline';
 import { fetchJobs } from '@/services/job';
-import { addToPool } from '@/services/talentPool';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
 
@@ -19,6 +19,7 @@ function csvCell(value: unknown) {
 }
 
 export function PipelinePage() {
+  const navigate = useNavigate();
   const { user } = useCurrentUser();
   const canManage = user?.role === 'hr';
   const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
@@ -34,13 +35,13 @@ export function PipelinePage() {
   function exportCurrentBoard() {
     if (!selectedJob || !columns.length) return;
     const rows: unknown[][] = [[
-      '职位', '阶段', '候选人', '状态', '负责人', '进入阶段时间', '停留时间',
+      '职位', '阶段', '候选人', '当前处理状态', '负责人', '当前处理人', '进入阶段时间', '停留时间',
       '锁定开始时间', '锁定结束时间', '淘汰原因',
     ]];
     columns.forEach((column) => {
       const columnCards = cards.filter((card) => card.current_stage === column.stage_key);
       if (!columnCards.length) {
-        rows.push([selectedJob.name, column.name, '', '暂无候选人', '', '', '', '', '', '']);
+        rows.push([selectedJob.name, column.name, '', '暂无候选人', '', '', '', '', '', '', '']);
         return;
       }
       columnCards.forEach((card) => {
@@ -48,8 +49,9 @@ export function PipelinePage() {
           selectedJob.name,
           column.name,
           card.candidate_name,
-          APPLICATION_STATUS_TEXT[card.status] ?? card.status,
+          card.process_state_label || APPLICATION_STATUS_TEXT[card.status] || card.status,
           card.owner_name,
+          card.current_handler_name,
           card.stage_entered_at,
           card.stay,
           card.lock?.start_at ?? '',
@@ -114,7 +116,6 @@ export function PipelinePage() {
 
   function confirmEliminate(card: BoardCard) {
     let reason = '';
-    const opts = { toPool: false };
     Modal.confirm({
       title: `淘汰 ${card.candidate_name}？`,
       content: (
@@ -123,12 +124,9 @@ export function PipelinePage() {
             rows={3} placeholder="必填淘汰原因"
             onChange={(e) => { reason = e.target.value; }}
           />
-          <Checkbox
-            style={{ marginTop: 8 }}
-            onChange={(e) => { opts.toPool = e.target.checked; }}
-          >
-            同时加入人才库
-          </Checkbox>
+          <div style={{ marginTop: 8, color: 'rgba(23,26,29,0.55)', fontSize: 12 }}>
+            淘汰后将自动归档到人才库的“已淘汰”文件夹。
+          </div>
         </div>
       ),
       okText: '确认淘汰',
@@ -139,20 +137,7 @@ export function PipelinePage() {
           throw new Error('reason required');
         }
         await eliminateApplication(card.id, reason, card.version);
-        if (opts.toPool) {
-          try {
-            await addToPool({
-              candidate_id: card.candidate_id,
-              source: 'elimination_added',
-              reason: reason.trim(),
-            });
-            msg.success('已淘汰并加入人才库');
-          } catch {
-            msg.success('已淘汰（加入人才库失败：可能已在库中）');
-          }
-        } else {
-          msg.success('已淘汰');
-        }
+        msg.success('已淘汰并归档至人才库');
         void loadBoard();
       },
     });
@@ -205,18 +190,47 @@ export function PipelinePage() {
                       <div style={{ color: 'rgba(23,26,29,0.5)', fontSize: 12, margin: '4px 0' }}>
                         {card.job_name} · 停留 {card.stay || '-'}
                       </div>
+                      {card.process_state_label && (
+                        <div style={{ marginBottom: 4 }}>
+                          <Tag color={card.process_state_key === 'awaiting_hr_review' ? 'orange'
+                            : card.process_state_key === 'awaiting_interviewer_feedback' ? 'gold' : 'blue'}>
+                            {card.process_state_label}
+                          </Tag>
+                          {card.current_handler_name && (
+                            <span style={{ color: 'rgba(23,26,29,0.5)', fontSize: 12 }}>
+                              {card.current_handler_name}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {card.status === 'in_progress' && canManage && (
                         <Space size={4}>
-                          <Button
-                            size="small" type="link" style={{ padding: 0 }}
-                            onClick={() => {
-                              setMoveTarget(card);
-                              setMoveStage('');
-                              setMoveReason('');
-                            }}
-                          >
-                            推进
-                          </Button>
+                          {card.process_state_key === 'awaiting_hr_review' && card.last_interview_id ? (
+                            <Button
+                              size="small" type="link" style={{ padding: 0 }}
+                              onClick={() => navigate(`/interviews?interview_id=${card.last_interview_id}`)}
+                            >
+                              处理评价
+                            </Button>
+                          ) : card.process_state_key === 'awaiting_interview_schedule' ? (
+                            <Button
+                              size="small" type="link" style={{ padding: 0 }}
+                              onClick={() => navigate(`/interviews?candidate_id=${card.candidate_id}&application_id=${card.id}`)}
+                            >
+                              安排面试
+                            </Button>
+                          ) : !['awaiting_interview', 'awaiting_interviewer_feedback'].includes(card.process_state_key || '') && (
+                            <Button
+                              size="small" type="link" style={{ padding: 0 }}
+                              onClick={() => {
+                                setMoveTarget(card);
+                                setMoveStage('');
+                                setMoveReason('');
+                              }}
+                            >
+                              推进
+                            </Button>
+                          )}
                           <Button
                             size="small" type="link" danger style={{ padding: 0 }}
                             onClick={() => confirmEliminate(card)}

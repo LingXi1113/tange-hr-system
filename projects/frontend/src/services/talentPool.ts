@@ -14,6 +14,9 @@ export interface PoolEntry {
   reason: string;
   recommended_job_id: number | null;
   recommended_job_name: string;
+  folder_id?: number | null;
+  folder_key: string;
+  folder_name: string;
   last_contact_at: string;
   status: string;
   created_at: string;
@@ -21,18 +24,58 @@ export interface PoolEntry {
 
 export const POOL_SOURCE_TEXT: Record<string, string> = {
   elimination_added: '淘汰加入', offer_rejected: 'Offer拒绝加入',
-  manual: '手动加入', batch_import: '批量导入', archived: '流程归档',
+  business_rejected: '业务复筛不通过', interview_rejected: '面试不通过',
+  abandoned_added: '流程放弃加入', manual: '手动加入',
+  batch_import: '批量导入', archived: '客保到期归档',
 };
+
+export interface PoolFolder {
+  key: string;
+  id?: number;
+  name: string;
+  type: 'root' | 'system' | 'group' | 'job' | 'custom';
+  count: number;
+  system: boolean;
+  selectable?: boolean;
+  children?: PoolFolder[];
+}
+
+export interface PoolFolderSummary {
+  tree: PoolFolder[];
+  custom_folders: PoolFolder[];
+  total: number;
+}
 
 export async function fetchPool(params: Record<string, unknown> = {}) {
   const resp = await http.get('/api/talent-pool', { params });
   return unwrap<PagedData<PoolEntry>>(resp);
 }
 
+export async function fetchPoolFolders() {
+  const resp = await http.get('/api/talent-pool/folders');
+  return unwrap<PoolFolderSummary>(resp);
+}
+
+export async function createPoolFolder(name: string) {
+  const resp = await http.post('/api/talent-pool/folders', { name });
+  return unwrap<{ id: number; name: string }>(resp);
+}
+
+export async function renamePoolFolder(id: number, name: string) {
+  const resp = await http.put(`/api/talent-pool/folders/${id}`, { name });
+  return unwrap<{ id: number; name: string }>(resp);
+}
+
+export async function deletePoolFolder(id: number) {
+  const resp = await http.delete(`/api/talent-pool/folders/${id}`, { params: { confirm: 1 } });
+  return unwrap<{ moved_to_pending_archive: number }>(resp);
+}
+
 export async function addToPool(payload: {
   candidate_id?: number; candidate_ids?: number[];
   category?: string; tags?: string[]; source?: string; reason?: string;
   recommended_job_id?: number | null;
+  folder_id?: number | null;
 }) {
   const resp = await http.post('/api/talent-pool', payload);
   return unwrap<{ added: PoolEntry[]; duplicates: { candidate_id: number; msg: string }[]; missing: unknown[] }>(resp);

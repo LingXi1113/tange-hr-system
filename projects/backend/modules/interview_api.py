@@ -20,7 +20,7 @@ from common.db import col, get_by_id, insert_doc, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
-    advance_interview_round, application_to_dict, configured_interview_rounds,
+    advance_interview_round, application_process_state, application_to_dict, configured_interview_rounds,
     effective_interview_round, eliminate_application, expected_interview_round, move_application,
     job_stage_sequence,
 )
@@ -126,6 +126,10 @@ def _resolve_bindings(payload: dict):
 def _interview_view(doc: dict) -> dict:
     candidate = get_by_id("candidates", doc["candidate_id"]) or {}
     job = get_by_id("jobs", doc["job_id"]) or {}
+    application = get_by_id("applications", doc.get("application_id")) or {}
+    process_state = application_process_state(application) if application else {
+        "key": "", "label": "", "role": "",
+    }
     return {
         "id": doc["_id"],
         "candidate_id": doc["candidate_id"],
@@ -150,6 +154,11 @@ def _interview_view(doc: dict) -> dict:
         "status": doc.get("status", IV_PENDING),
         "conclusion_applied": bool(doc.get("conclusion_applied")),
         "conclusion_action": doc.get("conclusion_action", ""),
+        "handed_to_hr": bool(doc.get("handed_to_hr")),
+        "handed_to_hr_at": dt(doc.get("handed_to_hr_at")),
+        "process_state_key": process_state["key"],
+        "process_state_label": process_state["label"],
+        "process_state_role": process_state["role"],
         "version": doc.get("version", 1),
         "reschedule_history": doc.get("reschedule_history", []),
         "created_at": dt(doc.get("created_at")),
@@ -264,6 +273,11 @@ def list_interviews():
     page = max(int(args.get("page", 1)), 1)
     page_size = min(max(int(args.get("page_size", 10)), 1), 100)
     rows = list(items)
+    if args.get("action_state"):
+        requested_state = args["action_state"]
+        rows = [item for item in rows if application_process_state(
+            get_by_id("applications", item.get("application_id")) or {},
+        ).get("key") == requested_state]
     total = len(rows)
     sliced = rows[(page - 1) * page_size: page * page_size]
     data = [_interview_view(d) for d in sliced]
@@ -345,6 +359,15 @@ def create_interview():
             "reschedule_history": [],
             "created_by": g.current_user.user_id,
         })
+        col("applications").update_one({"_id": app_doc["_id"]}, {"$set": {
+            "awaiting_hr_action": False,
+            "next_action_role": "interviewer",
+            "next_action": "submit_interview_feedback",
+            "current_handler_role": "interviewer",
+            "current_handler_id": interviewer.user_id,
+            "current_handler_name": interviewer.name,
+            "updated_at": datetime.now(),
+        }})
     write_log("interview", "create", g.current_user.user_id, g.current_user.name,
               biz_id=str(doc["_id"]),
               detail=f"候选人{candidate['_id']} 职位{job['_id']} {round_} {iv_type}")
@@ -414,6 +437,14 @@ def update_interview(interview_id: int):
         )
     if updated is None:
         raise BizError(BizCode.CONFLICT, "面试信息已被其他人修改，请刷新后重试")
+    if fields.get("interviewer_id"):
+        col("applications").update_one({"_id": app_doc["_id"]}, {"$set": {
+            "current_handler_role": "interviewer",
+            "current_handler_id": fields["interviewer_id"],
+            "current_handler_name": fields.get("interviewer_name", ""),
+            "next_action_role": "interviewer",
+            "next_action": "submit_interview_feedback",
+        }})
     doc = updated
     write_log("interview", "update", g.current_user.user_id, g.current_user.name,
               biz_id=str(interview_id))
@@ -535,7 +566,7 @@ def _move_after_final_interview(app_doc: dict, reason: str):
 
 
 def _advance_pass_conclusion(doc: dict, app_doc: dict, feedback: dict):
-    """面试评价通过后自动推进应聘流程，避免还需要 HR 二次点击。"""
+    """HR 确认面试评价通过后推进应聘流程。"""
     job_doc = get_by_id("jobs", app_doc["job_id"]) or {}
     configured_rounds = configured_interview_rounds(job_doc)
     reason = f"面试{doc['round']}通过"
@@ -566,10 +597,75 @@ def _advance_pass_conclusion(doc: dict, app_doc: dict, feedback: dict):
     return updated
 
 
+def _handoff_interview_to_hr(doc: dict, feedback: dict) -> dict:
+    """评价提交后把处理权交回招聘 HR，但不自动改变招聘阶段。"""
+    app_doc = get_by_id("applications", doc.get("application_id"))
+    if app_doc is None:
+        raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
+    now = datetime.now()
+    owner_id = app_doc.get("owner_id", "")
+    owner_name = app_doc.get("owner_name", "")
+    col("applications").update_one({"_id": app_doc["_id"]}, {"$set": {
+        "awaiting_hr_action": True,
+        "next_action_role": "hr",
+        "next_action": "review_interview_feedback",
+        "current_handler_role": "hr",
+        "current_handler_id": owner_id,
+        "current_handler_name": owner_name,
+        "last_interview_id": doc["_id"],
+        "last_interview_conclusion": feedback.get("conclusion", ""),
+        "updated_at": now,
+    }})
+    col("interviews").update_one({"_id": doc["_id"]}, {"$set": {
+        "handed_to_hr": True,
+        "handed_to_hr_at": now,
+        "handed_to_hr_by": g.current_user.user_id,
+    }})
+    candidate = get_by_id("candidates", app_doc.get("candidate_id")) or {}
+    title = "面试评价待 HR 处理"
+    content = (
+        f"候选人「{candidate.get('name', '')}」的{doc.get('round', '')}评价已提交，"
+        "请确认并推进后续流程"
+    )
+    try:
+        from common.notifier import notify, notify_hr
+        if owner_id:
+            notify(
+                owner_id, "interview_feedback_ready", title, content,
+                "candidate", app_doc.get("candidate_id"),
+                f"/candidates/{app_doc.get('candidate_id')}",
+                f"interview_feedback_ready:{doc['_id']}:{owner_id}",
+            )
+        else:
+            notify_hr(
+                "interview_feedback_ready", title, content,
+                "candidate", app_doc.get("candidate_id"),
+                f"/candidates/{app_doc.get('candidate_id')}",
+                f"interview_feedback_ready:{doc['_id']}",
+            )
+    except Exception:
+        current_app.logger.exception("面试评价交接通知发送失败 interview_id=%s", doc.get("_id"))
+    return get_by_id("interviews", doc["_id"])
+
+
+def _finish_hr_handoff(app_doc: dict, next_action: str = "") -> dict:
+    """HR 处理完评价后关闭待办，同时继续保留招聘 HR 负责人。"""
+    col("applications").update_one({"_id": app_doc["_id"]}, {"$set": {
+        "awaiting_hr_action": False,
+        "next_action_role": "hr",
+        "next_action": next_action,
+        "current_handler_role": "hr",
+        "current_handler_id": app_doc.get("owner_id", ""),
+        "current_handler_name": app_doc.get("owner_name", ""),
+        "updated_at": datetime.now(),
+    }})
+    return get_by_id("applications", app_doc["_id"])
+
+
 @bp.post("/<int:interview_id>/complete")
 @login_required
 def complete_interview(interview_id: int):
-    """完成面试：必须由本场业务面试人员提交评价。"""
+    """面试官提交评价后完成面试，并把后续处理权交回招聘 HR。"""
     doc = _get_or_404(interview_id)
     _require_interviewer_access(doc)
     payload = request.get_json(silent=True) or {}
@@ -577,11 +673,8 @@ def complete_interview(interview_id: int):
         feedback = _get_feedback(interview_id)
         if feedback is None:
             raise BizError(BizCode.PARAM_INVALID, "请先填写面试评价")
-        if feedback.get("conclusion") == "pass" and not doc.get("conclusion_applied"):
-            app_doc = get_by_id("applications", doc.get("application_id"))
-            if app_doc is None:
-                raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
-            _advance_pass_conclusion(doc, app_doc, feedback)
+        if not doc.get("handed_to_hr"):
+            doc = _handoff_interview_to_hr(doc, feedback)
         return ok(_interview_view(doc))
     if IV_COMPLETED not in INTERVIEW_FLOW.get(doc["status"], []):
         raise BizError(BizCode.STATE_INVALID,
@@ -590,11 +683,7 @@ def complete_interview(interview_id: int):
     if feedback is None:
         raise BizError(BizCode.PARAM_INVALID, "请先由本场面试业务人员填写面试评价")
     doc = _change_status(doc, "complete", IV_COMPLETED)
-    if feedback.get("conclusion") == "pass":
-        app_doc = get_by_id("applications", doc.get("application_id"))
-        if app_doc is None:
-            raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
-        _advance_pass_conclusion(doc, app_doc, feedback)
+    doc = _handoff_interview_to_hr(doc, feedback)
     return ok(_interview_view(doc))
 
 
@@ -604,6 +693,8 @@ def save_feedback(interview_id: int):
     """填写/更新面试反馈：仅本场被指派的业务面试人员可操作。"""
     doc = _get_or_404(interview_id)
     _require_interviewer_access(doc)
+    if doc.get("conclusion_applied"):
+        raise BizError(BizCode.STATE_INVALID, "HR 已处理本次评价，不能再次修改")
     require_interview_application(get_by_id("applications", doc.get("application_id")))
     if doc["status"] == IV_CANCELLED:
         raise BizError(BizCode.STATE_INVALID, "已取消的面试不能填写反馈")
@@ -657,12 +748,10 @@ def save_feedback(interview_id: int):
 
 
 @bp.post("/<int:interview_id>/apply-conclusion")
-@login_required
+@role_required(HR, SUPER_ADMIN)
 def apply_conclusion(interview_id: int):
     """反馈联动阶段：通过→面试通过；不通过→淘汰（必填原因）；待定不流转。"""
     doc = _get_or_404(interview_id)
-    if g.current_user.role not in {HR, SUPER_ADMIN}:
-        _require_interviewer_access(doc)
     if doc.get("conclusion_applied"):
         app_doc = get_by_id("applications", doc.get("application_id"))
         if app_doc is None:
@@ -679,14 +768,26 @@ def apply_conclusion(interview_id: int):
     if doc.get("interviewer_id") and feedback.get("evaluator_id") \
             and feedback.get("evaluator_id") != doc.get("interviewer_id"):
         raise BizError(BizCode.STATE_INVALID, "必须使用本场面试业务人员的评价结论")
-    conclusion = feedback.get("conclusion")
-    if conclusion == "hold":
-        raise BizError(BizCode.STATE_INVALID, "结论为待定，不触发阶段变化")
-
-    payload = request.get_json(silent=True) or {}
     app_doc = get_by_id("applications", doc["application_id"])
     if app_doc is None:
         raise BizError(BizCode.NOT_FOUND, "关联应聘记录不存在")
+    require_candidate_lock_owner(app_doc["candidate_id"])
+    conclusion = feedback.get("conclusion")
+    if conclusion == "hold":
+        candidate = get_by_id("candidates", app_doc.get("candidate_id")) or {}
+        tags = [item.strip() for item in (candidate.get("tags") or "").replace("，", ",").split(",") if item.strip()]
+        if "待定" not in tags:
+            tags.append("待定")
+            col("candidates").update_one({"_id": candidate.get("_id")}, {"$set": {"tags": ",".join(tags)}})
+        updated = _finish_hr_handoff(app_doc, "follow_up_hold")
+        col("interviews").update_one({"_id": interview_id}, {"$set": {
+            "conclusion_applied": True, "conclusion_action": "hold",
+            "conclusion_applied_at": datetime.now(),
+            "conclusion_applied_by": g.current_user.user_id,
+        }})
+        return ok({"action": "hold", "application": application_to_dict(updated)})
+
+    payload = request.get_json(silent=True) or {}
     if app_doc.get("status") != APP_IN_PROGRESS:
         raise BizError(BizCode.STATE_INVALID, "应聘记录已结束，不能流转阶段")
 
@@ -713,6 +814,10 @@ def apply_conclusion(interview_id: int):
                 operator_id=g.current_user.user_id, operator_name=g.current_user.name,
                 version=app_doc.get("version", 1),
             )
+            add_application_to_talent_pool(
+                updated, reason, source="interview_rejected",
+                operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+            )
         write_log("interview", "apply_conclusion_fail", g.current_user.user_id,
                   g.current_user.name, biz_id=str(interview_id), detail=f"{action}: {reason}")
         col("interviews").update_one({"_id": interview_id}, {"$set": {
@@ -720,6 +825,7 @@ def apply_conclusion(interview_id: int):
             "conclusion_applied_at": datetime.now(),
             "conclusion_applied_by": g.current_user.user_id,
         }})
+        updated = _finish_hr_handoff(updated)
         return ok({"action": "fail" if action == "eliminate" else action,
                    "application": application_to_dict(updated)})
 
@@ -758,6 +864,8 @@ def apply_conclusion(interview_id: int):
             "conclusion_applied_at": datetime.now(),
             "conclusion_applied_by": g.current_user.user_id,
         }})
+        next_action = "schedule_interview" if updated.get("status") == APP_IN_PROGRESS else ""
+        updated = _finish_hr_handoff(updated, next_action)
         return ok({"action": "pass", "application": application_to_dict(updated)})
 
     # fail：淘汰必填原因

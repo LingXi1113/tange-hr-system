@@ -620,11 +620,80 @@ def _legacy_eliminate_application(application_doc: dict, reason: str,
     return updated
 
 
+def application_process_state(app_doc: dict) -> dict:
+    """Return the actionable state inside the current recruitment stage.
+
+    A stage describes where the candidate is in the recruitment process.  This
+    state describes who needs to act next.  Keeping the two separate prevents
+    hand-offs (especially interviewer -> HR) from making a resume disappear
+    from its real stage column.
+    """
+    status = app_doc.get("status", "")
+    if status not in (APP_IN_PROGRESS, APP_PENDING_ONBOARD):
+        labels = {
+            APP_ONBOARDED: "已入职",
+            APP_ELIMINATED: "已淘汰",
+            APP_CLOSED: "流程已结束",
+        }
+        return {"key": "completed", "label": labels.get(status, "流程已结束"), "role": ""}
+
+    if app_doc.get("awaiting_hr_action"):
+        return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
+
+    interview = col("interviews").find_one(
+        {"application_id": app_doc.get("_id")}, sort=[("_id", -1)],
+    )
+    if interview and not interview.get("conclusion_applied"):
+        feedback = col("interview_feedback").find_one({"interview_id": interview["_id"]})
+        interview_status = interview.get("status", "pending")
+        if feedback and interview_status == "completed":
+            return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
+        end_at = interview.get("end_at")
+        interview_has_ended = isinstance(end_at, datetime) and end_at <= _now()
+        if not feedback and (
+            interview_status == "completed"
+            or (
+                interview_status in {"pending", "invited", "confirmed", "rescheduled"}
+                and interview_has_ended
+            )
+        ):
+            return {"key": "awaiting_interviewer_feedback", "label": "待面试官评价", "role": "interviewer"}
+        if interview_status in {"pending", "invited", "confirmed", "rescheduled"}:
+            return {"key": "awaiting_interview", "label": "待参加面试", "role": "interviewer"}
+
+    stage = app_doc.get("current_stage", "")
+    action = app_doc.get("next_action", "")
+    interview_stages = {
+        "pending_interview", "interviewing", "interview_1", "interview_2",
+        "interview_3", "hr_interview", "re_interview",
+    }
+    if action == "business_screen_feedback" or stage == "business_screen":
+        return {"key": "awaiting_business_feedback", "label": "待业务复筛", "role": "business_screener"}
+    if action == "submit_interview_feedback":
+        return {"key": "awaiting_interviewer_feedback", "label": "待面试官评价", "role": "interviewer"}
+    if action == "review_interview_feedback":
+        return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
+    if action == "schedule_interview" and stage in interview_stages:
+        return {"key": "awaiting_interview_schedule", "label": "待 HR 安排面试", "role": "hr"}
+    if action == "follow_up_hold":
+        return {"key": "awaiting_hr_follow_up", "label": "待 HR 跟进", "role": "hr"}
+    if stage in {"new_resume", "pending_screen", "hr_screen_passed"}:
+        return {"key": "awaiting_hr_screen", "label": "待 HR 初筛", "role": "hr"}
+    if stage in interview_stages:
+        return {"key": "awaiting_interview_schedule", "label": "待 HR 安排面试", "role": "hr"}
+    if stage in {"offer_approval", "offer_pending", "offer"}:
+        return {"key": "awaiting_offer_action", "label": "待录用处理", "role": "hr"}
+    if status == APP_PENDING_ONBOARD or stage == "pending_onboard":
+        return {"key": "awaiting_onboard", "label": "待入职", "role": "hr"}
+    return {"key": "in_progress", "label": "进行中", "role": app_doc.get("next_action_role", "")}
+
+
 def application_to_dict(app_doc: dict) -> dict:
     candidate = get_by_id("candidates", app_doc["candidate_id"]) or {}
     job = get_by_id("jobs", app_doc["job_id"]) or {}
     from common.db import dt
 
+    process_state = application_process_state(app_doc)
     return {
         "id": app_doc["_id"],
         "candidate_id": app_doc["candidate_id"],
@@ -638,6 +707,17 @@ def application_to_dict(app_doc: dict) -> dict:
         "business_screener_name": app_doc.get("business_screener_name", ""),
         "owner_id": app_doc.get("owner_id", ""),
         "owner_name": app_doc.get("owner_name", ""),
+        "awaiting_hr_action": bool(app_doc.get("awaiting_hr_action")),
+        "next_action_role": app_doc.get("next_action_role", ""),
+        "next_action": app_doc.get("next_action", ""),
+        "current_handler_role": app_doc.get("current_handler_role", ""),
+        "current_handler_id": app_doc.get("current_handler_id", ""),
+        "current_handler_name": app_doc.get("current_handler_name", ""),
+        "last_interview_id": app_doc.get("last_interview_id"),
+        "last_interview_conclusion": app_doc.get("last_interview_conclusion", ""),
+        "process_state_key": process_state["key"],
+        "process_state_label": process_state["label"],
+        "process_state_role": process_state["role"],
         "stage_entered_at": dt(app_doc.get("stage_entered_at")),
         "status": app_doc.get("status", ""),
         "eliminate_reason": app_doc.get("eliminate_reason", ""),

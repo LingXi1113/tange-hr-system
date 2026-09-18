@@ -1,6 +1,6 @@
 import { DeleteOutlined, DownOutlined, EditOutlined, LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Radio, Row,
+  Alert, Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Radio, Row,
   Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
@@ -1059,6 +1059,15 @@ export function CandidateDetailPage() {
               </Button>
             ) : null}
           >
+            {selectedApplication?.awaiting_hr_action && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`${stageText(selectedApplication.current_stage)} · ${selectedApplication.process_state_label || '待 HR 确认'}`}
+                description="请查看本轮评价后，再决定推进下一阶段、待定、淘汰或加入人才库。"
+              />
+            )}
             <Table
               rowKey="id" size="small" pagination={false} dataSource={interviews}
               locale={{ emptyText: '暂无面试安排' }}
@@ -1092,6 +1101,20 @@ export function CandidateDetailPage() {
                       {r.feedback_conclusion === 'fail' && <Tag color="error">不通过</Tag>}
                       {r.feedback_conclusion === 'pass' && <Tag color="success">通过</Tag>}
                     </Space>
+                  ),
+                },
+                {
+                  title: '操作', width: 90,
+                  render: (_: unknown, r: Interview) => (
+                    canManage && r.status === 'completed' && r.has_feedback && !r.conclusion_applied
+                      ? (
+                        <Button
+                          size="small" type="link"
+                          onClick={() => navigate(`/interviews?interview_id=${r.id}&open=1`)}
+                        >
+                          处理评价
+                        </Button>
+                      ) : null
                   ),
                 },
               ]}

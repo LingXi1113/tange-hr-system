@@ -42,10 +42,16 @@ const INTERVIEW_STAGE_KEYS = new Set([
 
 export function InterviewsPage() {
   const { user } = useCurrentUser();
+  const canHrManage = Boolean(user && (user.role === 'hr' || user.role === 'super_admin'
+    || user.roles?.some((role) => role === 'hr' || role === 'super_admin')));
+  const [searchParams] = useSearchParams();
   const [list, setList] = useState<Interview[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ status: '', round: '', interviewer: '', page: 1 });
+  const [filters, setFilters] = useState({
+    status: '', round: '', interviewer: '',
+    action_state: searchParams.get('action_state') ?? '', page: 1,
+  });
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -63,13 +69,11 @@ export function InterviewsPage() {
   const [feedbackTarget, setFeedbackTarget] = useState<Interview | null>(null);
   const [feedbackForm] = Form.useForm();
   const feedbackConclusion = Form.useWatch('conclusion', feedbackForm) as string | undefined;
-  const [feedbackFailureAction, setFeedbackFailureAction] = useState<'talent_pool' | 'eliminate'>('talent_pool');
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [roundLocked, setRoundLocked] = useState(false);
   const [conclusionTarget, setConclusionTarget] = useState<Interview | null>(null);
   const [conclusionReason, setConclusionReason] = useState('');
   const [failureAction, setFailureAction] = useState<'talent_pool' | 'eliminate'>('talent_pool');
-  const [searchParams] = useSearchParams();
   const autoOpenedCandidate = useRef<number | null>(null);
   const autoOpenedInterview = useRef<number | null>(null);
 
@@ -92,6 +96,7 @@ export function InterviewsPage() {
         status: filters.status || undefined,
         round: filters.round || undefined,
         interviewer: filters.interviewer || undefined,
+        action_state: filters.action_state || undefined,
         page: filters.page, page_size: 10,
       });
       setList(data.list);
@@ -195,7 +200,15 @@ export function InterviewsPage() {
     const interviewId = Number(searchParams.get('interview_id'));
     if (interviewId && autoOpenedInterview.current !== interviewId) {
       autoOpenedInterview.current = interviewId;
-      void fetchInterview(interviewId).then((detail) => openEditor(detail)).catch(() => {
+      void fetchInterview(interviewId).then((detail) => {
+        if (canHrManage && detail.status === 'completed' && detail.feedback && !detail.conclusion_applied) {
+          setFailureAction('talent_pool');
+          setConclusionReason('');
+          setConclusionTarget(detail);
+          return;
+        }
+        return openEditor(detail);
+      }).catch(() => {
         autoOpenedInterview.current = null;
       });
       return;
@@ -207,7 +220,7 @@ export function InterviewsPage() {
     void openEditorForCandidate(candidateId, applicationId).catch(() => {
       autoOpenedCandidate.current = null;
     });
-  }, [openEditor, openEditorForCandidate, searchParams]);
+  }, [canHrManage, openEditor, openEditorForCandidate, searchParams]);
 
   async function handleSave() {
     const values = await form.validateFields();
@@ -256,7 +269,6 @@ export function InterviewsPage() {
   async function openFeedback(record: Interview) {
     const detail = await fetchInterview(record.id);
     setFeedbackTarget(detail);
-    setFeedbackFailureAction('talent_pool');
     feedbackForm.setFieldsValue({
       version: detail.feedback?.version,
       conclusion: detail.feedback?.conclusion,
@@ -287,20 +299,10 @@ export function InterviewsPage() {
           .filter((d: { name?: string }) => d?.name)
           .map((d: { name: string; score: number }) => ({ name: d.name, score: d.score ?? 3 })),
       });
-      if (feedbackTarget.status !== 'completed' && feedbackTarget.status !== 'cancelled') {
-        await completeInterview(feedbackTarget.id, false, feedbackTarget.version);
+      if (feedbackTarget.status !== 'cancelled') {
+        await completeInterview(feedbackTarget.id, feedbackTarget.version);
       }
-      const candidate = await fetchCandidate(feedbackTarget.candidate_id);
-      const application = candidate.applications.find((item) => item.id === feedbackTarget.application_id);
-      if (!application) throw new Error('关联的应聘记录不存在');
-      const result = await applyConclusion(feedbackTarget.id, {
-        version: application.version,
-        reason: values.conclusion === 'fail' ? values.comment : undefined,
-        action: values.conclusion === 'fail' ? feedbackFailureAction : undefined,
-      });
-      msg.success(values.conclusion === 'pass'
-        ? `评价已提交，流程已推进至：${result.application.current_stage}`
-        : feedbackFailureAction === 'talent_pool' ? '评价已提交，候选人已加入人才库' : '评价已提交，候选人已淘汰');
+      msg.success('评价已提交并推送给招聘 HR，等待 HR 处理后续阶段');
       setFeedbackTarget(null);
       void load();
     } finally {
@@ -308,7 +310,7 @@ export function InterviewsPage() {
     }
   }
 
-  async function handleApplyConclusion(pass: boolean) {
+  async function handleApplyConclusion() {
     if (!conclusionTarget) return;
     // 取应聘记录当前 version（乐观锁）
     const detail = await fetchCandidate(conclusionTarget.candidate_id);
@@ -317,18 +319,21 @@ export function InterviewsPage() {
       msg.error('应聘记录不存在');
       return;
     }
-    if (!pass && !conclusionReason.trim()) {
+    const conclusion = conclusionTarget.feedback?.conclusion;
+    if (conclusion === 'fail' && !conclusionReason.trim()) {
       msg.error('面试不通过淘汰候选人必须填写原因');
       return;
     }
     const result = await applyConclusion(conclusionTarget.id, {
       version: app.version,
       reason: conclusionReason.trim() || undefined,
-      action: pass ? undefined : failureAction,
+      action: conclusion === 'fail' ? failureAction : undefined,
     });
-    msg.success(pass
+    msg.success(result.action === 'pass'
       ? `候选人已推进至：${result.application.current_stage}`
-      : '候选人已淘汰');
+      : result.action === 'hold'
+        ? '候选人已标记为待定，由招聘 HR 继续跟进'
+        : result.action === 'talent_pool' ? '候选人已加入人才库' : '候选人已淘汰');
     setConclusionTarget(null);
     setConclusionReason('');
     void load();
@@ -345,11 +350,17 @@ export function InterviewsPage() {
     },
     { title: '面试官', dataIndex: 'interviewer_name', width: 90 },
     {
-      title: '状态', dataIndex: 'status', width: 90,
-      render: (v: string) => (
-        <Tag color={v === 'completed' ? 'success' : v === 'cancelled' ? 'default' : 'gold'}>
-          {INTERVIEW_STATUS_TEXT[v] ?? v}
-        </Tag>
+      title: '当前环节', width: 170,
+      render: (_: unknown, r: Interview) => (
+        <Space size={4} wrap>
+          <Tag color={r.process_state_key === 'awaiting_hr_review' ? 'orange'
+            : r.process_state_key === 'awaiting_interviewer_feedback' ? 'gold' : 'blue'}>
+            {r.process_state_label || INTERVIEW_STATUS_TEXT[r.status] || r.status}
+          </Tag>
+          <span style={{ color: 'rgba(23,26,29,0.45)', fontSize: 12 }}>
+            {INTERVIEW_STATUS_TEXT[r.status] ?? r.status}
+          </span>
+        </Space>
       ),
     },
     {
@@ -363,10 +374,10 @@ export function InterviewsPage() {
           {user?.user_id === r.interviewer_id && user.role !== 'hr' && r.status !== 'cancelled' && (
             <Button size="small" type="link" onClick={() => void openFeedback(r)}>提交评价</Button>
           )}
-          {user?.role === 'hr' && r.status === 'completed' && r.has_feedback && !r.conclusion_applied && (
+          {canHrManage && r.process_state_key === 'awaiting_hr_review' && r.status === 'completed' && r.has_feedback && !r.conclusion_applied && (
             <Button size="small" type="link" onClick={() => void openConclusion(r)}>处理评价</Button>
           )}
-          {user?.role === 'hr' && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}
+          {canHrManage && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}
         </Space>
       ),
     },
@@ -393,6 +404,17 @@ export function InterviewsPage() {
             value={filters.round || undefined}
             onChange={(v) => setFilters((f) => ({ ...f, round: v ?? '', page: 1 }))}
             options={INTERVIEW_ROUND_OPTIONS.map((r) => ({ value: r, label: r }))}
+          />
+          <Select
+            placeholder="当前处理状态" allowClear style={{ width: 170 }}
+            value={filters.action_state || undefined}
+            onChange={(v) => setFilters((f) => ({ ...f, action_state: v ?? '', page: 1 }))}
+            options={[
+              { value: 'awaiting_interview_schedule', label: '待 HR 安排面试' },
+              { value: 'awaiting_interview', label: '待参加面试' },
+              { value: 'awaiting_interviewer_feedback', label: '待面试官评价' },
+              { value: 'awaiting_hr_review', label: '待 HR 确认' },
+            ]}
           />
           <Input.Search
             placeholder="面试官" allowClear style={{ width: 180 }}
@@ -548,7 +570,7 @@ export function InterviewsPage() {
         onCancel={() => setFeedbackTarget(null)}
         footer={[
           <Button key="save" type="primary" loading={feedbackSaving} onClick={() => void handleFeedbackSave()}>
-            提交评价
+            提交评价并推给 HR
           </Button>,
         ]}
       >
@@ -585,18 +607,6 @@ export function InterviewsPage() {
           <Form.Item name="comment" label={feedbackConclusion === 'fail' ? '淘汰原因' : '评价内容'} rules={feedbackConclusion === 'fail' ? [{ required: true, message: '请填写淘汰原因' }] : []}>
             <Input.TextArea rows={2} />
           </Form.Item>
-          {feedbackConclusion === 'fail' && (
-            <Form.Item label="不通过后的处理方式" required>
-              <Select
-                value={feedbackFailureAction}
-                onChange={(value: 'talent_pool' | 'eliminate') => setFeedbackFailureAction(value)}
-                options={[
-                  { value: 'talent_pool', label: '加入人才库' },
-                  { value: 'eliminate', label: '直接淘汰' },
-                ]}
-              />
-            </Form.Item>
-          )}
           {feedbackConclusion !== 'fail' && (
             <Form.Item name="risk_note" label="风险提示">
               <Input.TextArea rows={2} />
@@ -618,8 +628,12 @@ export function InterviewsPage() {
         {conclusionTarget?.feedback && (
           <p>
             结论：
-            <Tag color={conclusionTarget.feedback.conclusion === 'pass' ? 'success' : 'error'}>
-              {conclusionTarget.feedback.conclusion === 'pass' ? '通过 → 推进至「面试阶段」' : '不通过 → 淘汰候选人'}
+            <Tag color={conclusionTarget.feedback.conclusion === 'pass' ? 'success' : conclusionTarget.feedback.conclusion === 'hold' ? 'warning' : 'error'}>
+              {conclusionTarget.feedback.conclusion === 'pass'
+                ? '通过 → 由 HR 推进下一阶段'
+                : conclusionTarget.feedback.conclusion === 'hold'
+                  ? '待定 → 由 HR 继续跟进'
+                  : '不通过 → 由 HR 选择淘汰或加入人才库'}
             </Tag>
           </p>
         )}
@@ -648,11 +662,11 @@ export function InterviewsPage() {
           <Button
             type="primary"
             danger={conclusionTarget?.feedback?.conclusion === 'fail'}
-            onClick={() => void handleApplyConclusion(conclusionTarget?.feedback?.conclusion === 'pass')}
+            onClick={() => void handleApplyConclusion()}
           >
             {conclusionTarget?.feedback?.conclusion === 'fail'
               ? failureAction === 'talent_pool' ? '确认加入人才库' : '确认淘汰'
-              : '确认推进'}
+              : conclusionTarget?.feedback?.conclusion === 'hold' ? '确认待定' : '确认推进'}
           </Button>
         </div>
       </Modal>

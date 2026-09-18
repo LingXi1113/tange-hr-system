@@ -2,6 +2,7 @@ import { CheckCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Button, Card, Descriptions, Drawer, Progress, Select, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { completeOnboarding, fetchOnboarding, fetchOnboardingDetail, startOnboarding, updateOnboardingItem } from '@/services/onboarding';
@@ -11,17 +12,23 @@ import { msg } from '@/utils/message';
 const statusText: Record<string, string> = { pending: '待办理', in_progress: '办理中', completed: '已完成', cancelled: '已取消' };
 
 export function OnboardingPage() {
+  const [searchParams] = useSearchParams();
+  const applicationStage = searchParams.get('application_stage') ?? '';
   const [rows, setRows] = useState<OnboardingRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
   const [detail, setDetail] = useState<OnboardingRecord | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRows((await fetchOnboarding({ status: status || undefined, page_size: 100 })).list); }
+    try { setRows((await fetchOnboarding({
+      status: status || undefined,
+      application_stage: applicationStage || undefined,
+      page_size: 100,
+    })).list); }
     finally { setLoading(false); }
-  }, [status]);
+  }, [applicationStage, status]);
   useEffect(() => { void load(); }, [load]);
 
   async function openDetail(id: number) {
@@ -54,7 +61,7 @@ export function OnboardingPage() {
   return (
     <div>
       <div className="page-head"><div><h2 className="page-title">入职资料</h2><Typography.Text type="secondary">管理待入职候选人的资料收集、核验和入职完成</Typography.Text></div><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></div>
-      <Card style={{ marginBottom: 16 }}><Select value={status} onChange={setStatus} style={{ width: 140 }} options={[{ value: '', label: '全部状态' }, { value: 'pending', label: '待办理' }, { value: 'in_progress', label: '办理中' }, { value: 'completed', label: '已完成' }]} /></Card>
+      <Card style={{ marginBottom: 16 }}><Space wrap><Select value={status} onChange={setStatus} style={{ width: 140 }} options={[{ value: '', label: '全部状态' }, { value: 'pending', label: '待办理' }, { value: 'in_progress', label: '办理中' }, { value: 'completed', label: '已完成' }]} />{applicationStage === 'pending_onboard' && <Tag color="blue">当前子分类：待入职</Tag>}</Space></Card>
       <Card><Table rowKey="id" columns={columns} dataSource={rows} loading={loading} scroll={{ x: 950 }} pagination={{ pageSize: 10 }} /></Card>
       <Drawer title={detail ? `${detail.candidate_name} · 入职资料` : '入职资料'} width={560} open={Boolean(detail)} onClose={() => setDetail(null)}>
         {detailLoading || !detail ? <PageLoading /> : <>

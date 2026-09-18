@@ -216,6 +216,12 @@ def assign_business(app_id: int):
         set_fields={
             "business_screener_id": screener.user_id,
             "business_screener_name": screener.name,
+            "awaiting_hr_action": False,
+            "next_action_role": "business_screener",
+            "next_action": "business_screen_feedback",
+            "current_handler_role": "business_screener",
+            "current_handler_id": screener.user_id,
+            "current_handler_name": screener.name,
         },
     )
     write_log("application", "assign_business_screener",
@@ -262,6 +268,14 @@ def direct_interview(app_id: int):
         # 业务复筛按钮代表“通过业务复筛并进入下一面试”，允许跳过岗位模板中
         # 插入在筛选与面试之间的可选环节；前面的当前阶段和人员归属校验仍保留。
         version=version, bypass_rules=True,
+        set_fields={
+            "awaiting_hr_action": False,
+            "next_action_role": "hr",
+            "next_action": "schedule_interview",
+            "current_handler_role": "hr",
+            "current_handler_id": app.get("owner_id", ""),
+            "current_handler_name": app.get("owner_name", ""),
+        },
     )
     write_log("application", "direct_interview",
               g.current_user.user_id, g.current_user.name,
@@ -364,6 +378,10 @@ def eliminate(app_id: int):
         app, reason=payload.get("reason", ""),
         operator_id=g.current_user.user_id, operator_name=g.current_user.name,
         version=version,
+    )
+    add_application_to_talent_pool(
+        updated, payload.get("reason", ""), source="elimination_added",
+        operator_id=g.current_user.user_id, operator_name=g.current_user.name,
     )
     return ok(application_to_dict(updated))
 

@@ -40,6 +40,7 @@ function stageText(stage: string | undefined) {
 }
 
 const CANDIDATE_STAGE_TABS = [
+  { key: '', label: '全部候选人' },
   { key: 'pending_screen', label: '简历初筛' },
   { key: 'business_screen', label: '业务复筛' },
   { key: 'interview_1', label: '一面（业务）' },
@@ -65,6 +66,15 @@ const SOURCE_FILTER_OPTIONS = [
   { value: 'import', label: '批量导入' },
 ];
 
+const EMPTY_WORKBENCH_FILTERS = {
+  assigned: '',
+  unassigned: '',
+  unprocessed: '',
+  source_group: '',
+  recommendation_status: '',
+  action_state: '',
+};
+
 export function CandidatesPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -75,13 +85,19 @@ export function CandidatesPage() {
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState(() => ({
     keyword: searchParams.get('keyword') ?? '',
-    stage: searchParams.get('stage') ?? (searchParams.get('source') ? '' : 'pending_screen'),
+    stage: searchParams.get('stage') ?? '',
     source: searchParams.get('source') ?? '',
-    job_id: '',
-    job_dept_id: '',
-    highest_education: '',
-    category: '',
-    locked: '',
+    job_id: searchParams.get('job_id') ?? '',
+    job_dept_id: searchParams.get('job_dept_id') ?? '',
+    highest_education: searchParams.get('highest_education') ?? '',
+    category: searchParams.get('category') ?? '',
+    locked: searchParams.get('locked') ?? '',
+    assigned: searchParams.get('assigned') ?? '',
+    unassigned: searchParams.get('unassigned') ?? '',
+    unprocessed: searchParams.get('unprocessed') ?? '',
+    source_group: searchParams.get('source_group') ?? '',
+    recommendation_status: searchParams.get('recommendation_status') ?? '',
+    action_state: searchParams.get('action_state') ?? '',
     page: 1,
   }));
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -114,6 +130,12 @@ export function CandidatesPage() {
         highest_education: filters.highest_education || undefined,
         category: filters.category || undefined,
         locked: filters.locked || undefined,
+        assigned: filters.assigned || undefined,
+        unassigned: filters.unassigned || undefined,
+        unprocessed: filters.unprocessed || undefined,
+        source_group: filters.source_group || undefined,
+        recommendation_status: filters.recommendation_status || undefined,
+        action_state: filters.action_state || undefined,
         page: filters.page, page_size: 10,
       });
       setList(data.list);
@@ -143,6 +165,20 @@ export function CandidatesPage() {
         .map((job) => [job.dept_id, { value: job.dept_id, label: job.dept_name }]),
     ).values(),
   ), [jobs]);
+
+  const workbenchFilterLabel = useMemo(() => {
+    if (filters.unassigned === '1') return '待分配（未关联职位）';
+    if (filters.unprocessed === '1') return '未处理（已关联职位、等待初筛）';
+    if (filters.assigned === '1' && filters.stage === 'pending_screen') return '未处理（已分配职位）';
+    if (filters.source) return `来源渠道：${SOURCE_TEXT[filters.source] ?? filters.source}`;
+    if (filters.source_group === 'talent_recommendation') return '人才推荐';
+    if (filters.recommendation_status === 'pending') return '推荐待反馈';
+    if (filters.recommendation_status === 'passed') return '推荐通过';
+    if (filters.recommendation_status === 'failed') return '推荐不通过';
+    if (filters.action_state === 'awaiting_interview_schedule') return '待 HR 安排面试';
+    return '';
+  }, [filters.action_state, filters.assigned, filters.recommendation_status,
+    filters.source_group, filters.stage, filters.unassigned, filters.unprocessed]);
 
   useEffect(() => {
     if (!canManage || createLinkHandled || searchParams.get('create') !== '1') return;
@@ -281,9 +317,13 @@ export function CandidatesPage() {
               <button
                 type="button"
                 key={stage.key}
-                className={filters.stage === stage.key && !filters.category ? 'is-active' : ''}
+                className={filters.stage === stage.key && !filters.category
+                  && !filters.unassigned && !filters.source && !filters.source_group
+                  && !filters.unprocessed && !filters.recommendation_status
+                  && !filters.action_state ? 'is-active' : ''}
                 onClick={() => setFilters((current) => ({
-                  ...current, stage: stage.key, category: '', source: '', page: 1,
+                  ...current, ...EMPTY_WORKBENCH_FILTERS,
+                  stage: stage.key, category: '', source: '', page: 1,
                 }))}
               >
                 <span>{stage.label}</span>
@@ -293,9 +333,10 @@ export function CandidatesPage() {
           <div className="candidate-stage-actions">
             <button
               type="button"
-              className="candidate-unassigned"
+              className={`candidate-unassigned${filters.unassigned === '1' ? ' is-active' : ''}`}
               onClick={() => setFilters((current) => ({
-                ...current, stage: 'pending_screen', category: '', source: '', page: 1,
+                ...current, ...EMPTY_WORKBENCH_FILTERS,
+                stage: '', category: '', source: '', unassigned: '1', page: 1,
               }))}
             >
               待分配 <strong>{classification?.unassigned ?? 0}</strong>
@@ -323,9 +364,10 @@ export function CandidatesPage() {
         <div className="candidate-stage-subtabs">
           <button
             type="button"
-            className={!filters.category && filters.stage === 'pending_screen' ? 'is-active' : ''}
+            className={filters.unprocessed === '1' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
-              ...current, stage: 'pending_screen', category: '', source: '', page: 1,
+              ...current, ...EMPTY_WORKBENCH_FILTERS,
+              stage: '', category: '', source: '', unprocessed: '1', page: 1,
             }))}
           >
             未处理 <strong>{classification?.categories.unprocessed ?? 0}</strong>
@@ -334,7 +376,8 @@ export function CandidatesPage() {
             type="button"
             className={filters.category === 'pending' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
-              ...current, stage: '', category: 'pending', source: '', page: 1,
+              ...current, ...EMPTY_WORKBENCH_FILTERS,
+              stage: '', category: 'pending', source: '', page: 1,
             }))}
           >
             待定 <strong>{classification?.categories.pending ?? 0}</strong>
@@ -343,7 +386,8 @@ export function CandidatesPage() {
             type="button"
             className={filters.category === 'recommended' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
-              ...current, stage: '', category: 'recommended', source: '', page: 1,
+              ...current, ...EMPTY_WORKBENCH_FILTERS,
+              stage: '', category: 'recommended', source: '', page: 1,
             }))}
           >
             人才推荐 <strong>{classification?.categories.recommended ?? 0}</strong>
@@ -389,7 +433,7 @@ export function CandidatesPage() {
             value={filters.source || undefined}
             options={SOURCE_FILTER_OPTIONS}
             onChange={(value) => setFilters((current) => ({
-              ...current, source: value ?? '', page: 1,
+              ...current, source: value ?? '', source_group: '', page: 1,
             }))}
           />
           <Tooltip title="更多筛选">
@@ -411,10 +455,30 @@ export function CandidatesPage() {
             />
           )}
         </div>
+        {workbenchFilterLabel && (
+          <Space style={{ marginBottom: 12 }} wrap>
+            <span>当前子分类：</span>
+            <Tag
+              color="blue"
+              closable
+              onClose={(event) => {
+                event.preventDefault();
+                setFilters((current) => ({
+                  ...current, ...EMPTY_WORKBENCH_FILTERS, source: '', page: 1,
+                }));
+              }}
+            >
+              {workbenchFilterLabel}
+            </Tag>
+          </Space>
+        )}
         <Space style={{ marginBottom: 12 }} wrap>
           <Input.Search
             placeholder="姓名/手机/邮箱" allowClear style={{ width: 220 }}
-            onSearch={(v) => setFilters((f) => ({ ...f, keyword: v, page: 1 }))}
+            onSearch={(v) => setFilters((f) => ({
+              ...f, ...EMPTY_WORKBENCH_FILTERS,
+              keyword: v, stage: '', category: '', page: 1,
+            }))}
           />
         </Space>
         {loading ? <PageLoading /> : (
@@ -489,8 +553,18 @@ export function CandidatesPage() {
                     </div>
                     <div className="candidate-card-side">
                       <Tag color="blue">{stageText(record.current_stage)}</Tag>
+                      {record.latest_application?.process_state_label && (
+                        <Tag color={record.latest_application.process_state_key === 'awaiting_hr_review' ? 'orange' : 'gold'}>
+                          {record.latest_application.process_state_label}
+                        </Tag>
+                      )}
                       <span>{record.latest_application?.job_name || '待分配职位'}</span>
                       <span>招聘 HR：{record.owner_name || '未分配'}</span>
+                      <span>
+                        当前处理：{record.latest_application?.current_handler_name
+                          || (record.latest_application?.process_state_role === 'hr' ? record.owner_name : '')
+                          || '按当前阶段处理'}
+                      </span>
                       <span>来源：{(SOURCE_TEXT[record.source] ?? record.source) || '-'}</span>
                     </div>
                     {canManage && (

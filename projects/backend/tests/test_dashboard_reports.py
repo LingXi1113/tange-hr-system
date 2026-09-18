@@ -38,6 +38,26 @@ def test_dashboard_summary_contains_workbench_counts_and_funnel(client):
     assert {item["key"] for item in screening["items"]} == {
         "unprocessed", "referral", "recommended", "unassigned",
     }
+    routes = {
+        item["key"]: item["route"]
+        for group in data["workbench_metrics"]
+        for item in group["items"]
+    }
+    assert routes == {
+        "unprocessed": "/candidates?unprocessed=1",
+        "referral": "/candidates?source=referral",
+        "recommended": "/candidates?source_group=talent_recommendation",
+        "unassigned": "/candidates?unassigned=1",
+        "pending_feedback": "/candidates?recommendation_status=pending",
+        "passed": "/candidates?recommendation_status=passed",
+        "failed": "/candidates?recommendation_status=failed",
+        "waiting_schedule": "/candidates?action_state=awaiting_interview_schedule",
+        "feedback": "/interviews?action_state=awaiting_interviewer_feedback",
+        "hr_review": "/interviews?action_state=awaiting_hr_review",
+        "pending_onboard": "/onboarding?application_stage=pending_onboard",
+        "pending_approval": "/approvals?status=pending",
+        "pending_send": "/offers?status=pending_send&ready_to_send=1",
+    }
     assert any(item["stage_key"] == "new_resume" and item["count"] >= 1
                for item in data["funnel"])
     assert "recent_activities" in data

@@ -6,6 +6,18 @@ export interface ApplicationInfo {
   job_name: string;
   current_stage: string;
   status: string;
+  interview_round?: string;
+  awaiting_hr_action?: boolean;
+  next_action_role?: string;
+  next_action?: string;
+  current_handler_role?: string;
+  current_handler_id?: string;
+  current_handler_name?: string;
+  process_state_key?: string;
+  process_state_label?: string;
+  process_state_role?: string;
+  last_interview_id?: number | null;
+  last_interview_conclusion?: string;
 }
 
 export interface LockInfo {
@@ -88,6 +100,7 @@ export interface CandidateClassificationSummary {
     recommended: number;
   };
   unassigned: number;
+  total: number;
 }
 
 export async function fetchCandidateClassificationSummary() {

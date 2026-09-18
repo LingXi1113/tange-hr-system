@@ -30,6 +30,28 @@ def test_masked_by_default(client):
     assert rows2[0]["phone"] == "13922223333"
 
 
+def test_workbench_keyword_search_matches_resume_and_applied_job(client):
+    ensure_hr(client)
+    job = make_job(client, name="全栈搜索测试职位")
+    publish_job(client, job["id"])
+    candidate_id = make_candidate(
+        client, name="搜索测试候选人", phone="13922223334", email="search-card@example.com",
+    )
+    client.put(f"/api/candidates/{candidate_id}", json={
+        "education": [{"school": "岭南搜索学院", "degree": "本科", "graduate_at": "2022"}],
+        "work_experience": [{
+            "company": "星河搜索科技", "position": "客户成功", "start": "2022-07", "end": "2025-08",
+        }],
+    })
+    assign(client, candidate_id, job["id"])
+
+    for keyword in ("星河搜索科技", "岭南搜索学院", "全栈搜索测试职位"):
+        result = client.get("/api/candidates", query_string={
+            "keyword": keyword, "page_size": 10,
+        }).get_json()["data"]
+        assert candidate_id in {row["id"] for row in result["list"]}
+
+
 def test_candidate_classification_summary_and_filters(client):
     ensure_hr(client)
     unassigned_id = make_candidate(client, phone="13922224444", email="unassigned@example.com")
@@ -44,12 +66,86 @@ def test_candidate_classification_summary_and_filters(client):
     assert summary["unassigned"] == 1
     assert summary["categories"]["pending"] == 1
     assert summary["categories"]["recommended"] == 1
-    assert summary["categories"]["unprocessed"] == 2
+    assert summary["categories"]["unprocessed"] == 1
 
     pending = client.get("/api/candidates", query_string={"category": "pending"}).get_json()["data"]
     recommended = client.get("/api/candidates", query_string={"category": "recommended"}).get_json()["data"]
     assert pending["total"] == 1
     assert recommended["total"] == 1
+
+    unassigned = client.get("/api/candidates", query_string={"unassigned": "1"}).get_json()["data"]
+    assigned_pending = client.get("/api/candidates", query_string={
+        "stage": "pending_screen", "assigned": "1",
+    }).get_json()["data"]
+    unprocessed = client.get("/api/candidates", query_string={
+        "unprocessed": "1",
+    }).get_json()["data"]
+    assert [row["id"] for row in unassigned["list"]] == [unassigned_id]
+    assert [row["id"] for row in assigned_pending["list"]] == [recommended_id]
+    assert [row["id"] for row in unprocessed["list"]] == [recommended_id]
+
+
+def test_candidate_workbench_deep_filters(client):
+    ensure_hr(client)
+    job = make_job(client, name="Workbench deep-link job")
+    publish_job(client, job["id"])
+
+    pending_id = make_candidate(
+        client, name="待反馈候选人", phone="13922226661", email="pending-recommend@example.com",
+    )
+    pending_app = assign(client, pending_id, job["id"], source="headhunt")
+    passed_id = make_candidate(
+        client, name="推荐通过候选人", phone="13922226662", email="passed-recommend@example.com",
+    )
+    passed_app = assign(client, passed_id, job["id"], source="manual")
+    schedule_id = make_candidate(
+        client, name="待约面候选人", phone="13922226663", email="schedule-interview@example.com",
+    )
+    schedule_app = assign(client, schedule_id, job["id"], source="manual")
+
+    from common.db import col
+    with client.application.app_context():
+        col("applications").update_one({"_id": pending_app["id"]}, {"$set": {
+            "current_stage": "business_screen", "status": "in_progress",
+        }})
+        col("applications").update_one({"_id": passed_app["id"]}, {"$set": {
+            "current_stage": "pending_interview", "status": "in_progress",
+            "next_action": "schedule_interview",
+        }})
+        col("stage_transitions").insert_one({
+            "application_id": passed_app["id"],
+            "from_stage": "business_screen",
+            "to_stage": "pending_interview",
+            "created_at": datetime.now(),
+        })
+        col("applications").update_one({"_id": schedule_app["id"]}, {"$set": {
+            "current_stage": "pending_interview", "status": "in_progress",
+            "next_action": "schedule_interview",
+        }})
+
+    pending = client.get("/api/candidates", query_string={
+        "recommendation_status": "pending",
+    }).get_json()["data"]
+    passed = client.get("/api/candidates", query_string={
+        "recommendation_status": "passed",
+    }).get_json()["data"]
+    recommendations = client.get("/api/candidates", query_string={
+        "source_group": "talent_recommendation",
+    }).get_json()["data"]
+    waiting_schedule = client.get("/api/candidates", query_string={
+        "action_state": "awaiting_interview_schedule",
+    }).get_json()["data"]
+    dashboard = client.get("/api/dashboard/summary").get_json()["data"]
+    waiting_metric = next(
+        item for group in dashboard["workbench_metrics"] if group["key"] == "interview"
+        for item in group["items"] if item["key"] == "waiting_schedule"
+    )
+
+    assert {row["id"] for row in pending["list"]} == {pending_id}
+    assert {row["id"] for row in passed["list"]} == {passed_id}
+    assert {row["id"] for row in recommendations["list"]} == {pending_id}
+    assert {row["id"] for row in waiting_schedule["list"]} == {passed_id, schedule_id}
+    assert waiting_metric["count"] == waiting_schedule["total"]
 
 
 def test_lock_blocks_new_application(client):

@@ -138,7 +138,12 @@ export function RequirementsPage() {
   };
 
   const columns = [
-    { title: '需求名称', dataIndex: 'name', render: (v: string, r: Requirement) => <a onClick={() => navigate(`/requirements/${r.id}`)}>{v}</a> },
+    {
+      title: '需求名称', dataIndex: 'name', width: 220, ellipsis: true,
+      render: (v: string, r: Requirement) => (
+        <a style={{ whiteSpace: 'nowrap' }} onClick={() => navigate(`/requirements/${r.id}`)}>{v}</a>
+      ),
+    },
     { title: '所属主体', dataIndex: 'entity_name', width: 190, render: (value: string) => value || '-' },
     { title: '部门', dataIndex: 'dept_name', width: 120 },
     { title: '人数', dataIndex: 'headcount', width: 70 },
@@ -196,7 +201,7 @@ export function RequirementsPage() {
         {loading ? <PageLoading /> : (
           <Table
             rowKey="id" size="middle" columns={columns} dataSource={list}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1290 }}
             pagination={{
               current: filters.page, pageSize: 10, total,
               onChange: (page) => setFilters((f) => ({ ...f, page })),

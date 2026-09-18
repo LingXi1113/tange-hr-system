@@ -189,6 +189,12 @@ def list_offers():
         query["job_id"] = int(args["job_id"])
     if args.get("candidate_id"):
         query["candidate_id"] = int(args["candidate_id"])
+    if args.get("ready_to_send") == "1":
+        pending_approval_offer_ids = col("offer_approvals").distinct(
+            "offer_id", {"status": "pending"},
+        )
+        if pending_approval_offer_ids:
+            query["_id"] = {"$nin": pending_approval_offer_ids}
     rows = [_offer_view(_lazy_expire(d)) for d in
             col("offers").find(query).sort("_id", -1)]
     page = max(int(args.get("page", 1)), 1)

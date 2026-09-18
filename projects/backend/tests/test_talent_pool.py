@@ -188,3 +188,71 @@ def test_permissions_and_logs(client, app):
         actions = {l["action"] for l in
                    col("operation_logs").find({"biz_type": "talent_pool"})}
     assert {"add", "remove"} <= actions or "add" in actions
+
+
+def test_folder_tree_classifies_eliminated_job_and_pending_archive(client):
+    job = _setup(client, job_name="文件夹职位")
+    eliminated_id = _mk_cand(client, "0021")
+    job_id = _mk_cand(client, "0022")
+    pending_id = _mk_cand(client, "0023")
+    eliminated = _add(
+        client, eliminated_id, source="elimination_added", reason="业务复筛不通过",
+        recommended_job_id=job["id"],
+    ).get_json()["data"]["added"][0]
+    archived = _add(
+        client, job_id, source="archived", reason="客保到期",
+        recommended_job_id=job["id"],
+    ).get_json()["data"]["added"][0]
+    pending = _add(client, pending_id, source="manual").get_json()["data"]["added"][0]
+
+    assert eliminated["folder_key"] == "system:eliminated"
+    assert archived["folder_key"] == f"job:{job['id']}"
+    assert pending["folder_key"] == "system:pending_archive"
+
+    summary = client.get("/api/talent-pool/folders").get_json()["data"]
+    system_nodes = summary["tree"][0]["children"]
+    assert next(item for item in system_nodes if item["key"] == "system:eliminated")["count"] == 1
+    job_group = next(item for item in system_nodes if item["key"] == "group:jobs")
+    assert next(item for item in job_group["children"] if item["key"] == f"job:{job['id']}")["count"] == 1
+    filtered = client.get("/api/talent-pool", query_string={
+        "folder_key": "system:pending_archive",
+    }).get_json()["data"]
+    assert filtered["total"] == 1
+
+
+def test_only_super_admin_manages_custom_folders_and_delete_rearchives(client):
+    _setup(client)
+    cid = _mk_cand(client, "0024")
+    entry = _add(client, cid, source="manual").get_json()["data"]["added"][0]
+    assert client.post("/api/talent-pool/folders", json={"name": "高潜人才"}).get_json()["code"] == 1006
+
+    login(client, "super-admin-001")
+    folder = client.post("/api/talent-pool/folders", json={"name": "高潜人才"}).get_json()["data"]
+    renamed = client.put(f"/api/talent-pool/folders/{folder['id']}", json={
+        "name": "重点人才",
+    }).get_json()
+    assert renamed["code"] == 0
+
+    login(client, "hr-001")
+    moved = client.put(f"/api/talent-pool/{entry['id']}", json={
+        "folder_id": folder["id"],
+    }).get_json()["data"]
+    assert moved["folder_key"] == f"custom:{folder['id']}"
+
+    login(client, "super-admin-001")
+    deleted = client.delete(f"/api/talent-pool/folders/{folder['id']}?confirm=1").get_json()
+    assert deleted["data"]["moved_to_pending_archive"] == 1
+    row = client.get("/api/talent-pool", query_string={"candidate_id": cid}).get_json()["data"]["list"][0]
+    assert row["folder_key"] == "system:pending_archive"
+
+
+def test_eliminate_automatically_archives_to_eliminated_folder(client):
+    job = _setup(client)
+    cid = _mk_cand(client, "0025")
+    app = assign(client, cid, job["id"])
+    result = client.post(f"/api/applications/{app['id']}/eliminate", json={
+        "reason": "业务复筛不通过", "version": app["version"],
+    }).get_json()
+    assert result["code"] == 0
+    row = client.get("/api/talent-pool", query_string={"candidate_id": cid}).get_json()["data"]["list"][0]
+    assert row["folder_key"] == "system:eliminated"

@@ -24,6 +24,11 @@ export interface Interview {
   status: string;
   conclusion_applied?: boolean;
   conclusion_action?: string;
+  handed_to_hr?: boolean;
+  handed_to_hr_at?: string;
+  process_state_key?: string;
+  process_state_label?: string;
+  process_state_role?: string;
   version: number;
   has_feedback?: boolean;
   feedback_conclusion?: string;
@@ -85,8 +90,8 @@ export async function rescheduleInterview(id: number, payload: { start_at: strin
   return unwrap<Interview>(resp);
 }
 
-export async function completeInterview(id: number, skipEval: boolean, version: number) {
-  const resp = await http.post(`/api/interviews/${id}/complete`, { skip_eval: skipEval, version });
+export async function completeInterview(id: number, version: number) {
+  const resp = await http.post(`/api/interviews/${id}/complete`, { version });
   return unwrap<Interview>(resp);
 }
 

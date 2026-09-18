@@ -4,12 +4,14 @@ import {
   RightOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
-import { Button, Empty, Input, Spin } from 'antd';
+import { Avatar, Button, Empty, Input, Spin, Tag } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
+import { fetchCandidates } from '@/services/candidate';
+import type { CandidateRow } from '@/services/candidate';
 import { fetchDashboardSummary } from '@/services/dashboard';
 import type { DashboardSummary } from '@/services/dashboard';
 import { fetchInterviews } from '@/services/interview';
@@ -44,6 +46,12 @@ export function WorkbenchPage() {
   const [loading, setLoading] = useState(true);
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
+  const [searchResults, setSearchResults] = useState<CandidateRow[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchCompleted, setSearchCompleted] = useState(false);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
+  const searchRequestRef = useRef(0);
   const [weekStart, setWeekStart] = useState(() => mondayOf(dayjs()));
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [visibleKinds, setVisibleKinds] = useState<Set<ScheduleKind>>(
@@ -91,10 +99,54 @@ export function WorkbenchPage() {
     return groups;
   }, {}), [visibleInterviews]);
 
-  const search = () => {
+  const search = useCallback(async (rawKeyword: string) => {
+    const value = rawKeyword.trim();
+    if (!value) {
+      setSearchResults([]);
+      setSearchCompleted(false);
+      setSearchOpen(false);
+      return;
+    }
+    const requestId = ++searchRequestRef.current;
+    setSearchLoading(true);
+    setSearchOpen(true);
+    try {
+      const data = await fetchCandidates({ keyword: value, page: 1, page_size: 6 });
+      if (requestId === searchRequestRef.current) {
+        setSearchResults(data.list);
+        setSearchCompleted(true);
+      }
+    } catch {
+      if (requestId === searchRequestRef.current) {
+        setSearchResults([]);
+        setSearchCompleted(true);
+      }
+    } finally {
+      if (requestId === searchRequestRef.current) setSearchLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
     const value = keyword.trim();
-    navigate(value ? `/candidates?keyword=${encodeURIComponent(value)}` : '/candidates');
-  };
+    if (!value) {
+      searchRequestRef.current += 1;
+      setSearchResults([]);
+      setSearchCompleted(false);
+      setSearchLoading(false);
+      setSearchOpen(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => { void search(value); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [keyword, search]);
+
+  useEffect(() => {
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!searchBoxRef.current?.contains(event.target as Node)) setSearchOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, []);
 
   const toggleKind = (kind: ScheduleKind) => {
     setVisibleKinds((current) => {
@@ -110,15 +162,78 @@ export function WorkbenchPage() {
   return (
     <div className="workbench-page">
       <div className="workbench-top-actions">
-        <div className="workbench-search-box">
+        <div className="workbench-search-box" ref={searchBoxRef}>
           <Input
             value={keyword}
             allowClear
             placeholder="通过姓名、手机号、邮箱、公司、任职职位、学校搜索"
-            onChange={(event) => setKeyword(event.target.value)}
-            onPressEnter={search}
+            onChange={(event) => {
+              setKeyword(event.target.value);
+              setSearchResults([]);
+              setSearchCompleted(false);
+            }}
+            onFocus={() => { if (keyword.trim()) setSearchOpen(true); }}
+            onPressEnter={() => { void search(keyword); }}
+            onKeyDown={(event) => { if (event.key === 'Escape') setSearchOpen(false); }}
           />
-          <Button type="primary" icon={<SearchOutlined />} onClick={search} aria-label="搜索" />
+          <Button type="primary" icon={<SearchOutlined />} onClick={() => { void search(keyword); }} aria-label="搜索" />
+          {searchOpen && keyword.trim() && (
+            <div className="workbench-search-dropdown">
+              <div className="workbench-search-dropdown-head">
+                <strong>候选人</strong>
+                <span>搜索“{keyword.trim()}”</span>
+              </div>
+              <Spin spinning={searchLoading}>
+                <div className="workbench-search-results">
+                  {!searchLoading && searchCompleted && searchResults.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未找到匹配的候选人" />
+                  ) : searchResults.map((candidate) => (
+                    <button
+                      type="button"
+                      className="workbench-search-candidate"
+                      key={candidate.id}
+                      onClick={() => {
+                        setSearchOpen(false);
+                        navigate(`/candidates/${candidate.id}`);
+                      }}
+                    >
+                      <Avatar size={42}>{candidate.name.slice(0, 1)}</Avatar>
+                      <span className="workbench-search-candidate-main">
+                        <span className="workbench-search-candidate-title">
+                          <strong>{candidate.name}</strong>
+                          <span>{candidate.gender || '未知'}{candidate.age ? ` · ${candidate.age}岁` : ''}</span>
+                          {candidate.latest_application?.process_state_label && (
+                            <Tag color="blue">{candidate.latest_application.process_state_label}</Tag>
+                          )}
+                        </span>
+                        <span className="workbench-search-candidate-line">
+                          {candidate.work_summary?.company || '暂无公司经历'}
+                          {candidate.work_summary?.position ? ` · ${candidate.work_summary.position}` : ''}
+                          {candidate.work_summary?.start || candidate.work_summary?.end
+                            ? ` · ${candidate.work_summary.start || ''} 至 ${candidate.work_summary.end || '至今'}` : ''}
+                        </span>
+                        <span className="workbench-search-candidate-line is-secondary">
+                          {candidate.latest_application?.job_name || '未分配职位'}
+                          {' · '}{candidate.education_summary?.school || '院校未填写'}
+                          {candidate.highest_education ? ` · ${candidate.highest_education}` : ''}
+                        </span>
+                      </span>
+                      <span className="workbench-search-candidate-enter">查看详情</span>
+                    </button>
+                  ))}
+                </div>
+              </Spin>
+              {searchCompleted && searchResults.length > 0 && (
+                <button
+                  type="button"
+                  className="workbench-search-all"
+                  onClick={() => navigate(`/candidates?keyword=${encodeURIComponent(keyword.trim())}`)}
+                >
+                  查看全部“{keyword.trim()}”的候选人
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -199,7 +314,10 @@ export function WorkbenchPage() {
                               onClick={() => navigate('/interviews')}
                             >
                               <strong>{interview.start_at.slice(11, 16)} {interview.candidate_name}</strong>
-                              <span>{interview.job_name} · {interview.round}</span>
+                              <span>
+                                {interview.job_name} · {interview.round}
+                                {interview.process_state_label ? ` · ${interview.process_state_label}` : ''}
+                              </span>
                             </button>
                           );
                         })}

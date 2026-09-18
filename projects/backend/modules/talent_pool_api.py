@@ -21,22 +21,32 @@ from common.errors import BizError
 from common.flow import create_application
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import HR
+from common.roles import HR, SUPER_ADMIN
 
 bp = Blueprint("talent_pool_api", __name__, url_prefix="/api/talent-pool")
 
-POOL_SOURCES = ("elimination_added", "offer_rejected", "manual", "batch_import", "archived")
+POOL_SOURCES = (
+    "elimination_added", "offer_rejected", "business_rejected",
+    "interview_rejected", "abandoned_added", "manual", "batch_import", "archived",
+)
 POOL_STATUSES = ("active", "activated")
 
 SOURCE_TEXT = {
     "elimination_added": "淘汰加入", "offer_rejected": "Offer拒绝加入",
-    "manual": "手动加入", "batch_import": "批量导入", "archived": "流程归档",
+    "business_rejected": "业务复筛不通过", "interview_rejected": "面试不通过",
+    "abandoned_added": "流程放弃加入", "manual": "手动加入",
+    "batch_import": "批量导入", "archived": "客保到期归档",
+}
+
+ELIMINATED_SOURCES = {
+    "elimination_added", "offer_rejected", "business_rejected", "interview_rejected",
 }
 
 
 def ensure_indexes():
     try:
         col("talent_pool").create_index("candidate_id", unique=True)
+        col("talent_pool_folders").create_index("name", unique=True)
         return True
     except Exception as exc:
         current_app.logger.exception("人才库唯一索引初始化失败")
@@ -62,6 +72,34 @@ def _mask_email(v):
     return head[:2] + "***@" + tail
 
 
+def _is_eliminated_entry(doc: dict) -> bool:
+    # 历史客保到期记录曾使用 elimination_added，按原因兼容回职位归档。
+    return doc.get("source") in ELIMINATED_SOURCES \
+        and not str(doc.get("reason") or "").startswith("阶段规则到期")
+
+
+def _folder_key(doc: dict) -> str:
+    if _is_eliminated_entry(doc):
+        return "system:eliminated"
+    if doc.get("folder_id") and get_by_id("talent_pool_folders", doc.get("folder_id")):
+        return f"custom:{int(doc['folder_id'])}"
+    if doc.get("recommended_job_id"):
+        return f"job:{int(doc['recommended_job_id'])}"
+    return "system:pending_archive"
+
+
+def _folder_name(doc: dict) -> str:
+    key = _folder_key(doc)
+    if key == "system:eliminated":
+        return "已淘汰"
+    if key == "system:pending_archive":
+        return "待 HR 归档"
+    kind, raw_id = key.split(":", 1)
+    collection = "jobs" if kind == "job" else "talent_pool_folders"
+    target = get_by_id(collection, int(raw_id)) or {}
+    return target.get("name", "未命名文件夹")
+
+
 def _pool_view(doc: dict, mask: bool = True) -> dict:
     from common.db import dt
 
@@ -83,6 +121,9 @@ def _pool_view(doc: dict, mask: bool = True) -> dict:
         "reason": doc.get("reason", ""),
         "recommended_job_id": doc.get("recommended_job_id"),
         "recommended_job_name": job_name,
+        "folder_id": doc.get("folder_id"),
+        "folder_key": _folder_key(doc),
+        "folder_name": _folder_name(doc),
         "last_contact_at": dt(doc.get("last_contact_at")),
         "status": doc.get("status", "active"),
         "created_at": dt(doc.get("created_at")),
@@ -100,6 +141,9 @@ def _add_one(candidate_id: int, payload: dict) -> dict:
     source = payload.get("source", "manual")
     if source not in POOL_SOURCES:
         raise BizError(BizCode.PARAM_INVALID, f"未知入库来源: {source}")
+    folder_id = int(payload["folder_id"]) if payload.get("folder_id") else None
+    if folder_id and get_by_id("talent_pool_folders", folder_id) is None:
+        raise BizError(BizCode.NOT_FOUND, "归档文件夹不存在")
     doc = insert_doc("talent_pool", {
         "candidate_id": candidate_id,
         "category": (payload.get("category") or "").strip(),
@@ -107,6 +151,7 @@ def _add_one(candidate_id: int, payload: dict) -> dict:
         "source": source,
         "reason": (payload.get("reason") or "").strip(),
         "recommended_job_id": int(payload["recommended_job_id"]) if payload.get("recommended_job_id") else None,
+        "folder_id": folder_id,
         "last_contact_at": None,
         "status": "active",
         "added_by": g.current_user.user_id,
@@ -140,6 +185,8 @@ def list_pool():
         query["candidate_id"] = int(args["candidate_id"])
 
     rows = list(col("talent_pool").find(query).sort("_id", -1))
+    if args.get("folder_key") and args["folder_key"] != "all":
+        rows = [row for row in rows if _folder_key(row) == args["folder_key"]]
     # 姓名搜索（候选人主档字段，不复制数据，仅过滤）
     if args.get("keyword"):
         kw = args["keyword"]
@@ -153,6 +200,97 @@ def list_pool():
     total = len(rows)
     sliced = rows[(page - 1) * page_size: page * page_size]
     return paged([_pool_view(r, mask=mask) for r in sliced], total, page, page_size)
+
+
+@bp.get("/folders")
+@role_required(*CANDIDATE_READ_ROLES)
+def list_folders():
+    """人才库左侧目录树：系统目录、职位目录和超级管理员自定义目录。"""
+    rows = list(col("talent_pool").find({"status": {"$ne": "removed"}}))
+    counts = {}
+    for row in rows:
+        key = _folder_key(row)
+        counts[key] = counts.get(key, 0) + 1
+
+    job_nodes = [{
+        "key": f"job:{job['_id']}", "name": job.get("name", "未命名职位"),
+        "type": "job", "count": counts.get(f"job:{job['_id']}", 0),
+        "system": True,
+    } for job in col("jobs").find({}, {"name": 1}).sort("name", 1)]
+    custom_nodes = [{
+        "key": f"custom:{folder['_id']}", "id": folder["_id"],
+        "name": folder.get("name", "未命名文件夹"), "type": "custom",
+        "count": counts.get(f"custom:{folder['_id']}", 0), "system": False,
+    } for folder in col("talent_pool_folders").find({}).sort([("sort_order", 1), ("_id", 1)])]
+    tree = [{
+        "key": "all", "name": "全部归档", "type": "root", "count": len(rows),
+        "system": True, "children": [
+            {"key": "system:eliminated", "name": "已淘汰", "type": "system",
+             "count": counts.get("system:eliminated", 0), "system": True},
+            {"key": "system:pending_archive", "name": "待 HR 归档", "type": "system",
+             "count": counts.get("system:pending_archive", 0), "system": True},
+            {"key": "group:jobs", "name": "职位人才库", "type": "group",
+             "count": sum(item["count"] for item in job_nodes), "system": True,
+             "selectable": False, "children": job_nodes},
+            {"key": "group:custom", "name": "自定义文件夹", "type": "group",
+             "count": sum(item["count"] for item in custom_nodes), "system": True,
+             "selectable": False, "children": custom_nodes},
+        ],
+    }]
+    return ok({"tree": tree, "custom_folders": custom_nodes, "total": len(rows)})
+
+
+@bp.post("/folders")
+@role_required(SUPER_ADMIN)
+def create_folder():
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise BizError(BizCode.PARAM_INVALID, "文件夹名称必填")
+    if col("talent_pool_folders").find_one({"name": name}):
+        raise BizError(BizCode.DUPLICATED, "人才库中已存在同名文件夹")
+    doc = insert_doc("talent_pool_folders", {
+        "name": name, "sort_order": int(payload.get("sort_order") or 0),
+        "created_by": g.current_user.user_id,
+    })
+    write_log("talent_pool_folder", "create", g.current_user.user_id, g.current_user.name,
+              biz_id=str(doc["_id"]), detail=name)
+    return ok({"id": doc["_id"], "name": name})
+
+
+@bp.put("/folders/<int:folder_id>")
+@role_required(SUPER_ADMIN)
+def rename_folder(folder_id: int):
+    folder = get_by_id("talent_pool_folders", folder_id)
+    if folder is None:
+        raise BizError(BizCode.NOT_FOUND, "文件夹不存在")
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        raise BizError(BizCode.PARAM_INVALID, "文件夹名称必填")
+    duplicate = col("talent_pool_folders").find_one({"name": name, "_id": {"$ne": folder_id}})
+    if duplicate:
+        raise BizError(BizCode.DUPLICATED, "人才库中已存在同名文件夹")
+    update_doc("talent_pool_folders", folder_id, {"name": name})
+    write_log("talent_pool_folder", "rename", g.current_user.user_id, g.current_user.name,
+              biz_id=str(folder_id), detail=f"{folder.get('name', '')} -> {name}")
+    return ok({"id": folder_id, "name": name})
+
+
+@bp.delete("/folders/<int:folder_id>")
+@role_required(SUPER_ADMIN)
+def delete_folder(folder_id: int):
+    if request.args.get("confirm") != "1":
+        raise BizError(BizCode.PARAM_INVALID, "删除文件夹需要二次确认（confirm=1）")
+    folder = get_by_id("talent_pool_folders", folder_id)
+    if folder is None:
+        raise BizError(BizCode.NOT_FOUND, "文件夹不存在")
+    moved = col("talent_pool").update_many(
+        {"folder_id": folder_id}, {"$set": {"folder_id": None, "updated_at": datetime.now()}},
+    ).modified_count
+    col("talent_pool_folders").delete_one({"_id": folder_id})
+    write_log("talent_pool_folder", "delete", g.current_user.user_id, g.current_user.name,
+              biz_id=str(folder_id), detail=f"{folder.get('name', '')}; moved={moved}")
+    return ok({"moved_to_pending_archive": moved})
 
 
 @bp.post("")
@@ -203,6 +341,11 @@ def update_entry(entry_id: int):
         if rid and get_by_id("jobs", int(rid)) is None:
             raise BizError(BizCode.NOT_FOUND, "可推荐职位不存在")
         fields["recommended_job_id"] = int(rid) if rid else None
+    if "folder_id" in payload:
+        folder_id = payload["folder_id"]
+        if folder_id and get_by_id("talent_pool_folders", int(folder_id)) is None:
+            raise BizError(BizCode.NOT_FOUND, "归档文件夹不存在")
+        fields["folder_id"] = int(folder_id) if folder_id else None
     if "last_contact_at" in payload:
         raw = (payload["last_contact_at"] or "").strip()
         if raw:
@@ -312,13 +455,15 @@ def export_pool():
     if args.get("source"):
         query["source"] = args["source"]
     rows = list(col("talent_pool").find(query).sort("_id", -1))
+    if args.get("folder_key") and args["folder_key"] != "all":
+        rows = [row for row in rows if _folder_key(row) == args["folder_key"]]
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["姓名", "手机号", "邮箱", "分类", "标签", "来源", "加入原因",
+    writer.writerow(["姓名", "手机号", "邮箱", "归档目录", "分类", "标签", "来源", "加入原因",
                      "可推荐职位", "最近联系时间", "状态", "加入时间"])
     for r in rows:
         v = _pool_view(r, mask=False)
-        writer.writerow([v["candidate_name"], v["phone"], v["email"], v["category"],
+        writer.writerow([v["candidate_name"], v["phone"], v["email"], v["folder_name"], v["category"],
                          ",".join(v["tags"]), v["source_text"], v["reason"],
                          v["recommended_job_name"], v["last_contact_at"], v["status"],
                          v["created_at"]])

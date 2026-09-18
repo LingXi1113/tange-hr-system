@@ -2,6 +2,7 @@ import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { approvalAction, fetchApprovals } from '@/services/approval';
@@ -12,10 +13,11 @@ import { msg } from '@/utils/message';
 const statusText: Record<string, string> = { pending: '审批中', approved: '已通过', rejected: '已驳回' };
 
 export function ApprovalsPage() {
+  const [searchParams] = useSearchParams();
   const { user } = useCurrentUser();
   const [rows, setRows] = useState<ApprovalRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
   const [rejectTarget, setRejectTarget] = useState<ApprovalRecord | null>(null);
   const [reason, setReason] = useState('');
   const [acting, setActing] = useState(false);
