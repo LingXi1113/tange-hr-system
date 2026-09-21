@@ -341,24 +341,6 @@ export function CandidatesPage() {
             >
               待分配 <strong>{classification?.unassigned ?? 0}</strong>
             </button>
-            {canManage && (
-              <Upload
-                accept=".csv,.xlsx"
-                showUploadList={false}
-                beforeUpload={async (file) => {
-                  const result = await importCandidates(file as File);
-                  Modal.info({
-                    title: '导入结果',
-                    content: `成功 ${result.success_count} 条；查重跳过 ${result.duplicates.length} 条；失败 ${result.errors.length} 条`,
-                  });
-                  void load();
-                  void loadClassification();
-                  return false;
-                }}
-              >
-                <Button type="primary" icon={<PlusOutlined />}>导入简历</Button>
-              </Upload>
-            )}
           </div>
         </div>
         <div className="candidate-stage-subtabs">
@@ -608,18 +590,37 @@ export function CandidatesPage() {
         extra={<Button type="primary" onClick={() => void handleCreate()}>保存</Button>}
       >
         <Form form={form} layout="vertical">
-          <Form.Item label="简历解析">
-            <Upload
-              accept=".pdf,.docx" showUploadList={false}
-              beforeUpload={(file) => {
-                void handleResumeParse(file as File);
-                return false;
-              }}
-            >
-              <Button icon={<UploadOutlined />} loading={resumeParsing}>
-                上传 PDF/DOCX 并解析
-              </Button>
-            </Upload>
+          <Form.Item label="新增方式">
+            <Space wrap>
+              <Upload
+                accept=".pdf,.docx" showUploadList={false}
+                beforeUpload={(file) => {
+                  void handleResumeParse(file as File);
+                  return false;
+                }}
+              >
+                <Button icon={<UploadOutlined />} loading={resumeParsing}>
+                  上传简历并解析
+                </Button>
+              </Upload>
+              <Upload
+                accept=".csv,.xlsx"
+                showUploadList={false}
+                beforeUpload={async (file) => {
+                  const result = await importCandidates(file as File);
+                  closeCreateDrawer();
+                  Modal.info({
+                    title: '批量导入结果',
+                    content: `成功 ${result.success_count} 条；查重跳过 ${result.duplicates.length} 条；失败 ${result.errors.length} 条`,
+                  });
+                  void load();
+                  void loadClassification();
+                  return false;
+                }}
+              >
+                <Button>批量导入名单</Button>
+              </Upload>
+            </Space>
             {resumeFile && (
               <div style={{ marginTop: 8, color: 'rgba(23,26,29,0.65)' }}>
                 已选择：{resumeFile.name}

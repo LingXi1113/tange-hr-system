@@ -256,3 +256,37 @@ def test_eliminate_automatically_archives_to_eliminated_folder(client):
     assert result["code"] == 0
     row = client.get("/api/talent-pool", query_string={"candidate_id": cid}).get_json()["data"]["list"][0]
     assert row["folder_key"] == "system:eliminated"
+
+
+def test_pool_list_includes_resume_card_summary(client, app):
+    job = _setup(client, job_name="人才库简历职位")
+    cid = _mk_cand(client, "0026")
+    with app.app_context():
+        from common.db import col, insert_doc
+
+        col("candidates").update_one({"_id": cid}, {"$set": {
+            "gender": "女", "age": 28, "city": "广州",
+            "highest_education": "本科", "major": "计算机科学与技术",
+            "education": [{
+                "school": "华南理工大学", "degree": "本科", "major": "计算机科学与技术",
+                "graduate_at": "2020-06",
+            }],
+            "work_experience": [{
+                "company": "示例科技有限公司", "start": "2021-03", "end": "2025-08",
+            }],
+        }})
+        insert_doc("attachments", {
+            "candidate_id": cid, "file_name": "测试简历.pdf", "file_type": "pdf",
+            "parse_status": "success",
+        })
+    assign(client, cid, job["id"])
+    _add(client, cid, source="elimination_added", reason="面试不通过")
+
+    row = client.get("/api/talent-pool", query_string={
+        "candidate_id": cid, "folder_key": "system:eliminated",
+    }).get_json()["data"]["list"][0]
+    assert row["candidate_id"] == cid
+    assert row["education_summary"]["school"] == "华南理工大学"
+    assert row["work_summary"]["company"] == "示例科技有限公司"
+    assert row["latest_application"]["job_name"] == job["name"]
+    assert row["resume_count"] == 1

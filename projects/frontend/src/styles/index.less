@@ -2686,6 +2686,38 @@ select {
   min-width: 0;
 }
 
+.talent-pool-candidate-card {
+  grid-template-columns: 28px 58px minmax(300px, 1fr) minmax(170px, 230px) 108px;
+  gap: 12px;
+}
+
+.talent-pool-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+
+  .ant-btn {
+    margin: 0;
+  }
+}
+
+@media (max-width: 1260px) {
+  .talent-pool-candidate-card {
+    grid-template-columns: 28px 54px minmax(0, 1fr) 108px;
+
+    .candidate-card-side {
+      grid-column: 3 / 5;
+      flex-flow: row wrap;
+    }
+
+    .talent-pool-card-actions {
+      grid-column: 4;
+      grid-row: 1;
+    }
+  }
+}
+
 @media (max-width: 900px) {
   .talent-pool-layout {
     grid-template-columns: 1fr;
@@ -2693,6 +2725,22 @@ select {
 
   .talent-folder-panel {
     min-height: auto;
+  }
+
+  .talent-pool-candidate-card {
+    grid-template-columns: 28px 50px minmax(0, 1fr);
+
+    .candidate-card-main,
+    .candidate-card-side,
+    .talent-pool-card-actions {
+      grid-column: 3 / 4;
+    }
+
+    .talent-pool-card-actions {
+      grid-row: auto;
+      flex-flow: row wrap;
+      justify-content: flex-start;
+    }
   }
 }
 

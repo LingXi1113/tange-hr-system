@@ -1,4 +1,5 @@
 import { http, unwrap } from './http';
+import type { ApplicationInfo } from './candidate';
 import type { PagedData } from './template';
 
 export interface PoolEntry {
@@ -7,6 +8,18 @@ export interface PoolEntry {
   candidate_name: string;
   phone: string;
   email: string;
+  gender: string;
+  age?: number | null;
+  city: string;
+  highest_education?: string;
+  major?: string;
+  candidate_tags: string;
+  owner_name: string;
+  current_stage: string;
+  education_summary: { school?: string; major?: string; degree?: string; graduate_at?: string };
+  work_summary: { company?: string; position?: string; start?: string; end?: string; desc?: string };
+  latest_application: ApplicationInfo | null;
+  resume_count: number;
   category: string;
   tags: string[];
   source: string;

@@ -18,7 +18,7 @@ from common.db import col, get_by_id, insert_doc, next_id, update_doc
 from common.access import CANDIDATE_READ_ROLES, can_view_pii
 from common.decorators import login_required, role_required
 from common.errors import BizError
-from common.flow import create_application
+from common.flow import application_to_dict, create_application
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
 from common.roles import HR, SUPER_ADMIN
@@ -104,6 +104,20 @@ def _pool_view(doc: dict, mask: bool = True) -> dict:
     from common.db import dt
 
     candidate = get_by_id("candidates", doc["candidate_id"]) or {}
+    education = list(candidate.get("education") or [])
+    work_experience = list(candidate.get("work_experience") or [])
+
+    def latest_record(records):
+        return max(
+            records,
+            key=lambda item: str(item.get("end") or item.get("graduate_at") or item.get("start") or ""),
+            default={},
+        )
+
+    application = col("applications").find_one(
+        {"candidate_id": doc["candidate_id"]}, sort=[("_id", -1)],
+    )
+    latest_application = application_to_dict(application) if application else None
     job_name = ""
     if doc.get("recommended_job_id"):
         job = get_by_id("jobs", doc["recommended_job_id"]) or {}
@@ -114,6 +128,18 @@ def _pool_view(doc: dict, mask: bool = True) -> dict:
         "candidate_name": candidate.get("name", ""),
         "phone": _mask_phone(candidate.get("phone", "")) if mask else candidate.get("phone", ""),
         "email": _mask_email(candidate.get("email", "")) if mask else candidate.get("email", ""),
+        "gender": candidate.get("gender", ""),
+        "age": candidate.get("age"),
+        "city": candidate.get("city", ""),
+        "highest_education": candidate.get("highest_education", ""),
+        "major": candidate.get("major", ""),
+        "candidate_tags": candidate.get("tags", ""),
+        "owner_name": candidate.get("owner_name", ""),
+        "education_summary": latest_record(education),
+        "work_summary": latest_record(work_experience),
+        "latest_application": latest_application,
+        "current_stage": application.get("current_stage", "") if application else "pending_screen",
+        "resume_count": col("attachments").count_documents({"candidate_id": doc["candidate_id"]}),
         "category": doc.get("category", ""),
         "tags": doc.get("tags", []),
         "source": doc.get("source", ""),

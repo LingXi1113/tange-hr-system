@@ -1,11 +1,13 @@
 import {
-  DeleteOutlined, EditOutlined, FolderOpenOutlined, FolderOutlined,
-  PlusOutlined, TagOutlined,
+  BankOutlined, BookOutlined, DeleteOutlined, EditOutlined, FileTextOutlined,
+  FolderOpenOutlined, FolderOutlined, PlusOutlined, TagOutlined,
 } from '@ant-design/icons';
 import {
-  Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tree,
+  Avatar, Button, Checkbox, Drawer, Empty, Form, Input, Modal, Pagination,
+  Popconfirm, Select, Space, Tag, Tree,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { fetchJobs } from '@/services/job';
@@ -24,7 +26,20 @@ const CATEGORY_OPTIONS = [
   { value: 'sales', label: '销售类' }, { value: 'general', label: '综合类' },
 ];
 
+const STAGE_TEXT: Record<string, string> = {
+  new_resume: '接收简历', pending_screen: '简历初筛', hr_screen_passed: '业务复筛',
+  business_screen: '业务复筛', interview_1: '一面', interview_2: '二面',
+  interview_3: '终面', hr_interview: 'HRBP 面试', offer_approval: '录用审批',
+  offer_pending: '待发 Offer', offer: 'Offer', pending_onboard: '待入职',
+  onboarded: '已入职', eliminated: '已淘汰', abandoned: '已放弃',
+};
+
+function stageText(stage: string | undefined) {
+  return STAGE_TEXT[stage ?? ''] ?? '其他阶段';
+}
+
 export function TalentPoolPage() {
+  const navigate = useNavigate();
   const { user } = useCurrentUser();
   const canManage = user?.role === 'hr';
   const canManageFolders = Boolean(user && (
@@ -117,63 +132,15 @@ export function TalentPoolPage() {
     return convert(visibleFolderTree);
   }, [visibleFolderTree]);
 
-  const columns = [
-    { title: '姓名', dataIndex: 'candidate_name', width: 100 },
-    { title: '手机号', dataIndex: 'phone', width: 130 },
-    { title: '邮箱', dataIndex: 'email', width: 170 },
-    {
-      title: '分类', dataIndex: 'category', width: 90,
-      render: (v: string) => CATEGORY_OPTIONS.find((c) => c.value === v)?.label ?? v ?? '-',
-    },
-    {
-      title: '标签', dataIndex: 'tags', width: 150,
-      render: (v: string[]) => (v?.length ? v.map((t) => <Tag key={t}>{t}</Tag>) : '-'),
-    },
-    { title: '来源', dataIndex: 'source_text', width: 110 },
-    { title: '归档目录', dataIndex: 'folder_name', width: 140 },
-    { title: '可推荐职位', dataIndex: 'recommended_job_name', width: 130, render: (v: string) => v || '-' },
-    { title: '最近联系', dataIndex: 'last_contact_at', width: 100, render: (v: string) => v?.slice(0, 10) || '-' },
-    {
-      title: '状态', dataIndex: 'status', width: 80,
-      render: (v: string) => (v === 'active'
-        ? <Tag color="success">待激活</Tag>
-        : <Tag color="purple">已激活</Tag>),
-    },
-    {
-      title: '操作', width: 200, fixed: 'right' as const,
-      render: (_: unknown, r: PoolEntry) => (
-        canManage ? <Space size={2} wrap>
-          <Button size="small" type="link" onClick={() => {
-            setEditTarget(r);
-            editForm.setFieldsValue({
-              category: r.category, tags: r.tags, reason: r.reason,
-              recommended_job_id: r.recommended_job_id,
-              folder_id: r.folder_id,
-              last_contact_at: r.last_contact_at ? r.last_contact_at.slice(0, 10) : '',
-            });
-          }}>
-            维护
-          </Button>
-          {r.status === 'active' && (
-            <Button size="small" type="link" onClick={() => { setActivateTarget(r); setActivateJobId(null); }}>
-              重新激活
-            </Button>
-          )}
-          <Popconfirm
-            title="确认移出人才库？"
-            onConfirm={async () => {
-              await removeFromPool(r.id);
-              msg.success('已移出人才库');
-              void load();
-              void loadFolders();
-            }}
-          >
-            <Button size="small" type="link" danger>移出</Button>
-          </Popconfirm>
-        </Space> : null
-      ),
-    },
-  ];
+  const openEditor = (record: PoolEntry) => {
+    setEditTarget(record);
+    editForm.setFieldsValue({
+      category: record.category, tags: record.tags, reason: record.reason,
+      recommended_job_id: record.recommended_job_id,
+      folder_id: record.folder_id,
+      last_contact_at: record.last_contact_at ? record.last_contact_at.slice(0, 10) : '',
+    });
+  };
 
   return (
     <div>
@@ -294,17 +261,131 @@ export function TalentPoolPage() {
           </Tag>
         </Space>
         {loading ? <PageLoading /> : (
-          <Table
-            rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1300 }}
-            rowSelection={{
-              selectedRowKeys: selectedIds,
-              onChange: (keys) => setSelectedIds(keys.map(Number)),
-            }}
-            pagination={{
-              current: filters.page, pageSize: 10, total,
-              onChange: (page) => setFilters((f) => ({ ...f, page })),
-            }}
-          />
+          <>
+            <div className="candidate-card-select-all">
+              <Checkbox
+                indeterminate={selectedIds.length > 0 && list.some((item) => !selectedIds.includes(item.id))}
+                checked={list.length > 0 && list.every((item) => selectedIds.includes(item.id))}
+                onChange={(event) => {
+                  const pageIds = list.map((item) => item.id);
+                  setSelectedIds((current) => event.target.checked
+                    ? Array.from(new Set([...current, ...pageIds]))
+                    : current.filter((id) => !pageIds.includes(id)));
+                }}
+              >
+                全选本页
+              </Checkbox>
+              <span>共 {total} 位人才</span>
+            </div>
+            <div className="candidate-profile-list">
+              {list.length === 0 ? <Empty description="当前文件夹暂无人才" /> : list.map((record) => {
+                const candidateTags = (record.candidate_tags || '')
+                  .split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+                const tags = Array.from(new Set([...candidateTags, ...(record.tags || [])])).slice(0, 3);
+                const work = record.work_summary || {};
+                const education = record.education_summary || {};
+                return (
+                  <article
+                    className="candidate-profile-card talent-pool-candidate-card"
+                    key={record.id}
+                    onClick={() => navigate(`/candidates/${record.candidate_id}`)}
+                  >
+                    <div className="candidate-card-checkbox" onClick={(event) => event.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedIds.includes(record.id)}
+                        onChange={(event) => setSelectedIds((current) => event.target.checked
+                          ? Array.from(new Set([...current, record.id]))
+                          : current.filter((id) => id !== record.id))}
+                      />
+                    </div>
+                    <Avatar className="candidate-card-avatar" size={58}>
+                      {record.candidate_name?.slice(0, 1) || '候'}
+                    </Avatar>
+                    <div className="candidate-card-main">
+                      <div className="candidate-card-name-row">
+                        <strong>{record.candidate_name}</strong>
+                        {record.folder_key === 'system:eliminated' && <Tag color="error">已淘汰</Tag>}
+                        {tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                      </div>
+                      <div className="candidate-card-brief">
+                        <span>{record.gender || '未知'}</span><i />
+                        <span>{record.age ? `${record.age}岁` : '年龄未知'}</span><i />
+                        <span>{record.city || '城市未填写'}</span>
+                      </div>
+                      <div className="candidate-card-history">
+                        <div className="candidate-history-work">
+                          <BankOutlined />
+                          <span className="candidate-history-date">
+                            {work.start || '时间未填写'} 至 {work.end || '至今'}
+                          </span>
+                          <strong>{work.company || '暂无工作经历'}</strong>
+                        </div>
+                        <div className="candidate-history-education">
+                          <BookOutlined />
+                          <span className="candidate-history-date">{education.graduate_at || '时间未填写'}</span>
+                          <strong>{education.degree || record.highest_education || '学历未填写'}</strong>
+                          <span>{education.school || '学校未填写'}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="candidate-card-side">
+                      <Tag color={record.folder_key === 'system:eliminated' ? 'red' : 'blue'}>
+                        {record.folder_name}
+                      </Tag>
+                      <span>{record.latest_application?.job_name || record.recommended_job_name || '未关联职位'}</span>
+                      <span>最后阶段：{stageText(record.current_stage)}</span>
+                      <span>入库来源：{record.source_text || '-'}</span>
+                      {record.reason && <span title={record.reason}>原因：{record.reason}</span>}
+                      <span><FileTextOutlined /> 简历附件 {record.resume_count || 0} 份</span>
+                    </div>
+                    <div className="talent-pool-card-actions" onClick={(event) => event.stopPropagation()}>
+                      <Button
+                        size="small" type="primary" ghost icon={<FileTextOutlined />}
+                        onClick={() => navigate(`/candidates/${record.candidate_id}`)}
+                      >
+                        查看简历
+                      </Button>
+                      {canManage && (
+                        <>
+                          <Button size="small" onClick={() => openEditor(record)}>维护</Button>
+                          {record.status === 'active' && (
+                            <Button
+                              size="small"
+                              onClick={() => { setActivateTarget(record); setActivateJobId(null); }}
+                            >
+                              重新激活
+                            </Button>
+                          )}
+                          <Popconfirm
+                            title="确认移出人才库？"
+                            onConfirm={async () => {
+                              await removeFromPool(record.id);
+                              msg.success('已移出人才库');
+                              setSelectedIds((current) => current.filter((id) => id !== record.id));
+                              void load();
+                              void loadFolders();
+                            }}
+                          >
+                            <Button size="small" danger>移出</Button>
+                          </Popconfirm>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            {total > 10 && (
+              <Pagination
+                className="candidate-card-pagination"
+                current={filters.page}
+                pageSize={10}
+                total={total}
+                showSizeChanger={false}
+                onChange={(page) => setFilters((current) => ({ ...current, page }))}
+              />
+            )}
+          </>
         )}
         </div>
       </div>
