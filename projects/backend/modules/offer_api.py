@@ -185,6 +185,8 @@ def list_offers():
     query = {}
     if args.get("status"):
         query["status"] = args["status"]
+    elif args.get("status_group") == "sent_history":
+        query["status"] = {"$in": ["sent", "accepted", "rejected", "expired", "withdrawn"]}
     if args.get("job_id"):
         query["job_id"] = int(args["job_id"])
     if args.get("candidate_id"):

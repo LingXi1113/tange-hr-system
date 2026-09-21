@@ -50,7 +50,9 @@ export function InterviewsPage() {
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     status: '', round: '', interviewer: '',
-    action_state: searchParams.get('action_state') ?? '', page: 1,
+    action_state: searchParams.get('action_state') ?? '',
+    job_id: searchParams.get('job_id') ? Number(searchParams.get('job_id')) : undefined,
+    status_group: searchParams.get('status_group') ?? '', page: 1,
   });
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -97,6 +99,8 @@ export function InterviewsPage() {
         round: filters.round || undefined,
         interviewer: filters.interviewer || undefined,
         action_state: filters.action_state || undefined,
+        job_id: filters.job_id || undefined,
+        status_group: filters.status_group || undefined,
         page: filters.page, page_size: 10,
       });
       setList(data.list);
@@ -158,6 +162,10 @@ export function InterviewsPage() {
     setJobs(data.list);
     return data.list;
   }, [jobs]);
+
+  useEffect(() => {
+    void loadJobs();
+  }, [loadJobs]);
 
   const openEditorForCandidate = useCallback(async (candidateId: number, applicationId?: number) => {
     setEditingId(null);
@@ -396,8 +404,16 @@ export function InterviewsPage() {
           <Select
             placeholder="状态" allowClear style={{ width: 130 }}
             value={filters.status || undefined}
-            onChange={(v) => setFilters((f) => ({ ...f, status: v ?? '', page: 1 }))}
+            onChange={(v) => setFilters((f) => ({
+              ...f, status: v ?? '', status_group: '', page: 1,
+            }))}
             options={Object.entries(INTERVIEW_STATUS_TEXT).map(([value, label]) => ({ value, label }))}
+          />
+          <Select
+            placeholder="职位" allowClear showSearch optionFilterProp="label" style={{ width: 220 }}
+            value={filters.job_id}
+            onChange={(v) => setFilters((f) => ({ ...f, job_id: v, page: 1 }))}
+            options={jobs.map((job) => ({ value: job.id, label: job.name }))}
           />
           <Select
             placeholder="轮次" allowClear style={{ width: 130 }}
@@ -420,6 +436,14 @@ export function InterviewsPage() {
             placeholder="面试官" allowClear style={{ width: 180 }}
             onSearch={(v) => setFilters((f) => ({ ...f, interviewer: v, page: 1 }))}
           />
+          {filters.status_group && (
+            <Tag
+              color="blue" closable
+              onClose={() => setFilters((current) => ({ ...current, status_group: '', page: 1 }))}
+            >
+              当前子分类：{filters.status_group === 'interviewed' ? '已参加面试' : '已邀约面试'}
+            </Tag>
+          )}
         </Space>
         {loading ? <PageLoading /> : (
           <Table

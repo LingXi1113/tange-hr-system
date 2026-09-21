@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
+import { fetchJobs } from '@/services/job';
 import { completeOnboarding, fetchOnboarding, fetchOnboardingDetail, startOnboarding, updateOnboardingItem } from '@/services/onboarding';
 import type { OnboardingItem, OnboardingRecord } from '@/services/onboarding';
 import { msg } from '@/utils/message';
@@ -17,6 +18,10 @@ export function OnboardingPage() {
   const [rows, setRows] = useState<OnboardingRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
+  const [jobId, setJobId] = useState<number | undefined>(() => (
+    searchParams.get('job_id') ? Number(searchParams.get('job_id')) : undefined
+  ));
+  const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
   const [detail, setDetail] = useState<OnboardingRecord | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -24,12 +29,18 @@ export function OnboardingPage() {
     setLoading(true);
     try { setRows((await fetchOnboarding({
       status: status || undefined,
+      job_id: jobId || undefined,
       application_stage: applicationStage || undefined,
       page_size: 100,
     })).list); }
     finally { setLoading(false); }
-  }, [applicationStage, status]);
+  }, [applicationStage, jobId, status]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void fetchJobs({ page_size: 100 }).then((data) => {
+      setJobs(data.list.map((job) => ({ id: job.id, name: job.name })));
+    });
+  }, []);
 
   async function openDetail(id: number) {
     setDetailLoading(true);
@@ -61,7 +72,18 @@ export function OnboardingPage() {
   return (
     <div>
       <div className="page-head"><div><h2 className="page-title">入职资料</h2><Typography.Text type="secondary">管理待入职候选人的资料收集、核验和入职完成</Typography.Text></div><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></div>
-      <Card style={{ marginBottom: 16 }}><Space wrap><Select value={status} onChange={setStatus} style={{ width: 140 }} options={[{ value: '', label: '全部状态' }, { value: 'pending', label: '待办理' }, { value: 'in_progress', label: '办理中' }, { value: 'completed', label: '已完成' }]} />{applicationStage === 'pending_onboard' && <Tag color="blue">当前子分类：待入职</Tag>}</Space></Card>
+      <Card style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Select value={status} onChange={setStatus} style={{ width: 140 }} options={[{ value: '', label: '全部状态' }, { value: 'pending', label: '待办理' }, { value: 'in_progress', label: '办理中' }, { value: 'completed', label: '已完成' }]} />
+          <Select
+            placeholder="职位" allowClear showSearch optionFilterProp="label" style={{ width: 220 }}
+            value={jobId} onChange={setJobId}
+            options={jobs.map((job) => ({ value: job.id, label: job.name }))}
+          />
+          {applicationStage === 'pending_onboard' && <Tag color="blue">当前子分类：待入职</Tag>}
+          {applicationStage === 'onboarded' && <Tag color="green">当前子分类：已入职</Tag>}
+        </Space>
+      </Card>
       <Card><Table rowKey="id" columns={columns} dataSource={rows} loading={loading} scroll={{ x: 950 }} pagination={{ pageSize: 10 }} /></Card>
       <Drawer title={detail ? `${detail.candidate_name} · 入职资料` : '入职资料'} width={560} open={Boolean(detail)} onClose={() => setDetail(null)}>
         {detailLoading || !detail ? <PageLoading /> : <>

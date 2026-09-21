@@ -67,6 +67,18 @@ const PROGRESS_ITEMS: { key: keyof Job['progress']; label: string }[] = [
   { key: 'onboarded', label: '已入职' },
 ];
 
+function progressRoute(jobId: number, key: keyof Job['progress']) {
+  const encodedJobId = encodeURIComponent(String(jobId));
+  if (key === 'received') return `/candidates?job_id=${encodedJobId}`;
+  if (key === 'invited') return `/interviews?job_id=${encodedJobId}&status_group=invited`;
+  if (key === 'interviewed') return `/interviews?job_id=${encodedJobId}&status_group=interviewed`;
+  if (key === 'offered') return `/offers?job_id=${encodedJobId}&status_group=sent_history`;
+  if (key === 'pending_onboard') {
+    return `/onboarding?job_id=${encodedJobId}&application_stage=pending_onboard`;
+  }
+  return `/onboarding?job_id=${encodedJobId}&application_stage=onboarded`;
+}
+
 function recommendedDepartment(positionName: string) {
   const name = positionName.trim().toLowerCase();
   if (['seo', '在线客服', '舆情管控', '市场专员'].some((value) => name.includes(value.toLowerCase()))) return 'dept-market';
@@ -312,19 +324,21 @@ export function JobsPage() {
                   <span><b>关联需求</b>{job.requirement_name || '未关联招聘需求'}</span>
                 </div>
 
-                <button
-                  type="button"
-                  className="job-management-progress"
-                  onClick={() => navigate(`/pipeline?job_id=${job.id}`)}
-                >
+                <div className="job-management-progress">
                   {PROGRESS_ITEMS.map((item, index) => (
-                    <span key={item.key}>
-                      <b>{item.label}</b>
-                      <strong>{job.progress[item.key]}</strong>
+                    <span className="job-management-progress-step" key={item.key}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(progressRoute(job.id, item.key))}
+                        aria-label={`查看${job.name}的${item.label}`}
+                      >
+                        <b>{item.label}</b>
+                        <strong>{job.progress[item.key]}</strong>
+                      </button>
                       {index < PROGRESS_ITEMS.length - 1 && <RightOutlined />}
                     </span>
                   ))}
-                </button>
+                </div>
               </article>
             );
           })}

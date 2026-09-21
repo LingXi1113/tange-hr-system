@@ -255,6 +255,8 @@ def list_interviews():
     query = {}
     if args.get("status"):
         query["status"] = args["status"]
+    elif args.get("status_group") == "interviewed":
+        query["status"] = {"$in": ["completed", "passed", "failed"]}
     if args.get("job_id"):
         query["job_id"] = int(args["job_id"])
     if args.get("candidate_id"):

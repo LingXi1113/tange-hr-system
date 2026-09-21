@@ -42,11 +42,12 @@ export function OffersPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<{
-    status: string; job_id?: number; ready_to_send: string; page: number;
+    status: string; job_id?: number; ready_to_send: string; status_group: string; page: number;
   }>(() => ({
     status: searchParams.get('status') ?? '',
     job_id: searchParams.get('job_id') ? Number(searchParams.get('job_id')) : undefined,
     ready_to_send: searchParams.get('ready_to_send') ?? '',
+    status_group: searchParams.get('status_group') ?? '',
     page: 1,
   }));
 
@@ -72,6 +73,7 @@ export function OffersPage() {
         status: filters.status || undefined,
         job_id: filters.job_id || undefined,
         ready_to_send: filters.ready_to_send || undefined,
+        status_group: filters.status_group || undefined,
         page: filters.page, page_size: 10,
       });
       setList(data.list);
@@ -303,7 +305,9 @@ export function OffersPage() {
           <Select
             placeholder="状态" allowClear style={{ width: 140 }}
             value={filters.status || undefined}
-            onChange={(v) => setFilters((f) => ({ ...f, status: v ?? '', page: 1 }))}
+            onChange={(v) => setFilters((f) => ({
+              ...f, status: v ?? '', status_group: '', page: 1,
+            }))}
             options={Object.entries(OFFER_STATUS_TEXT).map(([value, label]) => ({ value, label }))}
           />
           <Select
@@ -321,6 +325,16 @@ export function OffersPage() {
               }))}
             >
               当前子分类：审批完成、待发送
+            </Tag>
+          )}
+          {filters.status_group === 'sent_history' && (
+            <Tag
+              color="blue" closable
+              onClose={() => setFilters((current) => ({
+                ...current, status_group: '', page: 1,
+              }))}
+            >
+              当前子分类：已发送 Offer
             </Tag>
           )}
         </Space>
