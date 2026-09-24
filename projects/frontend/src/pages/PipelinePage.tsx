@@ -192,7 +192,7 @@ export function PipelinePage() {
                       </div>
                       {card.process_state_label && (
                         <div style={{ marginBottom: 4 }}>
-                          <Tag color={card.process_state_key === 'awaiting_hr_review' ? 'orange'
+                          <Tag color={card.process_state_key === 'interview_evaluated' ? 'success'
                             : card.process_state_key === 'awaiting_interviewer_feedback' ? 'gold' : 'blue'}>
                             {card.process_state_label}
                           </Tag>
@@ -205,14 +205,7 @@ export function PipelinePage() {
                       )}
                       {card.status === 'in_progress' && canManage && (
                         <Space size={4}>
-                          {card.process_state_key === 'awaiting_hr_review' && card.last_interview_id ? (
-                            <Button
-                              size="small" type="link" style={{ padding: 0 }}
-                              onClick={() => navigate(`/interviews?interview_id=${card.last_interview_id}`)}
-                            >
-                              处理评价
-                            </Button>
-                          ) : card.process_state_key === 'awaiting_interview_schedule' ? (
+                          {card.process_state_key === 'awaiting_interview_schedule' ? (
                             <Button
                               size="small" type="link" style={{ padding: 0 }}
                               onClick={() => navigate(`/interviews?candidate_id=${card.candidate_id}&application_id=${card.id}`)}

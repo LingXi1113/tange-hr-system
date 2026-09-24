@@ -1,6 +1,6 @@
 import { DeleteOutlined, DownOutlined, EditOutlined, LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  Alert, Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Radio, Row,
+  Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Radio, Row,
   Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
@@ -428,11 +428,13 @@ export function CandidateDetailPage() {
     interview.round === expectedInterviewRound && interview.status !== 'cancelled');
   const interviewPassed = interviews.some((interview) => (
     interview.status === 'completed'
-    && (interview.conclusion_action === 'pass' || interview.feedback_conclusion === 'pass')
+    && interview.feedback_conclusion === 'pass'
+    && (!expectedInterviewRound || interview.round === expectedInterviewRound)
   ));
   const canEnterSecondInterview = Boolean(
     canManage
       && selectedApplication
+      && interviewPassed
       && ['interview_passed', 'interviewing', 'interview_1'].includes(selectedApplication.current_stage)
       && !['二面', '三面', 'HR面试', '终面', '终面（HR）'].includes(selectedApplication.interview_round ?? ''),
   );
@@ -443,6 +445,7 @@ export function CandidateDetailPage() {
   const canEnterFinalInterview = Boolean(
     canManage
       && selectedApplication
+      && interviewPassed
       && (
         selectedApplication.current_stage === 'interview_2'
         || (selectedApplication.current_stage === 'interviewing'
@@ -1059,15 +1062,6 @@ export function CandidateDetailPage() {
               </Button>
             ) : null}
           >
-            {selectedApplication?.awaiting_hr_action && (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 12 }}
-                message={`${stageText(selectedApplication.current_stage)} · ${selectedApplication.process_state_label || '待 HR 确认'}`}
-                description="请查看本轮评价后，再决定推进下一阶段、待定、淘汰或加入人才库。"
-              />
-            )}
             <Table
               rowKey="id" size="small" pagination={false} dataSource={interviews}
               locale={{ emptyText: '暂无面试安排' }}
@@ -1106,15 +1100,17 @@ export function CandidateDetailPage() {
                 {
                   title: '操作', width: 90,
                   render: (_: unknown, r: Interview) => (
-                    canManage && r.status === 'completed' && r.has_feedback && !r.conclusion_applied
+                    canManage && r.status !== 'cancelled' && !r.has_feedback
                       ? (
                         <Button
                           size="small" type="link"
-                          onClick={() => navigate(`/interviews?interview_id=${r.id}&open=1`)}
+                          onClick={() => navigate(`/interviews?interview_id=${r.id}&feedback=1`)}
                         >
-                          处理评价
+                          提交评价
                         </Button>
-                      ) : null
+                      ) : canManage && r.status === 'completed' && r.feedback_conclusion === 'pass'
+                        ? <Tag color="success">可手动调整阶段</Tag>
+                        : null
                   ),
                 },
               ]}

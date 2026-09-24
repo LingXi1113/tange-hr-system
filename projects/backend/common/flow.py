@@ -151,10 +151,40 @@ def _check_interview_requirements(app_doc: dict, stage_key: str, rule: dict):
     if rule.get("requires_feedback"):
         ids = [item["_id"] for item in interviews]
         feedback = col("interview_feedback").find_one({
-            "interview_id": {"$in": ids}, "skip_eval": {"$ne": True},
+            "interview_id": {"$in": ids},
+            "conclusion": "pass",
+            "skip_eval": {"$ne": True},
         })
         if feedback is None:
-            raise BizError(BizCode.STATE_INVALID, "该阶段必须先完成面试反馈")
+            raise BizError(BizCode.STATE_INVALID, "该阶段必须先有通过的面试评价")
+
+
+def _require_passed_feedback_before_interview_advance(app_doc: dict, to_stage: str):
+    """面试阶段只能在本轮存在通过评价后由 HR 手动向后推进。"""
+    if to_stage in {"eliminated", "abandoned", "talent_pool"}:
+        return
+    current_stage = app_doc.get("current_stage", "")
+    interview_stages = {
+        "pending_interview", "interviewing",
+        "interview_1", "interview_2", "interview_3", "hr_interview", "re_interview",
+    }
+    if current_stage not in interview_stages:
+        return
+    interview_query = {
+        "application_id": app_doc["_id"],
+        "status": "completed",
+    }
+    round_name = _interview_rounds_for_stage(current_stage) or app_doc.get("interview_round", "")
+    if round_name:
+        interview_query["round"] = round_name
+    interview_ids = [item["_id"] for item in col("interviews").find(interview_query, {"_id": 1})]
+    passed = bool(interview_ids and col("interview_feedback").find_one({
+        "interview_id": {"$in": interview_ids},
+        "conclusion": "pass",
+        "skip_eval": {"$ne": True},
+    }))
+    if not passed:
+        raise BizError(BizCode.STATE_INVALID, "当前面试必须先提交通过评价，才能进入下一阶段")
 
 
 def _validate_stage_transition(app_doc: dict, job_doc: dict, to_stage: str):
@@ -637,17 +667,24 @@ def application_process_state(app_doc: dict) -> dict:
         }
         return {"key": "completed", "label": labels.get(status, "流程已结束"), "role": ""}
 
-    if app_doc.get("awaiting_hr_action"):
-        return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
-
-    interview = col("interviews").find_one(
-        {"application_id": app_doc.get("_id")}, sort=[("_id", -1)],
+    stage = app_doc.get("current_stage", "")
+    interview_stages = {
+        "pending_interview", "interviewing", "interview_1", "interview_2",
+        "interview_3", "hr_interview", "re_interview",
+    }
+    interview_query = {"application_id": app_doc.get("_id")}
+    current_round = _interview_rounds_for_stage(stage) or app_doc.get("interview_round", "")
+    if current_round:
+        interview_query["round"] = current_round
+    interview = (
+        col("interviews").find_one(interview_query, sort=[("_id", -1)])
+        if stage in interview_stages else None
     )
-    if interview and not interview.get("conclusion_applied"):
+    if interview:
         feedback = col("interview_feedback").find_one({"interview_id": interview["_id"]})
         interview_status = interview.get("status", "pending")
         if feedback and interview_status == "completed":
-            return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
+            return {"key": "interview_evaluated", "label": "面试已评价", "role": "hr"}
         end_at = interview.get("end_at")
         interview_has_ended = isinstance(end_at, datetime) and end_at <= _now()
         if not feedback and (
@@ -657,30 +694,25 @@ def application_process_state(app_doc: dict) -> dict:
                 and interview_has_ended
             )
         ):
-            return {"key": "awaiting_interviewer_feedback", "label": "待面试官评价", "role": "interviewer"}
+            return {"key": "awaiting_interviewer_feedback", "label": "待评价", "role": "interviewer_or_hr"}
         if interview_status in {"pending", "invited", "confirmed", "rescheduled"}:
             return {"key": "awaiting_interview", "label": "待参加面试", "role": "interviewer"}
 
-    stage = app_doc.get("current_stage", "")
     action = app_doc.get("next_action", "")
-    interview_stages = {
-        "pending_interview", "interviewing", "interview_1", "interview_2",
-        "interview_3", "hr_interview", "re_interview",
-    }
     if action == "business_screen_feedback" or stage == "business_screen":
         return {"key": "awaiting_business_feedback", "label": "待业务复筛", "role": "business_screener"}
     if action == "submit_interview_feedback":
-        return {"key": "awaiting_interviewer_feedback", "label": "待面试官评价", "role": "interviewer"}
-    if action == "review_interview_feedback":
-        return {"key": "awaiting_hr_review", "label": "待 HR 确认", "role": "hr"}
+        return {"key": "awaiting_interviewer_feedback", "label": "待评价", "role": "interviewer_or_hr"}
+    if action == "manual_stage_change":
+        return {"key": "interview_evaluated", "label": "面试已评价", "role": "hr"}
     if action == "schedule_interview" and stage in interview_stages:
-        return {"key": "awaiting_interview_schedule", "label": "待 HR 安排面试", "role": "hr"}
+        return {"key": "awaiting_interview_schedule", "label": "待安排面试", "role": "hr"}
     if action == "follow_up_hold":
         return {"key": "awaiting_hr_follow_up", "label": "待 HR 跟进", "role": "hr"}
     if stage in {"new_resume", "pending_screen", "hr_screen_passed"}:
         return {"key": "awaiting_hr_screen", "label": "待 HR 初筛", "role": "hr"}
     if stage in interview_stages:
-        return {"key": "awaiting_interview_schedule", "label": "待 HR 安排面试", "role": "hr"}
+        return {"key": "awaiting_interview_schedule", "label": "待安排面试", "role": "hr"}
     if stage in {"offer_approval", "offer_pending", "offer"}:
         return {"key": "awaiting_offer_action", "label": "待录用处理", "role": "hr"}
     if status == APP_PENDING_ONBOARD or stage == "pending_onboard":
@@ -746,6 +778,8 @@ def move_application(application_doc: dict, to_stage: str, reason: str,
         raise BizError(BizCode.STATE_INVALID, "待入职记录只能完成入职或结束流程")
     if to_stage == "onboarded" and app_doc.get("current_stage") != "pending_onboard":
         raise BizError(BizCode.STATE_INVALID, "只有待入职阶段可以进入已入职")
+
+    _require_passed_feedback_before_interview_advance(app_doc, to_stage)
 
     if version != app_doc.get("version", 1):
         raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")

@@ -37,9 +37,6 @@ def summary():
     active_interview_app_ids = set(col("interviews").distinct(
         "application_id", {"status": {"$in": active_interview_statuses}},
     ))
-    hr_review_app_ids = set(col("applications").distinct(
-        "_id", {"awaiting_hr_action": True, "status": "in_progress"},
-    ))
     feedback_pending_app_ids = set(col("interviews").distinct("application_id", {
         "$or": [
             {"status": "completed", "_id": {"$nin": list(feedback_ids)}},
@@ -86,7 +83,6 @@ def summary():
             "status": {"$in": active_interview_statuses},
         }),
         "feedback_pending": len(feedback_pending_app_ids),
-        "hr_review_pending": len(hr_review_app_ids),
         "pending_offers": _count("offers", {
             "status": {"$in": ["draft", "pending_send", "sent"]},
         }),
@@ -130,8 +126,7 @@ def summary():
     todo_items = [
         {"key": "pending_screen", "title": "待筛选候选人", "count": todos["pending_screen"], "route": "/candidates?stage=pending_screen"},
         {"key": "interviews_pending", "title": "待处理面试", "count": todos["interviews_pending"], "route": "/interviews"},
-        {"key": "feedback_pending", "title": "待面试官评价", "count": todos["feedback_pending"], "route": "/interviews?action_state=awaiting_interviewer_feedback"},
-        {"key": "hr_review_pending", "title": "待 HR 确认", "count": todos["hr_review_pending"], "route": "/interviews?action_state=awaiting_hr_review"},
+        {"key": "feedback_pending", "title": "待面试评价", "count": todos["feedback_pending"], "route": "/interviews?action_state=awaiting_interviewer_feedback"},
         {"key": "pending_offers", "title": "待处理 Offer", "count": todos["pending_offers"], "route": "/offers"},
         {"key": "onboarding", "title": "待入职候选人", "count": todos["onboarding"], "route": "/candidates?stage=pending_onboard"},
     ]
@@ -154,8 +149,7 @@ def summary():
         {
             "key": "interview", "title": "面试", "items": [
                 {"key": "waiting_schedule", "label": "待约面", "count": len(waiting_schedule_ids), "route": "/candidates?action_state=awaiting_interview_schedule"},
-                {"key": "feedback", "label": "面试待反馈", "count": todos["feedback_pending"], "route": "/interviews?action_state=awaiting_interviewer_feedback"},
-                {"key": "hr_review", "label": "待 HR 确认", "count": todos["hr_review_pending"], "route": "/interviews?action_state=awaiting_hr_review"},
+                {"key": "feedback", "label": "面试待评价", "count": todos["feedback_pending"], "route": "/interviews?action_state=awaiting_interviewer_feedback"},
             ],
         },
         {

@@ -4,7 +4,7 @@ from conftest import login
 from helpers import assign, make_candidate, make_job, publish_job
 
 
-def test_interviewer_feedback_hands_back_to_hr_before_stage_advances(client):
+def test_interviewer_or_hr_feedback_keeps_stage_and_pass_allows_manual_advance(client):
     login(client, "super-admin-001")
     template_id = client.post("/api/pipeline-templates", json={
         "name": "面试交接测试流程",
@@ -51,8 +51,8 @@ def test_interviewer_feedback_hands_back_to_hr_before_stage_advances(client):
     assert no_feedback["code"] == 1001
 
     feedback = client.post(f"/api/interviews/{interview['id']}/feedback", json={
-        "conclusion": "pass",
-        "comment": "建议进入下一阶段",
+        "conclusion": "hold",
+        "comment": "先由面试官评价为待定",
         "dimension_scores": [{"name": "专业能力", "score": 4}],
     }).get_json()
     assert feedback["code"] == 0
@@ -60,51 +60,60 @@ def test_interviewer_feedback_hands_back_to_hr_before_stage_advances(client):
         "version": interview["version"],
     }).get_json()
     assert completed["code"] == 0
-    assert completed["data"]["handed_to_hr"] is True
-
-    interviewer_cannot_advance = client.post(
-        f"/api/interviews/{interview['id']}/apply-conclusion",
-        json={"version": application["version"]},
-    ).get_json()
-    assert interviewer_cannot_advance["code"] == 1006
+    assert completed["data"]["handed_to_hr"] is False
 
     login(client, "hr-001")
     detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
     current_application = detail["applications"][0]
     assert current_application["current_stage"] == "pending_interview"
-    assert current_application["awaiting_hr_action"] is True
+    assert current_application["awaiting_hr_action"] is False
     assert current_application["owner_id"] == "hr-001"
-    assert current_application["process_state_key"] == "awaiting_hr_review"
-    assert current_application["process_state_label"] == "待 HR 确认"
+    assert current_application["process_state_key"] == "interview_evaluated"
+    assert current_application["process_state_label"] == "面试已评价"
 
-    # 交回 HR 只是阶段内状态，候选人仍留在真实面试阶段中。
-    interview_stage = client.get("/api/candidates", query_string={
-        "stage": "interview_1",
-    }).get_json()["data"]
-    candidate_row = next(item for item in interview_stage["list"] if item["id"] == candidate_id)
-    assert candidate_row["latest_application"]["process_state_key"] == "awaiting_hr_review"
+    # 待定/不通过评价不能推进后续阶段。
+    blocked = client.post(f"/api/applications/{application['id']}/move", json={
+        "to_stage": "interview_passed",
+        "reason": "尝试推进",
+        "version": current_application["version"],
+    }).get_json()
+    assert blocked["code"] == 1003
+    assert "通过评价" in blocked["msg"]
 
-    board = client.get("/api/pipeline/board", query_string={"job_id": job["id"]}).get_json()["data"]
-    board_card = next(item for item in board["cards"] if item["id"] == application["id"])
-    assert board_card["current_stage"] == "pending_interview"
-    assert board_card["process_state_label"] == "待 HR 确认"
+    # 招聘 HR 可以直接代评/修改评价；通过后仍保留原招聘阶段。
+    hr_feedback = client.post(f"/api/interviews/{interview['id']}/feedback", json={
+        "version": feedback["data"]["version"],
+        "conclusion": "pass",
+        "comment": "HR复核通过",
+        "dimension_scores": [{"name": "综合能力", "score": 5}],
+    }).get_json()
+    assert hr_feedback["code"] == 0
+    assert hr_feedback["data"]["evaluator_id"] == "hr-001"
+    assert hr_feedback["data"]["conclusion"] == "pass"
+    completed_again = client.post(f"/api/interviews/{interview['id']}/complete", json={
+        "version": completed["data"]["version"],
+    }).get_json()
+    assert completed_again["code"] == 0
 
-    hr_interviews = client.get("/api/interviews", query_string={
-        "action_state": "awaiting_hr_review",
-    }).get_json()["data"]
-    assert any(item["id"] == interview["id"] for item in hr_interviews["list"])
+    detail = client.get(f"/api/candidates/{candidate_id}").get_json()["data"]
+    current_application = detail["applications"][0]
+    assert current_application["current_stage"] == "pending_interview"
+    assert current_application["last_interview_conclusion"] == "pass"
+    assert current_application["process_state_key"] == "interview_evaluated"
 
     dashboard = client.get("/api/dashboard/summary").get_json()["data"]
-    assert dashboard["todos"]["hr_review_pending"] == 1
     interview_metrics = next(item for item in dashboard["workbench_metrics"] if item["key"] == "interview")
-    assert next(item for item in interview_metrics["items"] if item["key"] == "hr_review")["count"] == 1
+    assert all(item["key"] != "hr_review" for item in interview_metrics["items"])
 
-    advanced = client.post(f"/api/interviews/{interview['id']}/apply-conclusion", json={
+    # 通过评价不会自动流转，HR 手动选择后续阶段才真正推进。
+    advanced = client.post(f"/api/applications/{application['id']}/move", json={
+        "to_stage": "interview_passed",
+        "reason": "HR确认评价通过后手动推进",
         "version": current_application["version"],
     }).get_json()
     assert advanced["code"] == 0
-    assert advanced["data"]["application"]["current_stage"] == "interview_passed"
-    assert advanced["data"]["application"]["awaiting_hr_action"] is False
+    assert advanced["data"]["current_stage"] == "interview_passed"
+    assert advanced["data"]["awaiting_hr_action"] is False
 
 
 def test_stage_alias_and_keyword_search_find_candidate(client):

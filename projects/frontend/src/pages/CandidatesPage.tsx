@@ -175,7 +175,7 @@ export function CandidatesPage() {
     if (filters.recommendation_status === 'pending') return '推荐待反馈';
     if (filters.recommendation_status === 'passed') return '推荐通过';
     if (filters.recommendation_status === 'failed') return '推荐不通过';
-    if (filters.action_state === 'awaiting_interview_schedule') return '待 HR 安排面试';
+    if (filters.action_state === 'awaiting_interview_schedule') return '待安排面试';
     return '';
   }, [filters.action_state, filters.assigned, filters.recommendation_status,
     filters.source_group, filters.stage, filters.unassigned, filters.unprocessed]);
@@ -536,7 +536,7 @@ export function CandidatesPage() {
                     <div className="candidate-card-side">
                       <Tag color="blue">{stageText(record.current_stage)}</Tag>
                       {record.latest_application?.process_state_label && (
-                        <Tag color={record.latest_application.process_state_key === 'awaiting_hr_review' ? 'orange' : 'gold'}>
+                        <Tag color={record.latest_application.process_state_key === 'interview_evaluated' ? 'success' : 'gold'}>
                           {record.latest_application.process_state_label}
                         </Tag>
                       )}

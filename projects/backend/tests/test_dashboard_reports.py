@@ -53,7 +53,6 @@ def test_dashboard_summary_contains_workbench_counts_and_funnel(client):
         "failed": "/candidates?recommendation_status=failed",
         "waiting_schedule": "/candidates?action_state=awaiting_interview_schedule",
         "feedback": "/interviews?action_state=awaiting_interviewer_feedback",
-        "hr_review": "/interviews?action_state=awaiting_hr_review",
         "pending_onboard": "/onboarding?application_stage=pending_onboard",
         "pending_approval": "/approvals?status=pending",
         "pending_send": "/offers?status=pending_send&ready_to_send=1",
