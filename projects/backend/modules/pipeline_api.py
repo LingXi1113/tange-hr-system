@@ -144,7 +144,14 @@ def move(app_id: int):
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
-    require_candidate_lock_owner(app["candidate_id"])
+    current_roles = set(getattr(g.current_user, "roles", []) or [])
+    current_roles.add(getattr(g.current_user, "role", ""))
+    manual_interview_adjustment = bool(
+        current_roles.intersection({HR, SUPER_ADMIN})
+        and application_to_dict(app).get("process_state_key") == "interview_evaluated"
+    )
+    if not manual_interview_adjustment:
+        require_candidate_lock_owner(app["candidate_id"])
     payload = request.get_json(silent=True) or {}
     try:
         version = int(payload.get("version", -1))
@@ -157,8 +164,6 @@ def move(app_id: int):
     if requested_stage == "offer_approval" and requested_stage not in available_stage_keys \
             and "offer_pending" in available_stage_keys:
         requested_stage = "offer_pending"
-    current_roles = set(getattr(g.current_user, "roles", []) or [])
-    current_roles.add(getattr(g.current_user, "role", ""))
     business_advance = False
     direct_offer_advance = bool(
         current_roles.intersection({HR, SUPER_ADMIN})
@@ -186,7 +191,7 @@ def move(app_id: int):
         reason=payload.get("reason", ""),
         operator_id=g.current_user.user_id, operator_name=g.current_user.name,
         version=version,
-        bypass_rules=business_advance or direct_offer_advance,
+        bypass_rules=business_advance or direct_offer_advance or manual_interview_adjustment,
     )
     return ok(application_to_dict(updated))
 
@@ -286,32 +291,36 @@ def direct_interview(app_id: int):
 @bp.post("/api/applications/<int:app_id>/next-interview")
 @role_required(HR, SUPER_ADMIN)
 def next_interview(app_id: int):
-    """面试通过后由 HR 明确推进到下一轮面试。"""
+    """本轮面试已评价后，由 HR 明确推进到下一轮面试。"""
     app = get_by_id("applications", app_id)
     if app is None:
         raise BizError(BizCode.NOT_FOUND, "应聘记录不存在")
-    require_candidate_lock_owner(app["candidate_id"])
+    current_roles = set(getattr(g.current_user, "roles", []) or [])
+    current_roles.add(getattr(g.current_user, "role", ""))
+    manual_interview_adjustment = bool(
+        current_roles.intersection({HR, SUPER_ADMIN})
+        and application_to_dict(app).get("process_state_key") == "interview_evaluated"
+    )
+    if not manual_interview_adjustment:
+        require_candidate_lock_owner(app["candidate_id"])
     if app.get("status") != APP_IN_PROGRESS or app.get("current_stage") not in {
-        "interview_passed", "interviewing", "interview_1", "interview_2",
+        "pending_interview", "interview_passed", "interviewing", "interview_1", "interview_2",
     }:
-        raise BizError(BizCode.STATE_INVALID, "只有上一轮面试通过后才能进入二面")
+        raise BizError(BizCode.STATE_INVALID, "只有上一轮面试已评价后才能进入下一轮")
     payload = request.get_json(silent=True) or {}
     try:
         version = int(payload.get("version", -1))
     except (TypeError, ValueError):
         raise BizError(BizCode.PARAM_INVALID, "version 必须为数字")
 
-    passed_interviews = []
+    evaluated_interviews = []
     for interview in col("interviews").find({
         "application_id": app_id,
         "status": "completed",
     }):
-        feedback = col("interview_feedback").find_one({
-            "interview_id": interview.get("_id"),
-            "conclusion": "pass",
-        })
+        feedback = col("interview_feedback").find_one({"interview_id": interview.get("_id")})
         if feedback and not feedback.get("skip_eval"):
-            passed_interviews.append(interview)
+            evaluated_interviews.append(interview)
     job = get_by_id("jobs", app["job_id"]) or {}
     valid_stage_keys = {stage.stage_key for stage in job_stage_sequence(job)}
     rounds = configured_interview_rounds(job)
@@ -319,17 +328,17 @@ def next_interview(app_id: int):
     # 兼容该模板时按系统默认顺序推进到一面、二面、三面。
     if not rounds and "interviewing" in valid_stage_keys:
         rounds = ["一面", "二面", "三面"]
-    passed_rounds = {item.get("round", "") for item in passed_interviews}
-    passed_interviews.sort(key=lambda item: item.get("_id", 0))
+    evaluated_rounds = {item.get("round", "") for item in evaluated_interviews}
+    evaluated_interviews.sort(key=lambda item: item.get("_id", 0))
     stage_rounds = {
         "interview_1": "一面", "interview_2": "二面", "interview_3": "三面",
         "hr_interview": "HR面试", "re_interview": "复试",
     }
     current_round = effective_interview_round(app, job) or stage_rounds.get(app.get("current_stage", ""), "")
-    if not current_round and passed_interviews:
-        current_round = passed_interviews[-1].get("round", "")
-    if not rounds or current_round not in rounds or current_round not in passed_rounds:
-        raise BizError(BizCode.STATE_INVALID, "请先完成并通过上一轮面试评价")
+    if not current_round and evaluated_interviews:
+        current_round = evaluated_interviews[-1].get("round", "")
+    if not rounds or current_round not in rounds or current_round not in evaluated_rounds:
+        raise BizError(BizCode.STATE_INVALID, "请先完成上一轮面试并提交评价")
     current_index = rounds.index(current_round)
     if current_index >= len(rounds) - 1:
         raise BizError(BizCode.STATE_INVALID, "当前面试已经是最后一轮")

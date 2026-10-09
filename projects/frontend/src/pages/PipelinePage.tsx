@@ -1,7 +1,7 @@
 import { DownloadOutlined, LockOutlined } from '@ant-design/icons';
 import { Button, Empty, Input, Modal, Select, Space, Tag, Tooltip } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { eliminateApplication, fetchBoard, moveApplication } from '@/services/pipeline';
@@ -20,16 +20,21 @@ function csvCell(value: unknown) {
 
 export function PipelinePage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useCurrentUser();
-  const canManage = user?.role === 'hr';
+  const canManage = Boolean(user && (user.role === 'hr' || user.role === 'super_admin'
+    || user.roles?.some((role) => role === 'hr' || role === 'super_admin')));
   const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
-  const [jobId, setJobId] = useState<number | null>(null);
+  const requestedJobId = Number(searchParams.get('job_id')) || null;
+  const requestedApplicationId = Number(searchParams.get('application_id')) || null;
+  const [jobId, setJobId] = useState<number | null>(requestedJobId);
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<BoardCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [moveTarget, setMoveTarget] = useState<BoardCard | null>(null);
   const [moveStage, setMoveStage] = useState('');
   const [moveReason, setMoveReason] = useState('');
+  const autoOpenedApplication = useRef<number | null>(null);
   const selectedJob = jobs.find((job) => job.id === jobId);
 
   function exportCurrentBoard() {
@@ -93,6 +98,17 @@ export function PipelinePage() {
   useEffect(() => {
     void loadBoard();
   }, [loadBoard]);
+
+  useEffect(() => {
+    if (!canManage || searchParams.get('adjust') !== '1' || !requestedApplicationId
+      || autoOpenedApplication.current === requestedApplicationId) return;
+    const target = cards.find((card) => card.id === requestedApplicationId);
+    if (!target) return;
+    autoOpenedApplication.current = requestedApplicationId;
+    setMoveTarget(target);
+    setMoveStage('');
+    setMoveReason('面试已评价，HR手动调整招聘阶段');
+  }, [canManage, cards, requestedApplicationId, searchParams]);
 
   async function confirmMove() {
     if (!moveTarget) return;
@@ -245,7 +261,7 @@ export function PipelinePage() {
       </div>
 
       <Modal
-        title={moveTarget ? `推进 ${moveTarget.candidate_name}` : ''}
+        title={moveTarget ? `调整 ${moveTarget.candidate_name} 的招聘阶段` : ''}
         open={!!moveTarget}
         onCancel={() => setMoveTarget(null)}
         onOk={() => void confirmMove()}
@@ -259,7 +275,7 @@ export function PipelinePage() {
           value={moveStage || undefined}
           onChange={setMoveStage}
           options={columns
-            .filter((c) => c.stage_key !== moveTarget?.current_stage && c.stage_key !== 'eliminated')
+            .filter((c) => c.stage_key !== moveTarget?.current_stage && c.category !== '终态')
             .map((c) => ({ value: c.stage_key, label: c.name }))}
         />
         <Input.TextArea

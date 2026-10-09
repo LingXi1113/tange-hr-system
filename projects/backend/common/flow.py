@@ -152,15 +152,14 @@ def _check_interview_requirements(app_doc: dict, stage_key: str, rule: dict):
         ids = [item["_id"] for item in interviews]
         feedback = col("interview_feedback").find_one({
             "interview_id": {"$in": ids},
-            "conclusion": "pass",
             "skip_eval": {"$ne": True},
         })
         if feedback is None:
-            raise BizError(BizCode.STATE_INVALID, "该阶段必须先有通过的面试评价")
+            raise BizError(BizCode.STATE_INVALID, "该阶段必须先提交面试评价")
 
 
-def _require_passed_feedback_before_interview_advance(app_doc: dict, to_stage: str):
-    """面试阶段只能在本轮存在通过评价后由 HR 手动向后推进。"""
+def _require_feedback_before_interview_advance(app_doc: dict, to_stage: str):
+    """面试阶段在本轮存在有效评价后即可由 HR 手动调整。"""
     if to_stage in {"eliminated", "abandoned", "talent_pool"}:
         return
     current_stage = app_doc.get("current_stage", "")
@@ -178,13 +177,12 @@ def _require_passed_feedback_before_interview_advance(app_doc: dict, to_stage: s
     if round_name:
         interview_query["round"] = round_name
     interview_ids = [item["_id"] for item in col("interviews").find(interview_query, {"_id": 1})]
-    passed = bool(interview_ids and col("interview_feedback").find_one({
+    evaluated = bool(interview_ids and col("interview_feedback").find_one({
         "interview_id": {"$in": interview_ids},
-        "conclusion": "pass",
         "skip_eval": {"$ne": True},
     }))
-    if not passed:
-        raise BizError(BizCode.STATE_INVALID, "当前面试必须先提交通过评价，才能进入下一阶段")
+    if not evaluated:
+        raise BizError(BizCode.STATE_INVALID, "当前面试必须先提交评价，才能调整招聘阶段")
 
 
 def _validate_stage_transition(app_doc: dict, job_doc: dict, to_stage: str):
@@ -779,7 +777,7 @@ def move_application(application_doc: dict, to_stage: str, reason: str,
     if to_stage == "onboarded" and app_doc.get("current_stage") != "pending_onboard":
         raise BizError(BizCode.STATE_INVALID, "只有待入职阶段可以进入已入职")
 
-    _require_passed_feedback_before_interview_advance(app_doc, to_stage)
+    _require_feedback_before_interview_advance(app_doc, to_stage)
 
     if version != app_doc.get("version", 1):
         raise BizError(BizCode.CONFLICT, "应聘记录已被其他人更新，请刷新后重试")

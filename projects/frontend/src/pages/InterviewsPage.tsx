@@ -345,9 +345,12 @@ export function InterviewsPage() {
               {r.has_feedback ? '修改评价' : '提交评价'}
             </Button>
           )}
-          {canHrManage && r.status === 'completed' && r.feedback_conclusion === 'pass' && (
-            <Button size="small" type="link" onClick={() => navigate(`/candidates/${r.candidate_id}`)}>
-              调整阶段
+          {canHrManage && r.status === 'completed' && r.has_feedback && (
+            <Button
+              size="small" type="link"
+              onClick={() => navigate(`/pipeline?job_id=${r.job_id}&application_id=${r.application_id}&adjust=1`)}
+            >
+              进入下一阶段
             </Button>
           )}
           {canHrManage && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}

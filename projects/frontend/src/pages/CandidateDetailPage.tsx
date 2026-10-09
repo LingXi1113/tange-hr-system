@@ -406,8 +406,10 @@ export function CandidateDetailPage() {
       && lockOwnerId
       && lockOwnerId !== user.user_id,
   );
-  const canManage = !lockedByOther
-    && ['hr', 'super_admin'].some((role) => user?.role === role || user?.roles?.includes(role));
+  const hasHrPermission = ['hr', 'super_admin'].some(
+    (role) => user?.role === role || user?.roles?.includes(role),
+  );
+  const canManage = !lockedByOther && hasHrPermission;
   const canResume = ['hr', 'super_admin', 'business_screener', 'interviewer'].some(
     (role) => user?.role === role || user?.roles?.includes(role),
   ) && !lockedByOther;
@@ -426,16 +428,21 @@ export function CandidateDetailPage() {
     : '';
   const currentInterview = interviews.find((interview) =>
     interview.round === expectedInterviewRound && interview.status !== 'cancelled');
-  const interviewPassed = interviews.some((interview) => (
+  const interviewEvaluated = interviews.some((interview) => (
     interview.status === 'completed'
-    && interview.feedback_conclusion === 'pass'
+    && interview.has_feedback
     && (!expectedInterviewRound || interview.round === expectedInterviewRound)
   ));
+  // 候选人资料仍仅限负责人修改；面试已评价后的阶段调整允许任一 HR 接续处理。
+  const canAdjustEvaluatedStage = Boolean(
+    hasHrPermission && selectedApplication?.status === 'in_progress' && interviewEvaluated,
+  );
+  const canManageFlow = canManage || canAdjustEvaluatedStage;
   const canEnterSecondInterview = Boolean(
-    canManage
+    canManageFlow
       && selectedApplication
-      && interviewPassed
-      && ['interview_passed', 'interviewing', 'interview_1'].includes(selectedApplication.current_stage)
+      && interviewEvaluated
+      && ['pending_interview', 'interview_passed', 'interviewing', 'interview_1'].includes(selectedApplication.current_stage)
       && !['二面', '三面', 'HR面试', '终面', '终面（HR）'].includes(selectedApplication.interview_round ?? ''),
   );
   const alreadyInSecondInterview = Boolean(
@@ -443,9 +450,9 @@ export function CandidateDetailPage() {
       && selectedApplication.interview_round === '二面',
   );
   const canEnterFinalInterview = Boolean(
-    canManage
+    canManageFlow
       && selectedApplication
-      && interviewPassed
+      && interviewEvaluated
       && (
         selectedApplication.current_stage === 'interview_2'
         || (selectedApplication.current_stage === 'interviewing'
@@ -462,7 +469,7 @@ export function CandidateDetailPage() {
   );
   const alreadyInHrbpInterview = selectedApplication?.current_stage === 'hrbp_interview';
   const canSkipInterviewToOffer = Boolean(
-    canManage && selectedApplication?.status === 'in_progress'
+    canManageFlow && selectedApplication?.status === 'in_progress'
       && ![
         'offer_pending', 'offer_approval', 'offer', 'pending_onboard', 'onboarded',
         'eliminated', 'abandoned', 'talent_pool',
@@ -473,7 +480,7 @@ export function CandidateDetailPage() {
   );
   const currentOffers = offers.filter((offer) => offer.application_id === selectedApplication?.id);
   const canCreateOffer = Boolean(
-    canManage && interviewPassed
+    canManage && interviewEvaluated
       && ['offer_pending', 'offer_approval'].includes(selectedApplication?.current_stage ?? '')
       && !currentOffers.some((offer) => ['draft', 'pending_send', 'sent'].includes(offer.status)),
   );
@@ -524,9 +531,6 @@ export function CandidateDetailPage() {
   );
   const currentApplicationStage = selectedApplication?.current_stage || detail.current_stage;
   const isInterrupted = ['abandoned', 'eliminated', 'talent_pool'].includes(currentApplicationStage);
-  const hasHrPermission = ['hr', 'super_admin'].some(
-    (role) => user?.role === role || user?.roles?.includes(role),
-  );
   const canRestore = Boolean(isInterrupted && hasHrPermission);
   const isAbandoned = selectedApplication?.current_stage === 'abandoned'
     && selectedApplication.status === 'closed';
@@ -663,7 +667,7 @@ export function CandidateDetailPage() {
 
   async function handleEnterSecondInterview() {
     if (!selectedApplication || !canEnterSecondInterview) {
-      msg.warning('请先完成并通过一面评价');
+      msg.warning('请先完成一面并提交评价');
       return;
     }
     await enterNextInterview(selectedApplication.id, selectedApplication.version);
@@ -677,7 +681,7 @@ export function CandidateDetailPage() {
       if (alreadyInFinalInterview) {
         msg.info('候选人已进入三面，请点击“安排面试”');
       } else {
-        msg.warning('请先完成并通过二面评价');
+        msg.warning('请先完成二面并提交评价');
       }
       return;
     }
@@ -1108,8 +1112,15 @@ export function CandidateDetailPage() {
                         >
                           提交评价
                         </Button>
-                      ) : canManage && r.status === 'completed' && r.feedback_conclusion === 'pass'
-                        ? <Tag color="success">可手动调整阶段</Tag>
+                      ) : canManageFlow && r.status === 'completed' && r.has_feedback
+                        ? (
+                          <Button
+                            size="small" type="link"
+                            onClick={() => navigate(`/pipeline?job_id=${r.job_id}&application_id=${r.application_id}&adjust=1`)}
+                          >
+                            进入下一阶段
+                          </Button>
+                        )
                         : null
                   ),
                 },
@@ -1129,7 +1140,7 @@ export function CandidateDetailPage() {
             ) : null}
           >
             <Table
-              rowKey="id" size="small" pagination={false} dataSource={interviewPassed ? currentOffers : []}
+              rowKey="id" size="small" pagination={false} dataSource={interviewEvaluated ? currentOffers : []}
               locale={{ emptyText: '暂无 Offer 记录' }}
               columns={[
                 { title: '职位', dataIndex: 'job_name' },
