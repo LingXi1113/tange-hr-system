@@ -1,6 +1,7 @@
 """Offer 管理（PRD v1.1 Sprint 4）。
 
-- 集合：offers；状态严格为 草稿/待发送/已发送/已接受/已拒绝/已过期/已撤回，无审批链；
+- 集合：offers；状态严格为 草稿/待发送/已发送/已接受/已拒绝/已过期/已撤回；
+- 草稿提交后进入固定录用审批链，全部审批通过后才允许发送；
 - 创建前校验候选人/职位/应聘记录一致，且应聘记录已进入录用审批后的 offer_pending 阶段；
 - 发送后应聘记录进入 offer_pending；接受后进入 pending_onboard（走乐观锁阶段流转）；
 - 拒绝/过期/撤回必须记录原因并写 operation_logs；
@@ -79,6 +80,7 @@ def _parse_date(value, field: str, end_of_day: bool = False) -> datetime:
 def _offer_view(doc: dict) -> dict:
     candidate = get_by_id("candidates", doc["candidate_id"]) or {}
     job = get_by_id("jobs", doc["job_id"]) or {}
+    approval = col("offer_approvals").find_one({"offer_id": doc["_id"]}) or {}
     file_meta = None
     if doc.get("file_id"):
         from bson import ObjectId
@@ -116,6 +118,7 @@ def _offer_view(doc: dict) -> dict:
         "valid_until": dt(doc.get("valid_until"))[:10],
         "remark": doc.get("remark", ""),
         "status": doc.get("status", OF_DRAFT),
+        "approval_status": approval.get("status", "not_submitted"),
         "response_reason": doc.get("response_reason", ""),
         "sent_at": dt(doc.get("sent_at")),
         "responded_at": dt(doc.get("responded_at")),
@@ -192,11 +195,10 @@ def list_offers():
     if args.get("candidate_id"):
         query["candidate_id"] = int(args["candidate_id"])
     if args.get("ready_to_send") == "1":
-        pending_approval_offer_ids = col("offer_approvals").distinct(
-            "offer_id", {"status": "pending"},
+        approved_offer_ids = col("offer_approvals").distinct(
+            "offer_id", {"status": "approved"},
         )
-        if pending_approval_offer_ids:
-            query["_id"] = {"$nin": pending_approval_offer_ids}
+        query["_id"] = {"$in": approved_offer_ids}
     rows = [_offer_view(_lazy_expire(d)) for d in
             col("offers").find(query).sort("_id", -1)]
     page = max(int(args.get("page", 1)), 1)
@@ -341,6 +343,10 @@ def change_status(offer_id: int):
     require_candidate_lock_owner(app_doc["candidate_id"])
     check_action = action if action in {"submit", "send", "accept"} else "create"
     require_offer_application(app_doc, action=check_action)
+    if action == "send":
+        approval = col("offer_approvals").find_one({"offer_id": offer_id})
+        if approval is None or approval.get("status") != "approved":
+            raise BizError(BizCode.STATE_INVALID, "Offer 审批全部通过后才能发送")
     reason = (payload.get("reason") or "").strip()
     if action in REASON_REQUIRED and not reason:
         raise BizError(BizCode.PARAM_INVALID, f"{action} 必须填写原因")

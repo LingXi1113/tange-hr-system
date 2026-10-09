@@ -648,6 +648,26 @@ def _legacy_eliminate_application(application_doc: dict, reason: str,
     return updated
 
 
+def interview_process_state(interview: dict) -> dict:
+    """返回单场面试自身的处理状态，供工作台与面试列表共用。"""
+    feedback = col("interview_feedback").find_one({"interview_id": interview.get("_id")})
+    status = interview.get("status", "pending")
+    if feedback and status == "completed":
+        return {"key": "interview_evaluated", "label": "面试已评价", "role": "hr"}
+    end_at = interview.get("end_at")
+    interview_has_ended = isinstance(end_at, datetime) and end_at <= _now()
+    if not feedback and (
+        status == "completed"
+        or (status in {"pending", "invited", "confirmed", "rescheduled"} and interview_has_ended)
+    ):
+        return {"key": "awaiting_interviewer_feedback", "label": "待评价", "role": "interviewer_or_hr"}
+    if status in {"pending", "invited", "confirmed", "rescheduled"}:
+        return {"key": "awaiting_interview", "label": "待参加面试", "role": "interviewer"}
+    if status == "cancelled":
+        return {"key": "cancelled", "label": "已取消", "role": ""}
+    return {"key": "completed", "label": "已完成", "role": ""}
+
+
 def application_process_state(app_doc: dict) -> dict:
     """Return the actionable state inside the current recruitment stage.
 
@@ -679,22 +699,11 @@ def application_process_state(app_doc: dict) -> dict:
         if stage in interview_stages else None
     )
     if interview:
-        feedback = col("interview_feedback").find_one({"interview_id": interview["_id"]})
-        interview_status = interview.get("status", "pending")
-        if feedback and interview_status == "completed":
-            return {"key": "interview_evaluated", "label": "面试已评价", "role": "hr"}
-        end_at = interview.get("end_at")
-        interview_has_ended = isinstance(end_at, datetime) and end_at <= _now()
-        if not feedback and (
-            interview_status == "completed"
-            or (
-                interview_status in {"pending", "invited", "confirmed", "rescheduled"}
-                and interview_has_ended
-            )
-        ):
-            return {"key": "awaiting_interviewer_feedback", "label": "待评价", "role": "interviewer_or_hr"}
-        if interview_status in {"pending", "invited", "confirmed", "rescheduled"}:
-            return {"key": "awaiting_interview", "label": "待参加面试", "role": "interviewer"}
+        interview_state = interview_process_state(interview)
+        if interview_state["key"] in {
+            "interview_evaluated", "awaiting_interviewer_feedback", "awaiting_interview",
+        }:
+            return interview_state
 
     action = app_doc.get("next_action", "")
     if action == "business_screen_feedback" or stage == "business_screen":

@@ -5,7 +5,7 @@ from flask import Blueprint, g
 
 from common.db import col, dt
 from common.decorators import login_required
-from common.flow import application_process_state
+from common.flow import application_process_state, interview_process_state
 from common.response import ok
 from common.stages import DEFAULT_STAGES, STAGE_NAMES
 
@@ -21,9 +21,6 @@ def _count(collection, query):
 def summary():
     now = datetime.now()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    completed_interviews = [item["_id"] for item in col("interviews").find({"status": "completed"}, {"_id": 1})]
-    feedback_ids = {item.get("interview_id") for item in col("interview_feedback").find(
-        {"interview_id": {"$in": completed_interviews}}, {"interview_id": 1})}
     pending_screen_query = {
         "current_stage": {"$in": ["new_resume", "pending_screen"]},
         "status": "in_progress",
@@ -31,22 +28,29 @@ def summary():
     unprocessed_candidate_ids = set(col("applications").distinct(
         "candidate_id", pending_screen_query,
     ))
+    referral_candidate_ids = set(col("candidates").distinct("_id", {"source": "referral"}))
+    referral_candidate_ids.update(col("applications").distinct(
+        "candidate_id", {"source": "referral"},
+    ))
+    recommendation_sources = ["headhunt", "talent_pool", "business_recommendation"]
+    recommended_candidate_ids = set(col("candidates").distinct(
+        "_id", {"source": {"$in": recommendation_sources}},
+    ))
+    recommended_candidate_ids.update(col("applications").distinct(
+        "candidate_id", {"source": {"$in": recommendation_sources}},
+    ))
     application_candidate_ids = col("applications").distinct("candidate_id")
     unassigned_query = {"_id": {"$nin": application_candidate_ids}} if application_candidate_ids else {}
     active_interview_statuses = ["pending", "invited", "confirmed", "rescheduled"]
     active_interview_app_ids = set(col("interviews").distinct(
         "application_id", {"status": {"$in": active_interview_statuses}},
     ))
-    feedback_pending_app_ids = set(col("interviews").distinct("application_id", {
-        "$or": [
-            {"status": "completed", "_id": {"$nin": list(feedback_ids)}},
-            {
-                "status": {"$in": active_interview_statuses},
-                "end_at": {"$lte": now},
-                "_id": {"$nin": list(feedback_ids)},
-            },
-        ],
-    }))
+    feedback_pending_interview_ids = {
+        item["_id"] for item in col("interviews").find({
+            "status": {"$in": active_interview_statuses + ["completed"]},
+        })
+        if interview_process_state(item).get("key") == "awaiting_interviewer_feedback"
+    }
     interview_stage_keys = [
         "pending_interview", "interviewing", "interview_1", "interview_2",
         "interview_3", "hr_interview", "re_interview",
@@ -68,12 +72,28 @@ def summary():
         "from_stage": "business_screen",
         "to_stage": {"$in": ["eliminated", "abandoned", "talent_pool"]},
     }))
+    recommendation_passed_candidate_ids = set(col("applications").distinct(
+        "candidate_id", {"_id": {"$in": list(recommendation_passed_ids)}},
+    ))
+    recommendation_failed_candidate_ids = set(col("applications").distinct(
+        "candidate_id", {"_id": {"$in": list(recommendation_failed_ids)}},
+    ))
+    waiting_schedule_candidate_ids = set(col("applications").distinct(
+        "candidate_id", {"_id": {"$in": list(waiting_schedule_ids)}},
+    ))
+    recommendation_pending_candidate_ids = set(col("applications").distinct(
+        "candidate_id", {"current_stage": "business_screen", "status": "in_progress"},
+    ))
     pending_approval_offer_ids = set(col("offer_approvals").distinct(
         "offer_id", {"status": "pending"},
     ))
-    pending_send_query = {"status": "pending_send"}
-    if pending_approval_offer_ids:
-        pending_send_query["_id"] = {"$nin": list(pending_approval_offer_ids)}
+    approved_offer_ids = set(col("offer_approvals").distinct(
+        "offer_id", {"status": "approved"},
+    ))
+    pending_send_query = {
+        "status": "pending_send",
+        "_id": {"$in": list(approved_offer_ids)},
+    }
 
     todos = {
         "pending_screen": _count("applications", {
@@ -82,7 +102,7 @@ def summary():
         "interviews_pending": _count("interviews", {
             "status": {"$in": active_interview_statuses},
         }),
-        "feedback_pending": len(feedback_pending_app_ids),
+        "feedback_pending": len(feedback_pending_interview_ids),
         "pending_offers": _count("offers", {
             "status": {"$in": ["draft", "pending_send", "sent"]},
         }),
@@ -134,21 +154,21 @@ def summary():
         {
             "key": "screening", "title": "简历初筛", "items": [
                 {"key": "unprocessed", "label": "未处理", "count": len(unprocessed_candidate_ids), "route": "/candidates?unprocessed=1"},
-                {"key": "referral", "label": "内推简历", "count": _count("applications", {"source": "referral"}), "route": "/candidates?source=referral"},
-                {"key": "recommended", "label": "人才推荐", "count": _count("applications", {"source": {"$in": ["headhunt", "talent_pool", "business_recommendation"]}}), "route": "/candidates?source_group=talent_recommendation"},
+                {"key": "referral", "label": "内推简历", "count": len(referral_candidate_ids), "route": "/candidates?source=referral"},
+                {"key": "recommended", "label": "人才推荐", "count": len(recommended_candidate_ids), "route": "/candidates?source_group=talent_recommendation"},
                 {"key": "unassigned", "label": "待分配", "count": _count("candidates", unassigned_query), "route": "/candidates?unassigned=1"},
             ],
         },
         {
             "key": "recommendation", "title": "简历推荐", "items": [
-                {"key": "pending_feedback", "label": "推荐待反馈", "count": _count("applications", {"current_stage": "business_screen", "status": "in_progress"}), "route": "/candidates?recommendation_status=pending"},
-                {"key": "passed", "label": "推荐通过", "count": len(recommendation_passed_ids), "route": "/candidates?recommendation_status=passed"},
-                {"key": "failed", "label": "推荐不通过", "count": len(recommendation_failed_ids), "route": "/candidates?recommendation_status=failed"},
+                {"key": "pending_feedback", "label": "推荐待反馈", "count": len(recommendation_pending_candidate_ids), "route": "/candidates?recommendation_status=pending"},
+                {"key": "passed", "label": "推荐通过", "count": len(recommendation_passed_candidate_ids), "route": "/candidates?recommendation_status=passed"},
+                {"key": "failed", "label": "推荐不通过", "count": len(recommendation_failed_candidate_ids), "route": "/candidates?recommendation_status=failed"},
             ],
         },
         {
             "key": "interview", "title": "面试", "items": [
-                {"key": "waiting_schedule", "label": "待约面", "count": len(waiting_schedule_ids), "route": "/candidates?action_state=awaiting_interview_schedule"},
+                {"key": "waiting_schedule", "label": "待约面", "count": len(waiting_schedule_candidate_ids), "route": "/candidates?action_state=awaiting_interview_schedule"},
                 {"key": "feedback", "label": "面试待评价", "count": todos["feedback_pending"], "route": "/interviews?action_state=awaiting_interviewer_feedback"},
             ],
         },

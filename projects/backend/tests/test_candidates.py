@@ -249,6 +249,7 @@ def test_resume_upload_and_parse(client):
     assert parsed["fields"]["name"] == "王小明"
     assert parsed["fields"]["phone"] == "13966667777"
     assert parsed["fields"]["email"] == "wangxm@example.com"
+    assert parsed["fields"]["city"] == "杭州"
 
 
 def test_resume_parse_upload_prefills_before_candidate_creation(client):
@@ -270,6 +271,7 @@ def test_resume_parse_upload_prefills_before_candidate_creation(client):
     assert parsed["data"]["fields"]["name"] == "李小明"
     assert parsed["data"]["fields"]["phone"] == "13966667778"
     assert parsed["data"]["fields"]["email"] == "lixm@example.com"
+    assert parsed["data"]["fields"]["city"] == "杭州"
 
     # 预解析只使用临时文件，不应在候选人创建前产生孤立附件。
     assert client.get("/api/candidates").get_json()["data"]["total"] == 0
@@ -281,7 +283,7 @@ def test_resume_parser_handles_common_name_layouts():
     )
     assert fields["name"] == "张三"
     assert fields["phone"] == "13800112233"
-    assert fields["city"] == ""
+    assert fields["city"] == "杭州"
 
     education = parse_resume_fields(
         "教育经历\n2018年9月 - 2022年6月\n清华大学\n专业：计算机科学与技术\n本科",

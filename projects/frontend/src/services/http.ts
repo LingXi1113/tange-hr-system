@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type { AxiosError, InternalAxiosRequestConfig } from 'axios';
 
+import { notifyBusinessDataChanged } from '@/utils/businessDataEvents';
 import { msg } from '@/utils/message';
 
 import { getAuthToken } from './authToken';
@@ -53,6 +54,13 @@ function isPublicPath(url?: string) {
   return url.includes('/api/public/') || url.includes('/api/auth/mock-login') || url.includes('/api/auth/mock-users');
 }
 
+function isBusinessMutation(method?: string, url?: string) {
+  const normalizedMethod = method?.toLowerCase();
+  if (!normalizedMethod || !['post', 'put', 'patch', 'delete'].includes(normalizedMethod)) return false;
+  if (!url?.includes('/api/')) return false;
+  return !url.includes('/api/auth/');
+}
+
 /** 未登录时跳转到登录页（公开页与登录相关请求除外）。 */
 function redirectToLogin() {
   const hash = window.location.hash || '';
@@ -69,6 +77,12 @@ http.interceptors.response.use(
         msg.error(body.msg || '操作失败');
       }
       throw new BizError(body.code, body.msg || '操作失败');
+    }
+    if (isBusinessMutation(response.config.method, response.config.url)) {
+      notifyBusinessDataChanged({
+        method: response.config.method?.toUpperCase() ?? 'POST',
+        url: response.config.url ?? '',
+      });
     }
     return response;
   },

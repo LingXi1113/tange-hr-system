@@ -20,8 +20,9 @@ from common.db import col, get_by_id, insert_doc, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
-    application_process_state, application_to_dict, configured_interview_rounds,
-    effective_interview_round, eliminate_application, expected_interview_round, move_application,
+    application_to_dict, configured_interview_rounds,
+    effective_interview_round, eliminate_application, expected_interview_round,
+    interview_process_state, move_application,
 )
 from common.interview_guard import candidate_schedule_guard
 from common.logstore import write_log
@@ -125,10 +126,7 @@ def _resolve_bindings(payload: dict):
 def _interview_view(doc: dict) -> dict:
     candidate = get_by_id("candidates", doc["candidate_id"]) or {}
     job = get_by_id("jobs", doc["job_id"]) or {}
-    application = get_by_id("applications", doc.get("application_id")) or {}
-    process_state = application_process_state(application) if application else {
-        "key": "", "label": "", "role": "",
-    }
+    process_state = interview_process_state(doc)
     return {
         "id": doc["_id"],
         "candidate_id": doc["candidate_id"],
@@ -282,9 +280,7 @@ def list_interviews():
     rows = list(items)
     if args.get("action_state"):
         requested_state = args["action_state"]
-        rows = [item for item in rows if application_process_state(
-            get_by_id("applications", item.get("application_id")) or {},
-        ).get("key") == requested_state]
+        rows = [item for item in rows if interview_process_state(item).get("key") == requested_state]
     total = len(rows)
     sliced = rows[(page - 1) * page_size: page * page_size]
     data = [_interview_view(d) for d in sliced]

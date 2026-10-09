@@ -27,6 +27,7 @@ export interface Offer {
   valid_until: string;
   remark: string;
   status: string;
+  approval_status: 'not_submitted' | 'pending' | 'approved' | 'rejected';
   response_reason: string;
   sent_at: string;
   responded_at: string;

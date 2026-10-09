@@ -389,6 +389,30 @@ def _extract_gender(text: str, filename: str = "") -> str:
     return matched.group(1) if matched else ""
 
 
+def _extract_city(text: str) -> str:
+    """提取带明确标签的现居城市，避免把学校或公司所在地误当作城市。"""
+    patterns = (
+        r"(?:现居住地|现居地|现居城市|所在城市|所在地|居住地|城市)\s*[：:]\s*([^\r\n|，,;；]{1,30})",
+        r"(?:Current\s+City|City|Location)\s*[:：]\s*([^\r\n|,;]{2,40})",
+    )
+    for pattern in patterns:
+        matched = re.search(pattern, text, flags=re.IGNORECASE)
+        if not matched:
+            continue
+        value = re.split(
+            r"(?:性别|年龄|手机(?:号码)?|电话|邮箱|电子邮箱|求职|应聘)\s*[：:]",
+            matched.group(1), maxsplit=1,
+        )[0]
+        value = re.sub(r"\s+", " ", value).strip(" ：:，,;；|/-")
+        chinese = re.match(r"[\u4e00-\u9fff]{2,12}", value)
+        if chinese:
+            return chinese.group(0)
+        english = re.match(r"[A-Za-z][A-Za-z .'-]{1,39}", value)
+        if english:
+            return english.group(0).strip()
+    return ""
+
+
 def _normalize_work_date(value: str) -> str:
     value = re.sub(r"\s+", "", value)
     if value in {"\u81F3\u4ECA", "\u73B0\u5728", "\u76EE\u524D"}:
@@ -557,7 +581,7 @@ def _sanitize_name(value: str) -> str:
 
 
 def parse_resume_fields(text: str, filename: str = "") -> dict:
-    """Extract name, contacts and education; city is intentionally omitted."""
+    """Extract basic information, education and work experience from resume text."""
     fields = {
         "name": "", "phone": "", "email": "", "city": "", "age": None,
         "highest_education": "", "major": "", "education": [],
@@ -576,6 +600,7 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
     if email:
         fields["email"] = email.group(0)
     fields["gender"] = _extract_gender(text, filename)
+    fields["city"] = _extract_city(text)
 
     name_patterns = [
         r"(?:姓\s*名|名字|候选人|应聘者)\s*[：:]\s*([^\r\n]{2,30})",

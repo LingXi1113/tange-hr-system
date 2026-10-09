@@ -62,6 +62,75 @@ def test_dashboard_summary_contains_workbench_counts_and_funnel(client):
     assert "recent_activities" in data
 
 
+def test_dashboard_source_metrics_follow_candidate_profile_changes(client):
+    ensure_hr(client)
+    candidate_id = make_candidate(
+        client,
+        name="工作台来源同步候选人",
+        phone="13900009991",
+        email="dashboard-source-sync@example.com",
+    )
+
+    before = client.get("/api/dashboard/summary").get_json()["data"]
+    before_referral = next(
+        item["count"] for group in before["workbench_metrics"]
+        for item in group["items"] if item["key"] == "referral"
+    )
+
+    updated = client.put(f"/api/candidates/{candidate_id}", json={"source": "referral"})
+    assert updated.get_json()["code"] == 0
+
+    after = client.get("/api/dashboard/summary").get_json()["data"]
+    after_referral = next(
+        item["count"] for group in after["workbench_metrics"]
+        for item in group["items"] if item["key"] == "referral"
+    )
+    filtered = client.get("/api/candidates", query_string={"source": "referral"}).get_json()["data"]
+
+    assert after_referral == before_referral + 1
+    assert after_referral == filtered["total"]
+
+
+def test_dashboard_feedback_metric_matches_interview_subcategory(client):
+    job, candidate_id, application = _seed_job_and_application(client)
+    now = datetime.now()
+    with client.application.app_context():
+        col("applications").update_one({"_id": application["id"]}, {"$set": {
+            "current_stage": "pending_interview", "status": "in_progress",
+        }})
+        for interview_id, round_name in ((9101, "一面"), (9102, "二面")):
+            col("interviews").insert_one({
+                "_id": interview_id,
+                "candidate_id": candidate_id,
+                "job_id": job["id"],
+                "application_id": application["id"],
+                "round": round_name,
+                "type": "video",
+                "start_at": now - timedelta(hours=2),
+                "end_at": now - timedelta(hours=1),
+                "status": "completed",
+                "version": 1,
+                "created_at": now - timedelta(hours=3),
+            })
+        col("interview_feedback").insert_one({
+            "_id": 9201, "interview_id": 9101, "conclusion": "pass",
+            "dimension_scores": [], "version": 1, "created_at": now,
+        })
+
+    dashboard = client.get("/api/dashboard/summary").get_json()["data"]
+    metric = next(
+        item for group in dashboard["workbench_metrics"]
+        for item in group["items"] if item["key"] == "feedback"
+    )
+    filtered = client.get("/api/interviews", query_string={
+        "action_state": "awaiting_interviewer_feedback",
+    }).get_json()["data"]
+
+    assert metric["count"] == filtered["total"] == 1
+    assert filtered["list"][0]["id"] == 9102
+    assert filtered["list"][0]["process_state_key"] == "awaiting_interviewer_feedback"
+
+
 def test_reports_funnel_channels_and_csv_export(client):
     job_a, _, app_a = _seed_job_and_application(client, source="referral")
     job_b, _, app_b = _seed_job_and_application(client, source="manual")

@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 
 from flask import Blueprint, g, request
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from common.db import col, dt, get_by_id, insert_doc, next_id
@@ -48,8 +49,6 @@ def _offer_or_404(offer_id):
 def _ensure_for_offer(offer, session=None):
     ensure_core_indexes()
     existing = col("offer_approvals").find_one({"offer_id": offer["_id"]}, session=session)
-    if existing:
-        return existing
     config = _config()
     now = datetime.now()
     steps = [{
@@ -59,6 +58,20 @@ def _ensure_for_offer(offer, session=None):
         "status": "pending" if index == 0 else "waiting",
         "reason": "", "acted_at": None,
     } for index, (key, name, id_field, name_field, role) in enumerate(CHAIN)]
+    if existing:
+        if existing.get("status") != "rejected":
+            return existing
+        reset = col("offer_approvals").find_one_and_update(
+            {"_id": existing["_id"], "status": "rejected"},
+            {"$set": {
+                "status": "pending", "current_index": 0, "steps": steps,
+                "deadline_at": now + timedelta(days=APPROVAL_DEADLINE_DAYS),
+                "updated_at": now,
+            }, "$inc": {"version": 1}},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return reset or col("offer_approvals").find_one({"_id": existing["_id"]}, session=session)
     doc = {
         "_id": next_id("offer_approvals", session=session), "offer_id": offer["_id"],
         "status": "pending", "current_index": 0, "version": 1,
@@ -188,6 +201,7 @@ def approval_action(approval_id):
     if status == "pending" and next_index < len(steps):
         steps[next_index]["status"] = "pending"
     before_approval = dict(doc)
+    before_offer = dict(offer)
     moved_app = None
     session = None
     try:
@@ -213,12 +227,20 @@ def approval_action(approval_id):
                             g.current_user.user_id, g.current_user.name, app.get("version", 1),
                             session=session,
                         )
+            elif status == "rejected":
+                col("offers").update_one(
+                    {"_id": offer["_id"], "status": "pending_send"},
+                    {"$set": {"status": "draft", "updated_at": now}, "$inc": {"version": 1}},
+                    session=session,
+                )
             write_log("offer_approval", action, g.current_user.user_id, g.current_user.name,
                       biz_id=str(approval_id), detail=reason or step["name"], session=session)
     except Exception:
         if session is None:
             if moved_app:
                 rollback_application_operation(moved_app)
+            if status == "rejected":
+                col("offers").replace_one({"_id": offer["_id"]}, before_offer)
             col("offer_approvals").replace_one(
                 {"_id": approval_id, "version": version + 1}, before_approval,
             )

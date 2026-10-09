@@ -20,7 +20,7 @@ import { addToPool } from '@/services/talentPool';
 import { msg } from '@/utils/message';
 
 // 允许创建 Offer 的应聘记录阶段（与后端门禁一致）
-const OFFER_ALLOWED_STAGES = ['interview_passed', 'offer_pending'];
+const OFFER_ALLOWED_STAGES = ['offer_pending', 'offer_approval'];
 
 interface AppOption {
   id: number;
@@ -211,7 +211,14 @@ export function OffersPage() {
     { title: '有效期至', dataIndex: 'valid_until', width: 110 },
     {
       title: '状态', dataIndex: 'status', width: 90,
-      render: (v: string) => <Tag color={OFFER_STATUS_COLOR[v]}>{OFFER_STATUS_TEXT[v] ?? v}</Tag>,
+      render: (v: string, r: Offer) => (
+        <Space size={2} wrap>
+          <Tag color={OFFER_STATUS_COLOR[v]}>{OFFER_STATUS_TEXT[v] ?? v}</Tag>
+          {r.approval_status === 'pending' && <Tag color="processing">审批中</Tag>}
+          {r.approval_status === 'approved' && <Tag color="success">审批通过</Tag>}
+          {r.approval_status === 'rejected' && <Tag color="error">审批驳回</Tag>}
+        </Space>
+      ),
     },
     {
       title: '文件', dataIndex: 'file', width: 80,
@@ -224,18 +231,21 @@ export function OffersPage() {
           {r.status === 'draft' && (
             <>
               <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>
-              <Popconfirm title="提交后进入待发送？" onConfirm={() => void doAction(r, 'submit', '提交')}>
-                <Button size="small" type="link">提交</Button>
+              <Popconfirm title="提交后将发起录用审批，是否继续？" onConfirm={() => void doAction(r, 'submit', '提交审批')}>
+                <Button size="small" type="link">提交审批</Button>
               </Popconfirm>
             </>
           )}
-          {r.status === 'pending_send' && (
+          {r.status === 'pending_send' && r.approval_status === 'approved' && (
             <Popconfirm
               title="发送后候选人进入 Offer 中阶段？"
               onConfirm={() => void doAction(r, 'send', '发送')}
             >
               <Button size="small" type="link">发送</Button>
             </Popconfirm>
+          )}
+          {r.status === 'pending_send' && r.approval_status === 'pending' && (
+            <Tag color="processing">等待审批</Tag>
           )}
           {r.status === 'sent' && (
             <>

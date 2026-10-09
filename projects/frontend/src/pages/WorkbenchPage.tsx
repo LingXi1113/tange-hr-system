@@ -17,6 +17,7 @@ import type { DashboardSummary } from '@/services/dashboard';
 import { fetchInterviews } from '@/services/interview';
 import type { Interview } from '@/services/interview';
 import { useCurrentUser } from '@/services/user';
+import { subscribeBusinessDataChanged } from '@/utils/businessDataEvents';
 
 const WEEKDAY_TEXT = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const ACTIVE_INTERVIEW_STATUSES = new Set(['pending', 'invited', 'confirmed', 'rescheduled']);
@@ -52,39 +53,56 @@ export function WorkbenchPage() {
   const [searchCompleted, setSearchCompleted] = useState(false);
   const searchBoxRef = useRef<HTMLDivElement>(null);
   const searchRequestRef = useRef(0);
+  const summaryRequestRef = useRef(0);
+  const scheduleRequestRef = useRef(0);
   const [weekStart, setWeekStart] = useState(() => mondayOf(dayjs()));
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [visibleKinds, setVisibleKinds] = useState<Set<ScheduleKind>>(
     () => new Set(SCHEDULE_KINDS.map((item) => item.key)),
   );
 
-  useEffect(() => {
-    let mounted = true;
-    void fetchDashboardSummary()
-      .then((data) => { if (mounted) setSummary(data); })
-      .finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
+  const loadSummary = useCallback(async (showLoading = false) => {
+    const requestId = ++summaryRequestRef.current;
+    if (showLoading) setLoading(true);
+    try {
+      const data = await fetchDashboardSummary();
+      if (requestId === summaryRequestRef.current) setSummary(data);
+    } catch {
+      if (showLoading && requestId === summaryRequestRef.current) setSummary(null);
+    } finally {
+      if (requestId === summaryRequestRef.current) setLoading(false);
+    }
   }, []);
 
-  useEffect(() => {
-    let mounted = true;
+  const loadSchedule = useCallback(async () => {
+    const requestId = ++scheduleRequestRef.current;
     setScheduleLoading(true);
-    void fetchInterviews({
-      date_from: weekStart.format('YYYY-MM-DD'),
-      date_to: weekStart.add(6, 'day').format('YYYY-MM-DD'),
-      page: 1,
-      page_size: 100,
-    }).then((data) => {
-      if (mounted) {
+    try {
+      const data = await fetchInterviews({
+        date_from: weekStart.format('YYYY-MM-DD'),
+        date_to: weekStart.add(6, 'day').format('YYYY-MM-DD'),
+        page: 1,
+        page_size: 100,
+      });
+      if (requestId === scheduleRequestRef.current) {
         setInterviews(data.list.filter((item) => ACTIVE_INTERVIEW_STATUSES.has(item.status)));
       }
-    }).catch(() => {
-      if (mounted) setInterviews([]);
-    }).finally(() => {
-      if (mounted) setScheduleLoading(false);
-    });
-    return () => { mounted = false; };
+    } catch {
+      if (requestId === scheduleRequestRef.current) setInterviews([]);
+    } finally {
+      if (requestId === scheduleRequestRef.current) setScheduleLoading(false);
+    }
   }, [weekStart]);
+
+  useEffect(() => {
+    void loadSummary(true);
+    return () => { summaryRequestRef.current += 1; };
+  }, [loadSummary]);
+
+  useEffect(() => {
+    void loadSchedule();
+    return () => { scheduleRequestRef.current += 1; };
+  }, [loadSchedule]);
 
   const weekDates = useMemo(
     () => Array.from({ length: 7 }, (_, index) => weekStart.add(index, 'day')),
@@ -147,6 +165,37 @@ export function WorkbenchPage() {
     document.addEventListener('mousedown', closeOnOutsideClick);
     return () => document.removeEventListener('mousedown', closeOnOutsideClick);
   }, []);
+
+  useEffect(() => {
+    let refreshTimer: number | undefined;
+    const refreshWorkbench = () => {
+      void loadSummary();
+      void loadSchedule();
+      if (keyword.trim()) void search(keyword);
+    };
+    const queueRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(refreshWorkbench, 150);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') queueRefresh();
+    };
+
+    const unsubscribe = subscribeBusinessDataChanged(queueRefresh);
+    window.addEventListener('focus', queueRefresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshWorkbench();
+    }, 30_000);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', queueRefresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearInterval(pollTimer);
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+    };
+  }, [keyword, loadSchedule, loadSummary, search]);
 
   const toggleKind = (kind: ScheduleKind) => {
     setVisibleKinds((current) => {
