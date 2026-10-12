@@ -1,15 +1,256 @@
-import { Button, Card, Input, InputNumber, Select, Space, Switch, Table, Tabs, Tag } from 'antd';
+import {
+  Alert, Button, Card, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag,
+} from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 
 import { PageLoading } from '@/components/PageLoading';
 import { msg } from '@/utils/message';
 import { useCurrentUser } from '@/services/user';
 import {
-  DICT_TYPE_OPTIONS, createDict, fetchDicts, fetchOfferApprovers, fetchPlatformUsers,
-  fetchSystemParams, updateDict, updateOfferApprovers, updateSystemParams,
+  DICT_TYPE_OPTIONS, createDict, createScreeningMatchItem, deleteScreeningMatchItem,
+  fetchDicts, fetchOfferApprovers, fetchPlatformUsers, fetchScreeningMatchItems,
+  fetchSystemParams, updateDict, updateOfferApprovers, updateScreeningMatchItem, updateSystemParams,
 } from '@/services/system';
-import type { DictItem, OfferApproverConfig, PlatformUser } from '@/services/system';
+import type {
+  DictItem, OfferApproverConfig, PlatformUser, ScreeningMatchItem,
+  ScreeningMatchItemPayload, ScreeningMatchMeta,
+} from '@/services/system';
 import { STAGE_META } from '@/services/template';
+
+const EMPTY_MATCH_ITEM: ScreeningMatchItemPayload = {
+  profile: 'tech',
+  name: '',
+  weight: 10,
+  evaluator: 'custom_terms',
+  target_count: 1,
+  terms: [],
+  enabled: true,
+  sort: 999,
+};
+
+function ScreeningMatchTab({ canEdit }: { canEdit: boolean }) {
+  const [profile, setProfile] = useState<ScreeningMatchItem['profile']>('tech');
+  const [meta, setMeta] = useState<ScreeningMatchMeta | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<ScreeningMatchItemPayload>(EMPTY_MATCH_ITEM);
+  const [termsText, setTermsText] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setMeta(await fetchScreeningMatchItems(profile));
+    } finally {
+      setLoading(false);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  function startAdd() {
+    setEditingId(null);
+    setDraft({ ...EMPTY_MATCH_ITEM, profile });
+    setTermsText('');
+    setOpen(true);
+  }
+
+  function startEdit(item: ScreeningMatchItem) {
+    setEditingId(item.id);
+    setDraft({
+      profile: item.profile,
+      name: item.name,
+      weight: item.weight,
+      evaluator: item.evaluator,
+      target_count: item.target_count,
+      terms: item.terms,
+      enabled: item.enabled,
+      sort: item.sort,
+    });
+    setTermsText(item.terms.join('，'));
+    setOpen(true);
+  }
+
+  async function save() {
+    const normalizedTerms = termsText
+      .split(/[,，;；\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const nextDraft = { ...draft, terms: Array.from(new Set(normalizedTerms)) };
+    if (!draft.name.trim()) {
+      msg.error('请输入匹配项名称');
+      return;
+    }
+    if (draft.evaluator === 'custom_terms' && nextDraft.terms.length === 0) {
+      msg.error('自定义关键词匹配至少需要一个关键词');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editingId) {
+        await updateScreeningMatchItem(editingId, {
+          name: draft.name,
+          weight: draft.weight,
+          evaluator: draft.evaluator,
+          target_count: draft.target_count,
+          terms: nextDraft.terms,
+          enabled: draft.enabled,
+          sort: draft.sort,
+        });
+        msg.success('匹配项已更新，后续筛选立即使用新规则');
+      } else {
+        await createScreeningMatchItem(nextDraft);
+        msg.success('匹配项已新增，后续筛选立即使用新规则');
+      }
+      setOpen(false);
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const totalWeight = (meta?.items ?? [])
+    .filter((item) => item.enabled)
+    .reduce((sum, item) => sum + item.weight, 0);
+
+  return (
+    <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="这里配置的是智能筛选的评分维度"
+        description="按岗位类型分别维护。启用项的分值会自动折算为 100 分；修改后只影响新执行或重新执行的筛选，历史结果保留原评分。"
+      />
+      <Space wrap style={{ marginBottom: 12 }}>
+        <span>岗位类型</span>
+        <Select
+          value={profile}
+          showSearch
+          optionFilterProp="label"
+          style={{ width: 260 }}
+          onChange={setProfile}
+          options={['通用模板', '具体岗位'].map((group) => ({
+            label: group,
+            options: (meta?.profiles ?? [
+              { key: 'tech', name: '技术研发', base_profile: 'tech', group: '通用模板' },
+              { key: 'product_ops', name: '产品与电商运营', base_profile: 'product_ops', group: '通用模板' },
+              { key: 'sales', name: '销售与商务', base_profile: 'sales', group: '通用模板' },
+            ]).filter((item) => item.group === group).map((item) => ({
+              value: item.key,
+              label: item.name,
+            })),
+          }))}
+        />
+        <Tag color={Math.abs(totalWeight - 100) < 0.01 ? 'green' : 'gold'}>
+          当前启用权重：{totalWeight}
+        </Tag>
+        {canEdit && <Button type="primary" onClick={startAdd}>新增匹配项</Button>}
+      </Space>
+      {loading ? <PageLoading /> : (
+        <Table
+          rowKey="id"
+          size="small"
+          pagination={false}
+          dataSource={meta?.items ?? []}
+          columns={[
+            { title: '匹配项', dataIndex: 'name', width: 180 },
+            { title: '计算依据', dataIndex: 'evaluator_name', width: 180 },
+            { title: '权重', dataIndex: 'weight', width: 90 },
+            { title: '达标命中数', dataIndex: 'target_count', width: 110 },
+            {
+              title: '关键词', dataIndex: 'terms',
+              render: (terms: string[], item: ScreeningMatchItem) => (
+                item.evaluator === 'custom_terms'
+                  ? (terms.length ? terms.join('、') : '未配置')
+                  : <span style={{ color: 'rgba(23,26,29,0.55)' }}>使用系统/职位配置</span>
+              ),
+            },
+            {
+              title: '启用', dataIndex: 'enabled', width: 80,
+              render: (enabled: boolean, item: ScreeningMatchItem) => (
+                <Switch
+                  size="small"
+                  checked={enabled}
+                  disabled={!canEdit}
+                  onChange={(checked) => {
+                    void (async () => {
+                      await updateScreeningMatchItem(item.id, { enabled: checked });
+                      msg.success(checked ? '匹配项已启用' : '匹配项已停用');
+                      await load();
+                    })();
+                  }}
+                />
+              ),
+            },
+            {
+              title: '操作', width: 150,
+              render: (_: unknown, item: ScreeningMatchItem) => canEdit ? (
+                <Space>
+                  <Button type="link" size="small" onClick={() => startEdit(item)}>编辑</Button>
+                  <Popconfirm
+                    title="删除这个匹配项？"
+                    description="删除后，新执行的简历筛选将不再计算此项。"
+                    onConfirm={() => {
+                      void (async () => {
+                        await deleteScreeningMatchItem(item.id);
+                        msg.success('匹配项已删除');
+                        await load();
+                      })();
+                    }}
+                  >
+                    <Button type="link" danger size="small">删除</Button>
+                  </Popconfirm>
+                </Space>
+              ) : '-',
+            },
+          ]}
+        />
+      )}
+      <Modal
+        title={editingId ? '编辑智能匹配项' : '新增智能匹配项'}
+        open={open}
+        confirmLoading={saving}
+        onOk={() => void save()}
+        onCancel={() => setOpen(false)}
+        okText="保存"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '14px 12px', alignItems: 'center' }}>
+          <span>匹配项名称</span>
+          <Input value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} />
+          <span>计算依据</span>
+          <Select
+            value={draft.evaluator}
+            options={(meta?.evaluators ?? []).map((item) => ({ value: item.key, label: item.name }))}
+            onChange={(value) => setDraft((prev) => ({ ...prev, evaluator: value }))}
+          />
+          <span>权重</span>
+          <InputNumber
+            min={1} max={100} precision={1} value={draft.weight} style={{ width: '100%' }}
+            onChange={(value) => setDraft((prev) => ({ ...prev, weight: value ?? 1 }))}
+          />
+          <span>达标命中数</span>
+          <InputNumber
+            min={1} max={20} value={draft.target_count} style={{ width: '100%' }}
+            onChange={(value) => setDraft((prev) => ({ ...prev, target_count: value ?? 1 }))}
+          />
+          <span>自定义关键词</span>
+          <Input.TextArea
+            disabled={draft.evaluator !== 'custom_terms'}
+            placeholder={draft.evaluator === 'custom_terms' ? '用逗号分隔，例如：TikTok Shop、亚马逊' : '当前计算依据使用系统词库或职位要求'}
+            value={termsText}
+            autoSize={{ minRows: 2, maxRows: 4 }}
+            onChange={(event) => setTermsText(event.target.value)}
+          />
+        </div>
+      </Modal>
+    </div>
+  );
+}
 
 function OfferApproverTab({ canEdit }: { canEdit: boolean }) {
   const [config, setConfig] = useState<OfferApproverConfig | null>(null);
@@ -19,7 +260,7 @@ function OfferApproverTab({ canEdit }: { canEdit: boolean }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([fetchOfferApprovers(), fetchPlatformUsers()])
+    void Promise.all([fetchOfferApprovers(), fetchPlatformUsers()])
       .then(([cfg, us]) => {
         setConfig(cfg);
         setUsers(us);
@@ -100,7 +341,7 @@ function ParamsTab({ canEdit }: { canEdit: boolean }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetchSystemParams()
+    void fetchSystemParams()
       .then((data) => {
         setLockDays(data.lock_days_default ?? {});
         setChecklist(data.onboarding_checklist_default ?? []);
@@ -268,10 +509,12 @@ function DictTab({ canEdit }: { canEdit: boolean }) {
                 <Switch
                   size="small" checked={v} disabled={!canEdit}
                   checkedChildren="启用" unCheckedChildren="停用"
-                  onChange={async (c) => {
-                    await updateDict(record.id, { enabled: c });
-                    msg.success(c ? '已启用' : '已停用（不影响历史数据）');
-                    void load();
+                  onChange={(c) => {
+                    void (async () => {
+                      await updateDict(record.id, { enabled: c });
+                      msg.success(c ? '已启用' : '已停用（不影响历史数据）');
+                      await load();
+                    })();
                   }}
                 />
               ),
@@ -293,6 +536,7 @@ function DictTab({ canEdit }: { canEdit: boolean }) {
 export function SettingsPage() {
   const { user } = useCurrentUser();
   const canEdit = user?.role === 'super_admin';
+  const canEditScreening = user?.role === 'super_admin' || user?.role === 'hr';
 
   return (
     <div>
@@ -300,14 +544,20 @@ export function SettingsPage() {
         <h2 className="page-title">系统设置</h2>
       </div>
       <div className="hrats-block">
-        {!canEdit && (
+        {!canEdit && !canEditScreening && (
           <Tag color="gold" style={{ marginBottom: 12 }}>
-            当前为只读视图，系统设置仅由超级管理员维护。
+            当前为只读视图，智能匹配项由 HR 维护，其余设置由超级管理员维护。
+          </Tag>
+        )}
+        {!canEdit && canEditScreening && (
+          <Tag color="blue" style={{ marginBottom: 12 }}>
+            HR 可维护智能匹配项；审批人、系统参数和字典仍为只读。
           </Tag>
         )}
         <Tabs
-          defaultActiveKey="approvers"
+          defaultActiveKey="screening"
           items={[
+            { key: 'screening', label: '智能匹配项', children: <ScreeningMatchTab canEdit={canEditScreening} /> },
             { key: 'approvers', label: 'Offer 审批人', children: <OfferApproverTab canEdit={canEdit} /> },
             { key: 'params', label: '系统参数', children: <ParamsTab canEdit={canEdit} /> },
             { key: 'dicts', label: '字典管理', children: <DictTab canEdit={canEdit} /> },

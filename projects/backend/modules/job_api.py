@@ -19,6 +19,7 @@ from common.mongo import MongoUnavailable
 from common.response import BizCode, ok, paged
 from common.resume_service import auto_parse_attachment
 from common.roles import HR
+from common.screening import normalize_screening_rules
 from common.stages import INTERVIEW_ROUNDS
 from common.status import (
     JOB_CLOSED, JOB_DRAFT, JOB_FLOW, JOB_PAUSED, JOB_PENDING, JOB_RECRUITING,
@@ -104,6 +105,7 @@ def _job_view(job: dict) -> dict:
         "headcount": job.get("headcount", 1), "salary_range": job.get("salary_range", ""),
         "description": job.get("description", ""), "qualification": job.get("qualification", ""),
         "skill_tags": job.get("skill_tags", ""), "template_id": job.get("template_id"),
+        "screening_rules": normalize_screening_rules(job.get("screening_rules"), job),
         "template_name": template.get("name", "默认招聘流程"),
         "channels": job.get("channels", ""), "status": job.get("status", JOB_DRAFT),
         "interview_rounds": list(job.get("interview_rounds") or ["一面"]),
@@ -168,6 +170,12 @@ def _fill(job: dict, payload: dict) -> dict:
             "required": bool(cfg.get("required")),
             "after_key": cfg.get("after_key", ""),
         } for cfg in configs if cfg.get("stage_key")]
+    if "screening_rules" in payload:
+        rules = payload.get("screening_rules")
+        if rules is not None and not isinstance(rules, dict):
+            raise BizError(BizCode.PARAM_INVALID, "智能筛选规则格式错误")
+        preview_job = {**job, **fields}
+        fields["screening_rules"] = normalize_screening_rules(rules, preview_job)
     job.update(fields)
     return fields
 
@@ -250,6 +258,7 @@ def create_job():
         "job_type": "full_time", "level": "", "report_to": "", "headcount": 1,
         "salary_range": "", "description": "", "qualification": "",
         "skill_tags": "", "template_id": None, "channels": "", "requirement_id": None,
+        "screening_rules": {},
         "stage_configs": [],
     }
     if col("jobs").find_one({"code": job["code"]}):
@@ -282,7 +291,8 @@ def copy_job(job_id: int):
     doc = {k: src.get(k) for k in
            ["name", "entity_id", "entity_name", "dept_id", "dept_name", "location", "job_type", "level", "report_to",
             "headcount", "salary_range", "description", "qualification", "skill_tags",
-           "template_id", "channels", "requirement_id", "stage_configs", "interview_rounds"]}
+           "template_id", "channels", "requirement_id", "stage_configs", "interview_rounds",
+           "screening_rules"]}
     doc.update({
         "code": f"JOB-{uuid.uuid4().hex[:8].upper()}",
         "name": f"{src.get('name', '')}（副本）",

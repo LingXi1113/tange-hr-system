@@ -1,6 +1,6 @@
 import { DeleteOutlined, DownOutlined, EditOutlined, LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-  Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Radio, Row,
+  Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Progress, Radio, Row,
   Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
@@ -26,6 +26,10 @@ import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
 import { abandonApplication, moveApplication, restoreApplication } from '@/services/pipeline';
 import { removeFromPool } from '@/services/talentPool';
+import {
+  fetchScreeningProfiles, fetchScreeningResult, previewCandidateJobMatch, reviewScreening, runScreening,
+} from '@/services/screening';
+import type { ScreeningProfile, ScreeningResult, ScreeningReviewDecision } from '@/services/screening';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
@@ -79,6 +83,10 @@ const OPERATION_ACTION_TEXT: Record<string, string> = {
   add_auto: '自动加入人才库',
   activate: '激活人才库记录',
   remove: '移出人才库',
+};
+
+const SCREENING_REVIEW_TEXT: Record<string, string> = {
+  pass: '通过', pending: '待定', reject: '不通过',
 };
 
 function operationActionText(action: string, kind: string) {
@@ -289,10 +297,10 @@ export function CandidateDetailPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [businessUsers, setBusinessUsers] = useState<PlatformUser[]>([]);
   const [businessScreenerId, setBusinessScreenerId] = useState('');
-  const [businessJobId, setBusinessJobId] = useState<number | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [businessAssignOpen, setBusinessAssignOpen] = useState(false);
   const [businessAssignSaving, setBusinessAssignSaving] = useState(false);
+  const [businessJobId, setBusinessJobId] = useState<number | null>(null);
   const [offerJobOpen, setOfferJobOpen] = useState(false);
   const [offerJobId, setOfferJobId] = useState<number | null>(null);
   const [offerJobSaving, setOfferJobSaving] = useState(false);
@@ -301,6 +309,12 @@ export function CandidateDetailPage() {
   const [deliveryAnalysisLoading, setDeliveryAnalysisLoading] = useState(false);
   const [deliveryAnalysis, setDeliveryAnalysis] = useState<DeliveryAnalysis | null>(null);
   const [screeningCategory, setScreeningCategory] = useState<'all' | 'recommendation' | 'interview' | 'offer'>('all');
+  const [screeningResult, setScreeningResult] = useState<ScreeningResult | null>(null);
+  const [screeningBusy, setScreeningBusy] = useState(false);
+  const [matchJobOpen, setMatchJobOpen] = useState(false);
+  const [matchTarget, setMatchTarget] = useState('');
+  const [matchProfiles, setMatchProfiles] = useState<ScreeningProfile[]>([]);
+  const [matchJobBusy, setMatchJobBusy] = useState(false);
   const [abandonOpen, setAbandonOpen] = useState(false);
   const [abandonReason, setAbandonReason] = useState('面试未通过');
   const [abandonToPool, setAbandonToPool] = useState(false);
@@ -333,6 +347,17 @@ export function CandidateDetailPage() {
   }, [selectedAppId]);
 
   useEffect(() => {
+    let active = true;
+    setScreeningResult(null);
+    if (selectedAppId) {
+      void fetchScreeningResult(selectedAppId).then((result) => {
+        if (active) setScreeningResult(result);
+      });
+    }
+    return () => { active = false; };
+  }, [selectedAppId]);
+
+  useEffect(() => {
     // 面试不通过后应聘记录会进入人才库/终止阶段，但历史面试仍需保留展示。
     if (selectedAppId) {
       let active = true;
@@ -358,6 +383,9 @@ export function CandidateDetailPage() {
         users.filter((item) => item.role === 'business_screener'),
       ));
       fetchJobs({ page_size: 100 }).then((data) => setJobs(data.list));
+      fetchScreeningProfiles().then((profiles) => setMatchProfiles(
+        profiles.filter((profile) => profile.group === '具体岗位'),
+      ));
     }
   }, [user?.role]);
 
@@ -552,6 +580,51 @@ export function CandidateDetailPage() {
     { key: 'onboarded', label: '进入入职', disabled: true },
   ];
 
+  async function handleRunScreening() {
+    if (!selectedApplication || screeningBusy) return;
+    setScreeningBusy(true);
+    try {
+      const result = await runScreening(selectedApplication.id);
+      setScreeningResult(result);
+      msg.success('智能匹配已完成');
+      await load();
+    } finally {
+      setScreeningBusy(false);
+    }
+  }
+
+  async function handlePreviewJobMatch() {
+    if (!matchTarget || matchJobBusy) return;
+    setMatchJobBusy(true);
+    try {
+      const [targetType, targetValue] = matchTarget.split(':', 2);
+      const result = await previewCandidateJobMatch(
+        candidate.id,
+        targetType === 'job'
+          ? { job_id: Number(targetValue) }
+          : { match_template: targetValue },
+      );
+      setScreeningResult(result);
+      setMatchJobOpen(false);
+      msg.success(`已完成与“${result.job_name}”的职位匹配`);
+    } finally {
+      setMatchJobBusy(false);
+    }
+  }
+
+  async function handleScreeningReview(decision: ScreeningReviewDecision) {
+    if (!selectedApplication || screeningBusy) return;
+    setScreeningBusy(true);
+    try {
+      const result = await reviewScreening(selectedApplication.id, decision);
+      setScreeningResult(result);
+      msg.success('人工筛选结论已保存');
+      await load();
+    } finally {
+      setScreeningBusy(false);
+    }
+  }
+
   async function handleRestore() {
     if (!selectedApplication || !canRestore) return;
     await restoreApplication(selectedApplication.id, selectedApplication.version);
@@ -625,7 +698,7 @@ export function CandidateDetailPage() {
       return;
     }
     if (!selectedApplication && !businessJobId) {
-      msg.error('请先选择应聘职位');
+      msg.error('请选择应聘职位');
       return;
     }
     if (selectedApplication && !canArrangeFlow) {
@@ -636,12 +709,13 @@ export function CandidateDetailPage() {
     setBusinessAssignSaving(true);
     try {
       const application = selectedApplication
-        ?? await assignJob(Number(id), businessJobId!, 'business_recommendation');
+        ?? await assignJob(candidate.id, businessJobId as number, 'manual');
       await assignBusinessScreener(application.id, screenerId, application.version);
-      msg.success('已推送给业务复筛人员');
+      msg.success(selectedApplication ? '已推送给业务复筛人员' : '已分配职位并推送给业务复筛人员');
       setBusinessAssignOpen(false);
       setSelectedAppId(application.id);
       await load();
+      setScreeningResult(await fetchScreeningResult(application.id));
       setTransitions(await fetchTransitions(application.id));
     } finally {
       setBusinessAssignSaving(false);
@@ -649,8 +723,12 @@ export function CandidateDetailPage() {
   }
 
   function openBusinessAssign() {
+    if (selectedApplication && !canArrangeFlow) {
+      msg.warning('当前阶段不能推给业务复筛');
+      return;
+    }
     setBusinessScreenerId(selectedApplication?.business_screener_id ?? '');
-    setBusinessJobId(selectedApplication?.job_id ?? null);
+    setBusinessJobId(selectedApplication?.job_id ?? screeningResult?.job_id ?? jobs[0]?.id ?? null);
     setBusinessAssignOpen(true);
   }
 
@@ -659,9 +737,14 @@ export function CandidateDetailPage() {
       navigate(`/interviews?candidate_id=${id}&open=1`);
       return;
     }
+    if (!canDirectInterview) {
+      msg.warning('当前阶段不能进入面试');
+      return;
+    }
     await directInterview(selectedApplication.id, selectedApplication.version);
     msg.success('已直接进入面试阶段，请安排面试');
     await load();
+    setScreeningResult(await fetchScreeningResult(selectedApplication.id));
     setTransitions(await fetchTransitions(selectedApplication.id));
   }
 
@@ -965,6 +1048,115 @@ export function CandidateDetailPage() {
         </Col>
         <Col xs={24} lg={9}>
           <Card
+            title="智能简历匹配" size="small" style={{ marginBottom: 16 }}
+            extra={canManage ? (
+              <Space>
+                {selectedApplication && (
+                  <Button size="small" loading={screeningBusy} onClick={() => void handleRunScreening()}>
+                    {screeningResult?.application_id === selectedApplication.id ? '重新分析' : '分析当前职位'}
+                  </Button>
+                )}
+                <Button
+                  size="small" type="primary"
+                  onClick={() => {
+                    setMatchTarget(
+                      selectedApplication?.job_id
+                        ? `job:${selectedApplication.job_id}`
+                        : matchProfiles[0]?.key
+                          ? `template:${matchProfiles[0].key}`
+                          : jobs[0]?.id
+                            ? `job:${jobs[0].id}`
+                            : '',
+                    );
+                    setMatchJobOpen(true);
+                  }}
+                >
+                  投递职位匹配
+                </Button>
+              </Space>
+            ) : null}
+          >
+            {!screeningResult ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={selectedApplication ? '尚未生成该职位的匹配结果' : '请选择“投递职位匹配”开始分析'}
+              />
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 18, alignItems: 'center', marginBottom: 16 }}>
+                  <Progress
+                    type="circle" size={84} percent={screeningResult.score}
+                    strokeColor={screeningResult.score >= 75 ? '#52c41a' : screeningResult.score >= 55 ? '#d99b1d' : '#ff7875'}
+                  />
+                  <div>
+                    <Space wrap>
+                      <Tag color="cyan">匹配职位：{screeningResult.job_name || selectedApplication?.job_name || '-'}</Tag>
+                      <Tag color="blue">{screeningResult.match_template_name || screeningResult.profile_name}</Tag>
+                      <Tag color={screeningResult.decision === 'pass' ? 'success' : screeningResult.decision === 'reject' ? 'error' : 'gold'}>
+                        {screeningResult.decision_label}
+                      </Tag>
+                    </Space>
+                    <div style={{ marginTop: 8, color: '#667085' }}>{screeningResult.summary}</div>
+                    {screeningResult.review_status === 'reviewed' && (
+                      <div style={{ marginTop: 8 }}>
+                        <Tag color="purple">
+                          HR结论：{SCREENING_REVIEW_TEXT[screeningResult.review_decision] ?? screeningResult.review_decision}
+                        </Tag>
+                        <Typography.Text type="secondary">{screeningResult.reviewer_name}</Typography.Text>
+                        {screeningResult.route_label && <Tag color="blue">去向：{screeningResult.route_label}</Tag>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: 9 }}>
+                  {screeningResult.dimensions.map((dimension) => (
+                    <div key={dimension.name}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                        <span>{dimension.name}</span>
+                        <Typography.Text type="secondary">
+                          {dimension.status === 'not_configured' ? '未配置' : `${dimension.score}/${dimension.max_score}`}
+                        </Typography.Text>
+                      </div>
+                      <Progress
+                        showInfo={false} size="small"
+                        percent={dimension.status === 'not_configured' ? 0 : Math.round(dimension.score / dimension.max_score * 100)}
+                        strokeColor={dimension.status === 'matched' ? '#52c41a' : '#d99b1d'}
+                      />
+                      {dimension.evidence[0] && dimension.status !== 'not_configured' && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {dimension.evidence[0]}
+                        </Typography.Text>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {screeningResult.matched_items.length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    <Typography.Text strong>符合项：</Typography.Text>
+                    <Space wrap style={{ marginTop: 6 }}>
+                      {screeningResult.matched_items.map((item) => <Tag color="success" key={item}>{item}</Tag>)}
+                    </Space>
+                  </div>
+                )}
+                {screeningResult.missing_items.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <Typography.Text strong>待确认或缺失：</Typography.Text>
+                    <ul style={{ margin: '6px 0 0', paddingLeft: 20, color: '#8c6a18' }}>
+                      {screeningResult.missing_items.map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {canManage && selectedApplication && screeningResult.application_id === selectedApplication.id && (
+                  <Space wrap style={{ marginTop: 16 }}>
+                    <Button type="primary" loading={screeningBusy} onClick={() => void handleScreeningReview('pass')}>HR确认通过</Button>
+                    <Button loading={screeningBusy} onClick={() => void handleScreeningReview('pending')}>设为待定</Button>
+                    <Button danger loading={screeningBusy} onClick={() => void handleScreeningReview('reject')}>不通过</Button>
+                  </Space>
+                )}
+              </>
+            )}
+          </Card>
+          <Card
             title="阶段流转记录" size="small" style={{ marginBottom: 16 }}
           >
             {canShowFlowButton && (
@@ -1020,10 +1212,10 @@ export function CandidateDetailPage() {
                     <Button
                       type="primary"
                       ghost
-                      disabled={!canManage}
+                      disabled={!canManage || Boolean(selectedApplication && !canArrangeFlow)}
                       onClick={openBusinessAssign}
                     >
-                      推荐
+                      推给业务复筛
                     </Button>
                   ) : null}
                   <Button danger ghost disabled={!canAbandon} onClick={() => setAbandonOpen(true)}>
@@ -1403,28 +1595,74 @@ export function CandidateDetailPage() {
         />
       </Modal>
       <Modal
+        title="投递职位匹配"
+        open={matchJobOpen}
+        onCancel={() => setMatchJobOpen(false)}
+        onOk={() => void handlePreviewJobMatch()}
+        okText="开始匹配"
+        cancelText="取消"
+        confirmLoading={matchJobBusy}
+        okButtonProps={{ disabled: !matchTarget }}
+      >
+        <Typography.Paragraph type="secondary">
+          选择任意职位与当前候选人简历进行智能匹配。该操作只生成匹配结果，不会创建应聘记录或改变现有招聘阶段。
+        </Typography.Paragraph>
+        <Select
+          showSearch
+          optionFilterProp="label"
+          style={{ width: '100%' }}
+          placeholder="请选择需要匹配的职位"
+          value={matchTarget || undefined}
+          onChange={(value) => setMatchTarget(value ?? '')}
+          options={[
+            {
+              label: '全部岗位类型（系统设置）',
+              options: matchProfiles.map((profile) => ({
+                value: `template:${profile.key}`,
+                label: profile.name,
+              })),
+            },
+            {
+              label: '实际招聘职位',
+              options: jobs.map((job) => ({
+                value: `job:${job.id}`,
+                label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+              })),
+            },
+          ]}
+        />
+      </Modal>
+      <Modal
         title="选择业务复筛人员"
         open={businessAssignOpen}
         onCancel={() => setBusinessAssignOpen(false)}
         onOk={() => void handleAssignBusiness()}
         okButtonProps={{
           disabled: !(businessScreenerId || selectedApplication?.business_screener_id)
-            || (!selectedApplication && !businessJobId),
+            || (!selectedApplication && !businessJobId)
+            || Boolean(selectedApplication && !canArrangeFlow),
           loading: businessAssignSaving,
         }}
         okText="确认推送"
         cancelText="取消"
       >
         <Typography.Paragraph type="secondary">
-          推送后候选人进入“业务复筛”阶段，并由指定业务人员负责后续面试评价。
+          {selectedApplication
+            ? '推送后候选人进入“业务复筛”阶段，并由指定业务人员负责后续处理。'
+            : '请选择职位和业务复筛人员。系统会先为候选人创建该职位的应聘记录，再进入“业务复筛”阶段。'}
         </Typography.Paragraph>
         {!selectedApplication && (
           <Select
+            showSearch
+            optionFilterProp="label"
             style={{ width: '100%', marginBottom: 12 }}
             placeholder="请选择应聘职位"
             value={businessJobId ?? undefined}
             onChange={(value) => setBusinessJobId(value ?? null)}
-            options={jobs.map((job) => ({ value: job.id, label: job.name }))}
+            options={jobs.map((job) => ({
+              value: job.id,
+              label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+            }))}
           />
         )}
         <Select

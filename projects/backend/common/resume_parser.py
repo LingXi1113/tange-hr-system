@@ -667,8 +667,8 @@ def _sanitize_name(value: str) -> str:
     return english.group(0).strip() if english else ""
 
 
-def parse_resume_file(file_path: str, original_filename: str = ""):
-    """Return (fields, parse_status): system=parsed, failed=manual review."""
+def parse_resume_file_with_text(file_path: str, original_filename: str = ""):
+    """Return parsed fields, status and source text for downstream matching."""
     ext = os.path.splitext(file_path)[1].lower()
     empty = {
         "name": "", "phone": "", "email": "", "city": "", "age": None,
@@ -676,14 +676,20 @@ def parse_resume_file(file_path: str, original_filename: str = ""):
     }
     empty.update({"gender": "", "work_experience": []})
     if ext in IMAGE_EXTS:
-        return empty, "failed"
+        return empty, "failed", ""
     text = extract_text(file_path)
     if not text or not text.strip():
-        return empty, "failed"
+        return empty, "failed", ""
     fields = parse_resume_fields(text, original_filename)
     if not any([
         fields["name"], fields["gender"], fields["phone"], fields["email"],
         fields["education"], fields["work_experience"],
     ]):
-        return fields, "failed"
-    return fields, "system"
+        return fields, "failed", text[:100000]
+    return fields, "system", text[:100000]
+
+
+def parse_resume_file(file_path: str, original_filename: str = ""):
+    """Return (fields, parse_status): system=parsed, failed=manual review."""
+    fields, status, _ = parse_resume_file_with_text(file_path, original_filename)
+    return fields, status

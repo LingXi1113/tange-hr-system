@@ -68,6 +68,18 @@ CORE_INDEXES = (
         [("candidate_id", 1), ("status", 1), ("start_at", 1), ("end_at", 1)],
         {},
     ),
+    (
+        "screening_results",
+        "ix_screening_application_time",
+        [("application_id", 1), ("created_at", -1)],
+        {},
+    ),
+    (
+        "screening_match_items",
+        "ix_screening_match_profile_sort",
+        [("profile", 1), ("sort", 1)],
+        {},
+    ),
 )
 
 

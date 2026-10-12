@@ -8,7 +8,18 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import SUPER_ADMIN
+from common.roles import HR, SUPER_ADMIN
+from common.screening import (
+    EVALUATOR_NAMES,
+    MATCH_SCOPE_NAMES,
+    PROFILE_NAMES,
+    match_scope_base_profile,
+)
+from common.screening_config import (
+    list_match_items,
+    match_item_view,
+    next_custom_match_item_id,
+)
 from common.stages import (
     LOCK_DAYS_FALLBACK,
     ONBOARDING_CHECKLIST_FALLBACK,
@@ -163,6 +174,137 @@ def update_dict(item_id: int):
     item.update(fields)
     write_log("dict", "update", g.current_user.user_id, g.current_user.name, biz_id=str(item_id))
     return ok(_dict_to_view(item))
+
+
+# ---------------- 智能简历匹配项 ----------------
+
+def _match_item_fields(payload: dict, *, partial: bool = False) -> dict:
+    fields = {}
+    if not partial or "name" in payload:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise BizError(BizCode.PARAM_INVALID, "匹配项名称不能为空")
+        fields["name"] = name
+    if not partial or "evaluator" in payload:
+        evaluator = str(payload.get("evaluator") or "")
+        if evaluator not in EVALUATOR_NAMES:
+            raise BizError(BizCode.PARAM_INVALID, "请选择有效的计算依据")
+        fields["evaluator"] = evaluator
+    if not partial or "weight" in payload:
+        try:
+            weight = float(payload.get("weight"))
+        except (TypeError, ValueError):
+            raise BizError(BizCode.PARAM_INVALID, "权重必须是数字")
+        if weight <= 0 or weight > 100:
+            raise BizError(BizCode.PARAM_INVALID, "权重必须大于 0 且不超过 100")
+        fields["weight"] = round(weight, 1)
+    if not partial or "target_count" in payload:
+        try:
+            target_count = int(payload.get("target_count") or 1)
+        except (TypeError, ValueError):
+            raise BizError(BizCode.PARAM_INVALID, "达标命中数必须是整数")
+        if target_count < 1 or target_count > 20:
+            raise BizError(BizCode.PARAM_INVALID, "达标命中数必须在 1 至 20 之间")
+        fields["target_count"] = target_count
+    if "terms" in payload or not partial:
+        terms = payload.get("terms") or []
+        if isinstance(terms, str):
+            terms = [item.strip() for item in terms.replace("，", ",").split(",") if item.strip()]
+        if not isinstance(terms, list):
+            raise BizError(BizCode.PARAM_INVALID, "自定义关键词格式不正确")
+        fields["terms"] = list(dict.fromkeys(str(item).strip() for item in terms if str(item).strip()))
+    if "enabled" in payload:
+        fields["enabled"] = bool(payload["enabled"])
+    if "sort" in payload:
+        fields["sort"] = int(payload["sort"])
+    evaluator = fields.get("evaluator") or payload.get("evaluator")
+    if evaluator == "custom_terms" and not fields.get("terms") and not partial:
+        raise BizError(BizCode.PARAM_INVALID, "自定义关键词匹配至少需要一个关键词")
+    return fields
+
+
+@bp.get("/screening-match-items")
+@login_required
+def get_screening_match_items():
+    profile = request.args.get("profile", "")
+    if profile and profile not in MATCH_SCOPE_NAMES:
+        raise BizError(BizCode.PARAM_INVALID, "未知的岗位模板")
+    return ok({
+        "items": [match_item_view(item) for item in list_match_items(profile)],
+        "profiles": [
+            {
+                "key": key,
+                "name": name,
+                "base_profile": match_scope_base_profile(key),
+                "group": "通用模板" if key in PROFILE_NAMES else "具体岗位",
+            }
+            for key, name in MATCH_SCOPE_NAMES.items()
+        ],
+        "evaluators": [{"key": key, "name": name} for key, name in EVALUATOR_NAMES.items()],
+    })
+
+
+@bp.post("/screening-match-items")
+@role_required(HR, SUPER_ADMIN)
+def create_screening_match_item():
+    payload = request.get_json(silent=True) or {}
+    profile = str(payload.get("profile") or "")
+    if profile not in MATCH_SCOPE_NAMES:
+        raise BizError(BizCode.PARAM_INVALID, "请选择岗位模板")
+    list_match_items(profile)  # 首次维护前初始化三类默认模板
+    fields = _match_item_fields(payload)
+    if col("screening_match_items").find_one({"profile": profile, "name": fields["name"]}):
+        raise BizError(BizCode.DUPLICATED, "该岗位模板下已存在同名匹配项")
+    item_id, key = next_custom_match_item_id()
+    doc = insert_doc("screening_match_items", {
+        "_id": item_id,
+        "key": key,
+        "profile": profile,
+        "base_profile": match_scope_base_profile(profile),
+        "enabled": True,
+        "sort": int(payload.get("sort") or 999),
+        "is_default": False,
+        **fields,
+    })
+    write_log("screening_match_item", "create", g.current_user.user_id, g.current_user.name,
+              biz_id=str(item_id), detail=f"{MATCH_SCOPE_NAMES[profile]}/{fields['name']}")
+    return ok(match_item_view(doc))
+
+
+@bp.put("/screening-match-items/<int:item_id>")
+@role_required(HR, SUPER_ADMIN)
+def update_screening_match_item(item_id: int):
+    item = get_by_id("screening_match_items", item_id)
+    if item is None:
+        raise BizError(BizCode.NOT_FOUND, "匹配项不存在")
+    payload = request.get_json(silent=True) or {}
+    fields = _match_item_fields(payload, partial=True)
+    next_name = fields.get("name")
+    if next_name and col("screening_match_items").find_one({
+        "profile": item.get("profile"), "name": next_name, "_id": {"$ne": item_id},
+    }):
+        raise BizError(BizCode.DUPLICATED, "该岗位模板下已存在同名匹配项")
+    next_evaluator = fields.get("evaluator", item.get("evaluator"))
+    next_terms = fields.get("terms", item.get("terms") or [])
+    if next_evaluator == "custom_terms" and not next_terms:
+        raise BizError(BizCode.PARAM_INVALID, "自定义关键词匹配至少需要一个关键词")
+    update_doc("screening_match_items", item_id, fields)
+    item.update(fields)
+    write_log("screening_match_item", "update", g.current_user.user_id, g.current_user.name,
+              biz_id=str(item_id), detail=item.get("name", ""))
+    return ok(match_item_view(item))
+
+
+@bp.delete("/screening-match-items/<int:item_id>")
+@role_required(HR, SUPER_ADMIN)
+def delete_screening_match_item(item_id: int):
+    item = get_by_id("screening_match_items", item_id)
+    if item is None:
+        raise BizError(BizCode.NOT_FOUND, "匹配项不存在")
+    delete_doc("screening_match_items", item_id)
+    write_log("screening_match_item", "delete", g.current_user.user_id, g.current_user.name,
+              biz_id=str(item_id), detail=item.get("name", ""))
+    return ok(None)
 
 
 # ---------------- Offer 审批人配置 ----------------

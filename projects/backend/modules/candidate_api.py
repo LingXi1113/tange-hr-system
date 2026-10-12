@@ -42,6 +42,7 @@ from common.resume_parser import (
     highest_education_from_records,
     major_from_records,
     parse_resume_file,
+    parse_resume_file_with_text,
 )
 from common.response import BizCode, ok, paged
 from common.roles import HR, SUPER_ADMIN
@@ -1036,7 +1037,7 @@ def resume_parse():
         raise BizError(BizCode.NOT_FOUND, "附件不存在")
     local_path, is_tmp = resolve_local(current_app, att.get("file_path", ""))
     try:
-        fields, status = parse_resume_file(local_path, att.get("file_name", ""))
+        fields, status, parsed_text = parse_resume_file_with_text(local_path, att.get("file_name", ""))
     finally:
         if is_tmp:
             from common.file_service import get_storage
@@ -1045,6 +1046,7 @@ def resume_parse():
     update_doc("attachments", att["_id"], {
         "parse_status": status,
         "parsed_fields": fields,
+        "parsed_text": parsed_text,
     })
     if status == "failed":
         return ok({

@@ -56,6 +56,15 @@ export function JobDetailPage() {
               <Descriptions.Item label="面试轮次">{job.interview_rounds?.join(' → ') || '一面'}</Descriptions.Item>
               <Descriptions.Item label="职位描述" span={2}>{job.description || '-'}</Descriptions.Item>
               <Descriptions.Item label="任职资格" span={2}>{job.qualification || '-'}</Descriptions.Item>
+              <Descriptions.Item label="筛选模板">{job.screening_rules.profile_name}</Descriptions.Item>
+              <Descriptions.Item label="匹配阈值">
+                通过 {job.screening_rules.pass_score} 分／待定 {job.screening_rules.pending_score} 分
+              </Descriptions.Item>
+              <Descriptions.Item label="核心技能" span={2}>
+                {job.screening_rules.required_skills.length
+                  ? job.screening_rules.required_skills.map((item) => <Tag key={item}>{item}</Tag>)
+                  : '未配置'}
+              </Descriptions.Item>
             </Descriptions>
           </Card>
           <Card title="应聘记录" size="small">
@@ -70,6 +79,16 @@ export function JobDetailPage() {
                 { title: '来源', dataIndex: 'source', width: 100 },
                 { title: '当前阶段', dataIndex: 'current_stage', width: 120 },
                 { title: '状态', dataIndex: 'status', width: 100 },
+                {
+                  title: '智能匹配', dataIndex: 'screening_score', width: 110,
+                  render: (value: number | null, record: Application) => (
+                    value == null ? '-' : (
+                      <Tag color={(record.screening_review_decision || record.screening_decision) === 'pass' ? 'success' : 'gold'}>
+                        {value}%
+                      </Tag>
+                    )
+                  ),
+                },
                 { title: '进入时间', dataIndex: 'stage_entered_at', width: 160 },
               ]}
             />

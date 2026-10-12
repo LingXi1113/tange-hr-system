@@ -18,6 +18,11 @@ export interface ApplicationInfo {
   process_state_role?: string;
   last_interview_id?: number | null;
   last_interview_conclusion?: string;
+  screening_result_id?: number | null;
+  screening_score?: number | null;
+  screening_decision?: string;
+  screening_review_status?: string;
+  screening_review_decision?: string;
 }
 
 export interface LockInfo {

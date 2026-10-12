@@ -69,6 +69,7 @@ def create_app(config_object=None) -> Flask:
     from modules.platform_api import bp as platform_bp
     from modules.requirement_api import bp as requirement_bp
     from modules.report_api import bp as report_bp
+    from modules.screening_api import bp as screening_bp
     from modules.system_api import bp as system_bp
     from modules.talent_pool_api import bp as talent_pool_bp
     from modules.template_api import bp as template_bp
@@ -77,6 +78,7 @@ def create_app(config_object=None) -> Flask:
     app.register_blueprint(health_bp)
     app.register_blueprint(requirement_bp)
     app.register_blueprint(report_bp)
+    app.register_blueprint(screening_bp)
     app.register_blueprint(job_bp)
     app.register_blueprint(job_public_bp)
     app.register_blueprint(interview_bp)

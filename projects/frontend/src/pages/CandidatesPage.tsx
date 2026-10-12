@@ -15,6 +15,7 @@ import type { CandidateClassificationSummary, CandidateRow } from '@/services/ca
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
 import { addToPool } from '@/services/talentPool';
+import { runScreening } from '@/services/screening';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
 import { downloadProtectedFile } from '@/services/http';
@@ -276,8 +277,18 @@ export function CandidatesPage() {
       return;
     }
     if (result.candidate?.id) {
-      if (selectedJobId) await assignJob(result.candidate.id, Number(selectedJobId));
+      const application = selectedJobId
+        ? await assignJob(result.candidate.id, Number(selectedJobId))
+        : null;
       await attachResume(result.candidate.id);
+      if (application && resumeFile) {
+        try {
+          await runScreening(application.id);
+          msg.success('候选人已创建，并生成智能匹配结果');
+        } catch {
+          msg.warning('候选人已创建，但智能匹配暂未完成，可在详情页重新分析');
+        }
+      }
     }
     msg.success('候选人已创建');
     closeCreateDrawer();
@@ -538,6 +549,11 @@ export function CandidatesPage() {
                       {record.latest_application?.process_state_label && (
                         <Tag color={record.latest_application.process_state_key === 'interview_evaluated' ? 'success' : 'gold'}>
                           {record.latest_application.process_state_label}
+                        </Tag>
+                      )}
+                      {record.latest_application?.screening_score != null && (
+                        <Tag color={(record.latest_application.screening_review_decision || record.latest_application.screening_decision) === 'pass' ? 'success' : 'gold'}>
+                          智能匹配 {record.latest_application.screening_score}%
                         </Tag>
                       )}
                       <span>{record.latest_application?.job_name || '待分配职位'}</span>

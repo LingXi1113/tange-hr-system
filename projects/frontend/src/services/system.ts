@@ -50,6 +50,63 @@ export async function updateDict(id: number, payload: Partial<Pick<DictItem, 'na
   return unwrap<DictItem>(resp);
 }
 
+/** 智能简历匹配项（HR 与超级管理员可维护） */
+export interface ScreeningMatchItem {
+  id: number;
+  profile: string;
+  profile_name: string;
+  base_profile: 'tech' | 'product_ops' | 'sales';
+  key: string;
+  name: string;
+  weight: number;
+  evaluator: string;
+  evaluator_name: string;
+  target_count: number;
+  terms: string[];
+  enabled: boolean;
+  sort: number;
+  is_default: boolean;
+}
+
+export interface ScreeningMatchMeta {
+  items: ScreeningMatchItem[];
+  profiles: {
+    key: ScreeningMatchItem['profile'];
+    name: string;
+    base_profile: ScreeningMatchItem['base_profile'];
+    group: '通用模板' | '具体岗位';
+  }[];
+  evaluators: { key: string; name: string }[];
+}
+
+export type ScreeningMatchItemPayload = Pick<
+  ScreeningMatchItem,
+  'profile' | 'name' | 'weight' | 'evaluator' | 'target_count' | 'terms' | 'enabled' | 'sort'
+>;
+
+export async function fetchScreeningMatchItems(profile: ScreeningMatchItem['profile']) {
+  const resp = await http.get('/api/system/screening-match-items', { params: { profile } });
+  return unwrap<ScreeningMatchMeta>(resp);
+}
+
+export async function createScreeningMatchItem(payload: ScreeningMatchItemPayload) {
+  const resp = await http.post('/api/system/screening-match-items', payload);
+  return unwrap<ScreeningMatchItem>(resp);
+}
+
+export async function updateScreeningMatchItem(
+  id: number,
+  payload: Partial<Omit<ScreeningMatchItemPayload, 'profile'>>,
+) {
+  const resp = await http.put(`/api/system/screening-match-items/${id}`, payload);
+  return unwrap<ScreeningMatchItem>(resp);
+}
+
+export async function deleteScreeningMatchItem(id: number) {
+  const resp = await http.delete(`/api/system/screening-match-items/${id}`);
+  return unwrap(resp);
+}
+
 /** Offer 审批人配置 */
 export interface ApproverRef {
   user_id: string;

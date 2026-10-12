@@ -48,6 +48,7 @@ def purge_candidate(app, candidate_id: int, operator_id: str, operator_name: str
     if application_ids:
         col("stage_transitions").delete_many({"application_id": {"$in": list(application_ids)}})
         col("lock_records").delete_many({"application_id": {"$in": list(application_ids)}})
+        col("screening_results").delete_many({"application_id": {"$in": list(application_ids)}})
     col("interviews").delete_many({"candidate_id": candidate_id})
     col("offers").delete_many({"candidate_id": candidate_id})
     col("onboarding_records").delete_many({"candidate_id": candidate_id})

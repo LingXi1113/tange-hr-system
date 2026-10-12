@@ -1,5 +1,6 @@
 import { http, unwrap } from './http';
 import type { PagedData } from './template';
+import type { ScreeningRules } from './screening';
 
 export interface Job {
   id: number;
@@ -18,6 +19,7 @@ export interface Job {
   description: string;
   qualification: string;
   skill_tags: string;
+  screening_rules: ScreeningRules;
   template_id: number | null;
   template_name: string;
   channels: string;

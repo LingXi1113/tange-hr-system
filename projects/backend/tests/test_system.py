@@ -101,3 +101,48 @@ def test_offer_approvers(client):
         "chairman_id": "chairman-001", "offer_sender_id": "offer-001",
     })
     assert resp.get_json()["code"] == 1006
+
+
+def test_hr_can_manage_screening_match_items_but_other_roles_cannot(client):
+    login(client, "hr-001")
+    response = client.get("/api/system/screening-match-items", query_string={"profile": "sales"})
+    data = response.get_json()["data"]
+    assert response.get_json()["code"] == 0
+    assert any(item["name"] == "销售业绩" for item in data["items"])
+    assert any(item["key"] == "custom_terms" for item in data["evaluators"])
+    profile_names = {item["name"] for item in data["profiles"]}
+    assert {
+        "高级产品经理", "Java后端工程师", "大客户销售经理", "市场专员",
+        "财务分析工程师", "前端开发工程师", "人力资源实习生", "交互设计师",
+    }.issubset(profile_names)
+
+    created_response = client.post("/api/system/screening-match-items", json={
+        "profile": "sales",
+        "name": "AI 电商客户经验",
+        "weight": 12,
+        "evaluator": "custom_terms",
+        "target_count": 2,
+        "terms": ["AI电商", "品牌商家", "TikTok Shop"],
+        "enabled": True,
+    })
+    created = created_response.get_json()["data"]
+    assert created_response.get_json()["code"] == 0
+    assert created["is_default"] is False
+
+    updated = client.put(f"/api/system/screening-match-items/{created['id']}", json={
+        "name": "跨境电商客户经验", "weight": 15, "target_count": 1,
+    }).get_json()["data"]
+    assert updated["name"] == "跨境电商客户经验"
+    assert updated["weight"] == 15
+
+    login(client, "interviewer-001")
+    forbidden = client.delete(f"/api/system/screening-match-items/{created['id']}")
+    assert forbidden.get_json()["code"] == 1006
+
+    login(client, "hr-001")
+    deleted = client.delete(f"/api/system/screening-match-items/{created['id']}")
+    assert deleted.get_json()["code"] == 0
+    items = client.get(
+        "/api/system/screening-match-items", query_string={"profile": "sales"},
+    ).get_json()["data"]["items"]
+    assert all(item["id"] != created["id"] for item in items)

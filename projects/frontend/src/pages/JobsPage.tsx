@@ -9,7 +9,8 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import {
-  Button, Drawer, Dropdown, Empty, Form, Input, Modal, Pagination, Select, Space, Spin, Tag, Tooltip,
+  Button, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Pagination, Select, Space, Spin, Tag, Tooltip,
+  Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
@@ -88,6 +89,17 @@ function recommendedDepartment(positionName: string) {
   return '';
 }
 
+function recommendedScreeningProfile(positionName: string) {
+  const name = positionName.trim().toLowerCase();
+  if (['销售', '商务', '渠道', '客户经理', 'bd', '招商主管'].some((value) => name.includes(value.toLowerCase()))) {
+    return 'sales';
+  }
+  if (['产品', '运营', '增长', '平台招商', '商家'].some((value) => name.includes(value))) {
+    return 'product_ops';
+  }
+  return 'tech';
+}
+
 export function JobsPage() {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
@@ -143,6 +155,11 @@ export function JobsPage() {
         entity_name: '广东数则科技有限公司',
         job_type: 'full_time',
         interview_rounds: ['一面'],
+        screening_rules: {
+          profile: 'tech', min_education: '', min_work_years: 0,
+          required_skills: [], preferred_skills: [], hard_skills: [], industry_tags: [],
+          pass_score: 75, pending_score: 55,
+        },
       });
     }
     if (!templates.length) setTemplates((await fetchPipelineTemplates(1, 50)).list);
@@ -369,14 +386,23 @@ export function JobsPage() {
             <Input
               onBlur={(event) => {
                 const departmentId = recommendedDepartment(event.target.value);
-                if (!departmentId || form.getFieldValue('dept_id')) return;
-                const department = DEPARTMENT_OPTIONS.find((item) => item.value === departmentId);
-                form.setFieldsValue({
-                  dept_id: departmentId,
-                  dept_name: department?.label ?? '',
-                  entity_id: 'entity-shuze',
-                  entity_name: '广东数则科技有限公司',
-                });
+                const nextValues: Record<string, unknown> = {};
+                if (departmentId && !form.getFieldValue('dept_id')) {
+                  const department = DEPARTMENT_OPTIONS.find((item) => item.value === departmentId);
+                  Object.assign(nextValues, {
+                    dept_id: departmentId,
+                    dept_name: department?.label ?? '',
+                    entity_id: 'entity-shuze',
+                    entity_name: '广东数则科技有限公司',
+                  });
+                }
+                if (!editingId) {
+                  nextValues.screening_rules = {
+                    ...form.getFieldValue('screening_rules'),
+                    profile: recommendedScreeningProfile(event.target.value),
+                  };
+                }
+                if (Object.keys(nextValues).length) form.setFieldsValue(nextValues);
               }}
             />
           </Form.Item>
@@ -425,6 +451,43 @@ export function JobsPage() {
           <Form.Item name="skill_tags" label="关键能力标签（逗号分隔）"><Input /></Form.Item>
           <Form.Item name="description" label="职位描述"><Input.TextArea rows={4} /></Form.Item>
           <Form.Item name="qualification" label="任职资格"><Input.TextArea rows={3} /></Form.Item>
+          <Typography.Title level={5} style={{ marginTop: 24 }}>智能简历筛选</Typography.Title>
+          <Typography.Paragraph type="secondary">
+            匹配结果仅使用岗位相关经历、技能和教育信息，不使用姓名、性别、年龄等身份属性。
+          </Typography.Paragraph>
+          <Form.Item name={['screening_rules', 'profile']} label="岗位筛选模板" rules={[{ required: true }]}>
+            <Select options={[
+              { value: 'tech', label: '技术研发' },
+              { value: 'product_ops', label: '产品与电商运营' },
+              { value: 'sales', label: '销售与商务' },
+            ]} />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'min_education']} label="最低学历">
+            <Select allowClear options={['大专', '本科', '硕士', '博士'].map((value) => ({ value, label: value }))} />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'min_work_years']} label="最低相关工作年限">
+            <InputNumber min={0} max={30} step={0.5} style={{ width: '100%' }} addonAfter="年" />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'required_skills']} label="核心技能">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入后回车，例如 Java、Spring Boot" />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'preferred_skills']} label="加分技能">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入后回车，例如 RAG、微服务" />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'hard_skills']} label="硬性技能（缺失时转人工确认）">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入后回车，不会由系统直接淘汰" />
+          </Form.Item>
+          <Form.Item name={['screening_rules', 'industry_tags']} label="行业与业务标签">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="例如 AI、电商、SaaS、MCN" />
+          </Form.Item>
+          <Space size={16} align="start">
+            <Form.Item name={['screening_rules', 'pass_score']} label="建议通过分数">
+              <InputNumber min={0} max={100} />
+            </Form.Item>
+            <Form.Item name={['screening_rules', 'pending_score']} label="建议待定分数">
+              <InputNumber min={0} max={100} />
+            </Form.Item>
+          </Space>
         </Form>
       </Drawer>
     </div>
