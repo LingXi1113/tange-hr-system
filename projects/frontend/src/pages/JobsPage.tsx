@@ -34,14 +34,6 @@ const JOB_TYPES = [
   { value: 'outsource', label: '外包' },
 ];
 
-const INTERVIEW_ROUNDS = [
-  { value: '一面', label: '一面' },
-  { value: '二面', label: '二面' },
-  { value: '三面', label: '三面' },
-  { value: 'HR面试', label: 'HR面试' },
-  { value: '复试', label: '复试' },
-];
-
 const ENTITY_OPTIONS = [
   { value: 'entity-shuze', label: '广东数则科技有限公司' },
   { value: 'entity-zhenai', label: '真爱美家' },
@@ -144,17 +136,13 @@ export function JobsPage() {
     }
     setEditingId(record?.id ?? null);
     if (record) {
-      form.setFieldsValue({
-        ...record,
-        interview_rounds: record.interview_rounds?.length ? record.interview_rounds : ['一面'],
-      });
+      form.setFieldsValue(record);
     } else {
       form.resetFields();
       form.setFieldsValue({
         entity_id: 'entity-shuze',
         entity_name: '广东数则科技有限公司',
         job_type: 'full_time',
-        interview_rounds: ['一面'],
         screening_rules: {
           profile: 'tech', min_education: '', min_work_years: 0,
           required_skills: [], preferred_skills: [], hard_skills: [], industry_tags: [],
@@ -162,7 +150,17 @@ export function JobsPage() {
         },
       });
     }
-    if (!templates.length) setTemplates((await fetchPipelineTemplates(1, 50)).list);
+    let availableTemplates = templates;
+    if (!availableTemplates.length) {
+      availableTemplates = (await fetchPipelineTemplates(1, 50)).list;
+      setTemplates(availableTemplates);
+    }
+    if (!record) {
+      const defaultTemplate = availableTemplates.find((item) => (
+        item.status === 'active' && item.name.includes('默认招聘流程模板（v1.1）')
+      )) ?? availableTemplates.find((item) => item.status === 'active');
+      if (defaultTemplate) form.setFieldValue('template_id', defaultTemplate.id);
+    }
     if (!requirements.length) {
       const data = await fetchRequirements({ page_size: 100 });
       setRequirements(data.list.map((item) => ({ id: item.id, name: item.name })));
@@ -172,9 +170,12 @@ export function JobsPage() {
 
   async function handleSave() {
     const values = await form.validateFields();
+    const payload: Record<string, unknown> = { ...values };
+    // 面试环节统一由所属流程模板决定，不再保存职位级面试轮次。
+    delete payload.interview_rounds;
     setSaving(true);
     try {
-      await saveJob(editingId, values);
+      await saveJob(editingId, payload);
       msg.success('职位已保存');
       setDrawerOpen(false);
       void load();
@@ -439,9 +440,6 @@ export function JobsPage() {
               optionFilterProp="label"
               options={requirements.map((item) => ({ value: item.id, label: item.name }))}
             />
-          </Form.Item>
-          <Form.Item name="interview_rounds" label="面试轮次" rules={[{ required: true, message: '至少选择一轮面试' }]}>
-            <Select mode="multiple" options={INTERVIEW_ROUNDS} />
           </Form.Item>
           <Form.Item name="job_type" label="用工类型"><Select options={JOB_TYPES} /></Form.Item>
           <Form.Item name="location" label="工作城市"><Input /></Form.Item>

@@ -2,14 +2,16 @@ import {
   Alert, Button, Card, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag,
 } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { msg } from '@/utils/message';
 import { useCurrentUser } from '@/services/user';
 import {
   DICT_TYPE_OPTIONS, createDict, createScreeningMatchItem, deleteScreeningMatchItem,
-  fetchDicts, fetchOfferApprovers, fetchPlatformUsers, fetchScreeningMatchItems,
-  fetchSystemParams, updateDict, updateOfferApprovers, updateScreeningMatchItem, updateSystemParams,
+  fetchDicts, fetchInterviewerQualifications, fetchOfferApprovers, fetchPlatformUsers, fetchScreeningMatchItems,
+  fetchSystemParams, updateDict, updateInterviewerQualification, updateOfferApprovers,
+  updateScreeningMatchItem, updateSystemParams,
 } from '@/services/system';
 import type {
   DictItem, OfferApproverConfig, PlatformUser, ScreeningMatchItem,
@@ -333,6 +335,89 @@ function OfferApproverTab({ canEdit }: { canEdit: boolean }) {
   );
 }
 
+function InterviewerQualificationTab() {
+  const [users, setUsers] = useState<PlatformUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [keyword, setKeyword] = useState('');
+  const [savingUserId, setSavingUserId] = useState('');
+
+  const load = useCallback(async (search = '') => {
+    setLoading(true);
+    try {
+      setUsers(await fetchInterviewerQualifications(search));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function toggle(user: PlatformUser, enabled: boolean) {
+    setSavingUserId(user.user_id);
+    try {
+      const updated = await updateInterviewerQualification(user.user_id, enabled);
+      setUsers((current) => current.map((item) => (
+        item.user_id === updated.user_id ? updated : item
+      )));
+      msg.success(enabled ? `已授予 ${user.name} 面试资格` : `已取消 ${user.name} 的面试资格`);
+    } finally {
+      setSavingUserId('');
+    }
+  }
+
+  return (
+    <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="面试资格不会改变账号原有主角色"
+        description="获得资格后，该账号可被选择为面试官，并能查看获指派候选人的简历、填写和提交面试评价。权限变更立即生效。"
+      />
+      <Input.Search
+        allowClear
+        placeholder="按姓名或账号搜索"
+        value={keyword}
+        onChange={(event) => setKeyword(event.target.value)}
+        onSearch={(value) => void load(value.trim())}
+        style={{ width: 320, marginBottom: 12 }}
+      />
+      <Table
+        rowKey="user_id"
+        size="small"
+        loading={loading}
+        pagination={false}
+        dataSource={users}
+        columns={[
+          { title: '姓名', dataIndex: 'name', width: 140 },
+          { title: '账号', dataIndex: 'user_id', width: 180 },
+          { title: '主角色', dataIndex: 'role_name', width: 150 },
+          { title: '所属部门', dataIndex: 'dept_name' },
+          {
+            title: '面试资格', width: 210,
+            render: (_, user: PlatformUser) => (
+              <Space>
+                <Switch
+                  checked={Boolean(user.interviewer_qualified)}
+                  disabled={Boolean(user.interviewer_inherent)}
+                  loading={savingUserId === user.user_id}
+                  checkedChildren="已授权"
+                  unCheckedChildren="未授权"
+                  onChange={(checked) => void toggle(user, checked)}
+                />
+                {user.interviewer_inherent && <Tag color="blue">平台角色自带</Tag>}
+                {!user.interviewer_inherent && user.interviewer_local_enabled && <Tag color="green">管理员授权</Tag>}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
 function ParamsTab({ canEdit }: { canEdit: boolean }) {
   const [lockDays, setLockDays] = useState<Record<string, number>>({});
   const [checklist, setChecklist] = useState<string[]>([]);
@@ -535,8 +620,15 @@ function DictTab({ canEdit }: { canEdit: boolean }) {
 
 export function SettingsPage() {
   const { user } = useCurrentUser();
+  const [searchParams, setSearchParams] = useSearchParams();
   const canEdit = user?.role === 'super_admin';
   const canEditScreening = user?.role === 'super_admin' || user?.role === 'hr';
+  const requestedTab = searchParams.get('tab');
+  const activeTab = requestedTab === 'interviewer-qualification' && canEdit
+    ? requestedTab
+    : requestedTab && ['approvers', 'params', 'dicts'].includes(requestedTab)
+      ? requestedTab
+      : 'screening';
 
   return (
     <div>
@@ -555,9 +647,17 @@ export function SettingsPage() {
           </Tag>
         )}
         <Tabs
-          defaultActiveKey="screening"
+          activeKey={activeTab}
+          onChange={(key) => {
+            setSearchParams(key === 'screening' ? {} : { tab: key });
+          }}
           items={[
             { key: 'screening', label: '智能匹配项', children: <ScreeningMatchTab canEdit={canEditScreening} /> },
+            ...(canEdit ? [{
+              key: 'interviewer-qualification',
+              label: '面试资格',
+              children: <InterviewerQualificationTab />,
+            }] : []),
             { key: 'approvers', label: 'Offer 审批人', children: <OfferApproverTab canEdit={canEdit} /> },
             { key: 'params', label: '系统参数', children: <ParamsTab canEdit={canEdit} /> },
             { key: 'dicts', label: '字典管理', children: <DictTab canEdit={canEdit} /> },

@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, request
 from common.decorators import login_required
 from common.response import ok
 from common.roles import ROLE_NAMES
+from common.user_qualifications import with_local_qualifications
 from platform_identity import get_identity
 
 bp = Blueprint("platform_api", __name__, url_prefix="/api/platform")
@@ -23,6 +24,7 @@ def users():
     keyword = request.args.get("keyword", "")
     data = [
         {**u.to_dict(), "role_name": ROLE_NAMES.get(u.role, u.role)}
-        for u in identity.list_users(keyword)
+        for raw_user in identity.list_users(keyword)
+        for u in [with_local_qualifications(raw_user)]
     ]
     return ok(data)

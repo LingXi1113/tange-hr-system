@@ -27,7 +27,8 @@ import { logout, useCurrentUser } from '@/services/user';
 
 const { Content, Header, Sider } = Layout;
 
-const menuItems: MenuProps['items'] = [
+function buildMenuItems(isSuperAdmin: boolean): MenuProps['items'] {
+  return [
   { key: '/workbench', icon: <DashboardOutlined />, label: '工作台' },
   { key: '/requirements', icon: <AuditOutlined />, label: '招聘需求' },
   { key: '/jobs', icon: <IdcardOutlined />, label: '职位管理' },
@@ -46,21 +47,31 @@ const menuItems: MenuProps['items'] = [
     children: [
       { key: '/pipeline-template', icon: <ToolOutlined />, label: '流程模板配置' },
       { key: '/eval-template', icon: <FormOutlined />, label: '面试评价模板' },
-      { key: '/settings', icon: <SettingOutlined />, label: '系统参数与审批人' },
+      { key: '/settings', icon: <SettingOutlined />, label: '招聘系统设置' },
+      ...(isSuperAdmin ? [{
+        key: '/settings?tab=interviewer-qualification',
+        icon: <TeamOutlined />,
+        label: '账号面试资格',
+      }] : []),
       { key: '/audit-logs', icon: <FileTextOutlined />, label: '操作日志' },
     ],
   },
   { key: '/notifications', icon: <BellOutlined />, label: '站内通知' },
   { key: '/tasks', icon: <CarryOutOutlined />, label: '我的任务' },
-];
+  ];
+}
 
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useCurrentUser();
-  const selectedKey = `/${location.pathname.split('/').filter(Boolean)[0] ?? 'workbench'}`;
+  const isInterviewerQualification = location.pathname === '/settings'
+    && new URLSearchParams(location.search).get('tab') === 'interviewer-qualification';
+  const selectedKey = isInterviewerQualification
+    ? '/settings?tab=interviewer-qualification'
+    : `/${location.pathname.split('/').filter(Boolean)[0] ?? 'workbench'}`;
   // HR 与超级管理员都可以查看设置；是否可编辑由各设置页按超级管理员角色控制。
-  const visibleMenuItems = menuItems;
+  const visibleMenuItems = buildMenuItems(user?.role === 'super_admin');
 
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key.startsWith('/')) navigate(key);

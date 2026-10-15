@@ -142,12 +142,26 @@ export interface PlatformUser {
   name: string;
   role: string;
   role_name: string;
+  roles: string[];
   dept_name: string;
+  interviewer_qualified?: boolean;
+  interviewer_inherent?: boolean;
+  interviewer_local_enabled?: boolean;
 }
 
 export async function fetchPlatformUsers(keyword = ''): Promise<PlatformUser[]> {
   const resp = await http.get('/api/platform/users', { params: { keyword } });
   return unwrap<PlatformUser[]>(resp);
+}
+
+export async function fetchInterviewerQualifications(keyword = ''): Promise<PlatformUser[]> {
+  const resp = await http.get('/api/system/interviewer-qualifications', { params: { keyword } });
+  return unwrap<PlatformUser[]>(resp);
+}
+
+export async function updateInterviewerQualification(userId: string, enabled: boolean) {
+  const resp = await http.put(`/api/system/interviewer-qualifications/${encodeURIComponent(userId)}`, { enabled });
+  return unwrap<PlatformUser>(resp);
 }
 
 

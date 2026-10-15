@@ -1,5 +1,6 @@
 """系统设置（MongoDB 版）：系统参数、字典、Offer 审批人配置。"""
 import json
+from datetime import datetime
 
 from flask import Blueprint, current_app, g, request
 
@@ -8,7 +9,8 @@ from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.logstore import write_log
 from common.response import BizCode, ok, paged
-from common.roles import HR, SUPER_ADMIN
+from common.roles import HR, INTERVIEWER, ROLE_NAMES, SUPER_ADMIN
+from common.user_qualifications import has_effective_role, with_local_qualifications
 from common.screening import (
     EVALUATOR_NAMES,
     MATCH_SCOPE_NAMES,
@@ -34,6 +36,58 @@ PARAM_VALIDATORS = {
     PARAM_LOCK_DAYS_DEFAULT: "json_int_map",
     PARAM_ONBOARDING_CHECKLIST_DEFAULT: "json_str_list",
 }
+
+
+def _interviewer_qualification_view(raw_user: object) -> dict:
+    user = with_local_qualifications(raw_user)
+    platform_roles = {raw_user.role, *(raw_user.roles or [])}
+    qualification = col("user_qualifications").find_one({"_id": raw_user.user_id}) or {}
+    return {
+        **user.to_dict(),
+        "role_name": ROLE_NAMES.get(user.role, user.role),
+        "interviewer_qualified": has_effective_role(user, INTERVIEWER),
+        "interviewer_inherent": INTERVIEWER in platform_roles,
+        "interviewer_local_enabled": bool(qualification.get("interviewer_enabled")),
+    }
+
+
+# ---------------- 账号面试资格 ----------------
+
+@bp.get("/interviewer-qualifications")
+@role_required(SUPER_ADMIN)
+def list_interviewer_qualifications():
+    identity = get_identity(current_app)
+    keyword = request.args.get("keyword", "").strip()
+    return ok([_interviewer_qualification_view(user) for user in identity.list_users(keyword)])
+
+
+@bp.put("/interviewer-qualifications/<user_id>")
+@role_required(SUPER_ADMIN)
+def update_interviewer_qualification(user_id: str):
+    identity = get_identity(current_app)
+    user = identity.get_user(user_id)
+    if user is None:
+        raise BizError(BizCode.NOT_FOUND, "平台账号不存在")
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    platform_roles = {user.role, *(user.roles or [])}
+    if not enabled and INTERVIEWER in platform_roles:
+        raise BizError(BizCode.STATE_INVALID, "该账号的平台主角色已具备面试资格，不能在此取消")
+    col("user_qualifications").update_one(
+        {"_id": user_id},
+        {"$set": {
+            "interviewer_enabled": enabled,
+            "updated_at": datetime.now(),
+            "updated_by": g.current_user.user_id,
+            "updated_by_name": g.current_user.name,
+        }},
+        upsert=True,
+    )
+    write_log(
+        "user_qualification", "grant_interviewer" if enabled else "revoke_interviewer",
+        g.current_user.user_id, g.current_user.name,
+        biz_id=user_id, detail=f"{user.name}：{'授予' if enabled else '取消'}面试资格",
+    )
+    return ok(_interviewer_qualification_view(user))
 
 
 # ---------------- 系统参数 ----------------

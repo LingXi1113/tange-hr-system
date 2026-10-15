@@ -28,6 +28,7 @@ from common.interview_guard import candidate_schedule_guard
 from common.logstore import write_log
 from common.response import BizCode, ok
 from common.roles import BUSINESS_SCREENER, HR, INTERVIEWER, SUPER_ADMIN
+from common.user_qualifications import has_effective_role, with_local_qualifications
 from common.stages import INTERVIEW_ROUNDS
 from common.status import APP_IN_PROGRESS
 from common.consistency import require_interview_application
@@ -210,11 +211,13 @@ def _resolve_interviewer(payload: dict):
     identity = get_identity(current_app)
     interviewer_id = (payload.get("interviewer_id") or "").strip()
     interviewer_name = (payload.get("interviewer_name") or "").strip()
-    user = identity.get_user(interviewer_id) if interviewer_id else None
+    user = with_local_qualifications(identity.get_user(interviewer_id)) if interviewer_id else None
     if user is None and interviewer_name:
-        user = next((item for item in identity.list_users()
-                     if item.name == interviewer_name and item.role in INTERVIEWER_ROLES), None)
-    if user is None or user.role not in INTERVIEWER_ROLES:
+        user = next((qualified for item in identity.list_users()
+                     for qualified in [with_local_qualifications(item)]
+                     if qualified.name == interviewer_name
+                     and has_effective_role(qualified, *INTERVIEWER_ROLES)), None)
+    if user is None or not has_effective_role(user, *INTERVIEWER_ROLES):
         raise BizError(BizCode.PARAM_INVALID, "请选择有效的面试业务人员")
     return user
 
@@ -228,7 +231,7 @@ def _require_interviewer_access(doc: dict):
             raise BizError(BizCode.NOT_FOUND, "面试关联的应聘记录不存在")
         require_candidate_lock_owner(app_doc["candidate_id"])
         return
-    if user.role not in INTERVIEWER_ROLES:
+    if not has_effective_role(user, *INTERVIEWER_ROLES):
         raise BizError(BizCode.FORBIDDEN, "只有本场面试人员或招聘 HR 可以填写面试评价")
     assigned_id = doc.get("interviewer_id", "")
     allowed = assigned_id == user.user_id if assigned_id else doc.get("interviewer_name", "") == user.name

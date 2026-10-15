@@ -7,6 +7,7 @@ from common.errors import BizError
 from common.response import BizCode, ok
 from common.roles import ROLE_NAMES
 from common.logstore import write_log
+from common.user_qualifications import with_local_qualifications
 from platform_identity import get_identity
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
@@ -24,7 +25,8 @@ def _user_payload(identity, user) -> dict:
         data["switchable_users"] = [
             {"user_id": u.user_id, "name": u.name, "role": u.role,
              "role_name": ROLE_NAMES.get(u.role, u.role)}
-            for u in identity.list_users()
+            for raw_user in identity.list_users()
+            for u in [with_local_qualifications(raw_user)]
         ]
     return data
 
@@ -47,7 +49,8 @@ def mock_users():
         "users": [
             {"user_id": u.user_id, "name": u.name, "role": u.role,
              "role_name": ROLE_NAMES.get(u.role, u.role), "dept_name": u.dept_name}
-            for u in identity.list_users()
+            for raw_user in identity.list_users()
+            for u in [with_local_qualifications(raw_user)]
         ],
     })
 
@@ -60,7 +63,7 @@ def mock_login():
     payload = request.get_json(silent=True) or {}
     user_id = (payload.get("user_id") or "").strip()
     identity = get_identity(current_app)
-    user = identity.get_user(user_id) if user_id else None
+    user = with_local_qualifications(identity.get_user(user_id)) if user_id else None
     if user is None:
         raise BizError(BizCode.PARAM_INVALID, "用户不存在")
     session["user_id"] = user.user_id
@@ -79,7 +82,7 @@ def switch_user():
     payload = request.get_json(silent=True) or {}
     user_id = (payload.get("user_id") or "").strip()
     identity = get_identity(current_app)
-    user = identity.get_user(user_id) if user_id else None
+    user = with_local_qualifications(identity.get_user(user_id)) if user_id else None
     if user is None:
         raise BizError(BizCode.PARAM_INVALID, "用户不存在")
     session["user_id"] = user.user_id

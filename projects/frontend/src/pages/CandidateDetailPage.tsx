@@ -1645,7 +1645,7 @@ export function CandidateDetailPage() {
               label: '实际招聘职位',
               options: jobs.map((job) => ({
                 value: `job:${job.id}`,
-                label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+                label: job.name,
               })),
             },
           ]}
@@ -1680,7 +1680,7 @@ export function CandidateDetailPage() {
             onChange={(value) => setBusinessJobId(value ?? null)}
             options={jobs.map((job) => ({
               value: job.id,
-              label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+              label: job.name,
             }))}
           />
         )}

@@ -7,6 +7,7 @@ from platform_identity import get_identity  # noqa: A004  (项目内 platform �
 from common.auth_token import parse_token
 from common.errors import BizError
 from common.response import BizCode
+from common.user_qualifications import has_effective_role, with_local_qualifications
 
 
 def _load_current_user():
@@ -18,7 +19,7 @@ def _load_current_user():
     if not user_id:
         return None
     identity = get_identity(current_app)
-    return identity.get_user(user_id)
+    return with_local_qualifications(identity.get_user(user_id))
 
 
 def login_required(fn):
@@ -40,7 +41,7 @@ def role_required(*roles):
         @wraps(fn)
         @login_required
         def wrapper(*args, **kwargs):
-            if g.current_user.role not in roles:
+            if not has_effective_role(g.current_user, *roles):
                 raise BizError(BizCode.FORBIDDEN, "当前角色无权限执行该操作")
             return fn(*args, **kwargs)
 

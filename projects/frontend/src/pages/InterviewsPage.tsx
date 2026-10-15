@@ -117,7 +117,9 @@ export function InterviewsPage() {
     setEditingJobId(null);
     if (!interviewers.length) {
       setInterviewers((await fetchPlatformUsers()).filter((item) =>
-        item.role === 'interviewer' || item.role === 'business_screener'));
+        item.role === 'interviewer'
+        || item.role === 'business_screener'
+        || item.roles?.includes('interviewer')));
     }
     if (!candidates.length) {
       setCandidates((await fetchCandidates({ page_size: 100 })).list.map((c) => ({ id: c.id, name: c.name })));
@@ -170,7 +172,9 @@ export function InterviewsPage() {
     setEditingJobId(null);
     if (!interviewers.length) {
       setInterviewers((await fetchPlatformUsers()).filter((item) =>
-        item.role === 'interviewer' || item.role === 'business_screener'));
+        item.role === 'interviewer'
+        || item.role === 'business_screener'
+        || item.roles?.includes('interviewer')));
     }
     if (!candidates.length) {
       const candidateRows = (await fetchCandidates({ page_size: 100 })).list;
@@ -451,7 +455,7 @@ export function InterviewsPage() {
               placeholder="选择面试职位"
               options={jobs.map((job) => ({
                 value: job.id,
-                label: `${job.name}${job.dept_name ? `（${job.dept_name}）` : ''}`,
+                label: job.name,
               }))}
               onChange={(value: number) => {
                 const application = appOptions.find((item) => item.job_id === value);

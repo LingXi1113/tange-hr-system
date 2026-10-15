@@ -146,3 +146,34 @@ def test_hr_can_manage_screening_match_items_but_other_roles_cannot(client):
         "/api/system/screening-match-items", query_string={"profile": "sales"},
     ).get_json()["data"]["items"]
     assert all(item["id"] != created["id"] for item in items)
+
+
+def test_super_admin_can_manage_interviewer_qualification(client):
+    login(client, "hr-001")
+    forbidden = client.put(
+        "/api/system/interviewer-qualifications/hr-002", json={"enabled": True},
+    )
+    assert forbidden.get_json()["code"] == 1006
+
+    login(client, "super-admin-001")
+    granted = client.put(
+        "/api/system/interviewer-qualifications/hr-002", json={"enabled": True},
+    ).get_json()
+    assert granted["code"] == 0
+    assert granted["data"]["interviewer_qualified"] is True
+    assert granted["data"]["interviewer_local_enabled"] is True
+    assert "interviewer" in granted["data"]["roles"]
+
+    users = client.get("/api/system/interviewer-qualifications").get_json()["data"]
+    hr_user = next(item for item in users if item["user_id"] == "hr-002")
+    assert hr_user["interviewer_qualified"] is True
+
+    signed_in = login(client, "hr-002")
+    assert "interviewer" in signed_in["roles"]
+
+    login(client, "super-admin-001")
+    revoked = client.put(
+        "/api/system/interviewer-qualifications/hr-002", json={"enabled": False},
+    ).get_json()
+    assert revoked["code"] == 0
+    assert revoked["data"]["interviewer_qualified"] is False

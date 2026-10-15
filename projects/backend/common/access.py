@@ -39,7 +39,9 @@ def current_role() -> str:
 
 
 def has_role(*roles: str) -> bool:
-    return current_role() in roles
+    user = getattr(g, "current_user", None)
+    effective = {getattr(user, "role", ""), *(getattr(user, "roles", []) or [])}
+    return bool(effective.intersection(roles))
 
 
 def require_roles(*roles: str) -> None:
