@@ -106,6 +106,7 @@ def _job_view(job: dict) -> dict:
         "description": job.get("description", ""), "qualification": job.get("qualification", ""),
         "skill_tags": job.get("skill_tags", ""), "template_id": job.get("template_id"),
         "screening_rules": normalize_screening_rules(job.get("screening_rules"), job),
+        "ai_portrait": job.get("ai_portrait") or {},
         "template_name": template.get("name", "默认招聘流程"),
         "channels": job.get("channels", ""), "status": job.get("status", JOB_DRAFT),
         "interview_rounds": list(job.get("interview_rounds") or ["一面"]),
@@ -176,6 +177,26 @@ def _fill(job: dict, payload: dict) -> dict:
             raise BizError(BizCode.PARAM_INVALID, "智能筛选规则格式错误")
         preview_job = {**job, **fields}
         fields["screening_rules"] = normalize_screening_rules(rules, preview_job)
+    if "ai_portrait" in payload:
+        portrait = payload.get("ai_portrait")
+        if portrait is not None and not isinstance(portrait, dict):
+            raise BizError(BizCode.PARAM_INVALID, "岗位画像格式错误")
+        portrait = portrait or {}
+
+        def clean_list(key: str):
+            value = portrait.get(key) or []
+            if not isinstance(value, list):
+                raise BizError(BizCode.PARAM_INVALID, f"岗位画像 {key} 必须是数组")
+            return list(dict.fromkeys(
+                str(item).strip()[:100] for item in value if str(item).strip()
+            ))[:30]
+
+        fields["ai_portrait"] = {
+            "summary": str(portrait.get("summary") or "").strip()[:5000],
+            "required": clean_list("required"),
+            "preferred": clean_list("preferred"),
+            "interview_focus": clean_list("interview_focus"),
+        }
     job.update(fields)
     return fields
 
@@ -259,6 +280,7 @@ def create_job():
         "salary_range": "", "description": "", "qualification": "",
         "skill_tags": "", "template_id": None, "channels": "", "requirement_id": None,
         "screening_rules": {},
+        "ai_portrait": {},
         "stage_configs": [],
     }
     if col("jobs").find_one({"code": job["code"]}):
@@ -292,7 +314,7 @@ def copy_job(job_id: int):
            ["name", "entity_id", "entity_name", "dept_id", "dept_name", "location", "job_type", "level", "report_to",
             "headcount", "salary_range", "description", "qualification", "skill_tags",
            "template_id", "channels", "requirement_id", "stage_configs", "interview_rounds",
-           "screening_rules"]}
+           "screening_rules", "ai_portrait"]}
     doc.update({
         "code": f"JOB-{uuid.uuid4().hex[:8].upper()}",
         "name": f"{src.get('name', '')}（副本）",

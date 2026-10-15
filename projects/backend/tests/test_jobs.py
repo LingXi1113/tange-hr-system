@@ -16,9 +16,18 @@ def test_job_crud_and_unique_code(client):
     # 编辑
     upd = client.put(f"/api/jobs/{job['id']}", json={"location": "上海"}).get_json()["data"]
     assert upd["location"] == "上海"
+    portrait = {
+        "summary": "负责智能招聘平台建设",
+        "required": ["本科", "Python"],
+        "preferred": ["AI", "电商"],
+        "interview_focus": ["项目成果", "个人贡献"],
+    }
+    upd = client.put(f"/api/jobs/{job['id']}", json={"ai_portrait": portrait}).get_json()["data"]
+    assert upd["ai_portrait"] == portrait
     # 复制
     cp = client.post(f"/api/jobs/{job['id']}/copy").get_json()["data"]
     assert cp["name"].endswith("（副本）") and cp["id"] != job["id"]
+    assert cp["ai_portrait"] == portrait
 
 
 def test_job_status_flow(client):

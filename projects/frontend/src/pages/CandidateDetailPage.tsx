@@ -7,6 +7,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
+import { CandidateAiAssistant } from '@/components/CandidateAiAssistant';
+import { CandidateAiEvaluation } from '@/components/CandidateAiEvaluation';
 import {
   assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
   fetchTransitions, parseResume,
@@ -905,6 +907,23 @@ export function CandidateDetailPage() {
                       投递情况 <DownOutlined />
                     </Button>
                   </Dropdown>
+                  <CandidateAiEvaluation
+                    jobName={selectedApplication?.job_name}
+                    result={screeningResult}
+                    loading={screeningBusy}
+                    canEvaluate={canManage && Boolean(selectedApplication)}
+                    onEvaluate={handleRunScreening}
+                    onChooseJob={() => {
+                      setMatchTarget(
+                        matchProfiles[0]?.key
+                          ? `template:${matchProfiles[0].key}`
+                          : jobs[0]?.id
+                            ? `job:${jobs[0].id}`
+                            : '',
+                      );
+                      setMatchJobOpen(true);
+                    }}
+                  />
                 </Space>
                 <Typography.Text type="secondary">
                   {detail.gender || '未填写'}　·　{detail.city || '城市未填写'}　·　{detail.source || '来源未填写'}
@@ -1713,6 +1732,7 @@ export function CandidateDetailPage() {
           </Checkbox>
         </div>
       </Modal>
+      <CandidateAiAssistant candidate={candidate} screening={screeningResult} />
     </div>
   );
 }

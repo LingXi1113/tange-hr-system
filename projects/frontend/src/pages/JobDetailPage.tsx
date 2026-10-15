@@ -1,14 +1,24 @@
-import { LinkOutlined } from '@ant-design/icons';
-import { Button, Card, Col, Descriptions, Empty, Row, Table, Tag, Typography } from 'antd';
+import { LinkOutlined, RobotOutlined, TeamOutlined } from '@ant-design/icons';
+import { Button, Card, Col, Descriptions, Empty, Form, Input, Modal, Progress, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
-import { JOB_STATUS_TEXT, fetchJob } from '@/services/job';
+import { JOB_STATUS_TEXT, fetchJob, saveJob } from '@/services/job';
 import type { Job } from '@/services/job';
 import { http, unwrap } from '@/services/http';
-import type { Application } from '@/services/candidate';
+import { fetchCandidates } from '@/services/candidate';
+import type { Application, CandidateRow } from '@/services/candidate';
 import { msg } from '@/utils/message';
+import { buildJobPortrait, rankCandidatesForJob } from '@/utils/localAi';
+import type { LocalRecommendation } from '@/utils/localAi';
+
+interface PortraitFormValues {
+  summary: string;
+  required: string[];
+  preferred: string[];
+  interview_focus: string[];
+}
 
 export function JobDetailPage() {
   const { id = '' } = useParams();
@@ -16,6 +26,12 @@ export function JobDetailPage() {
   const [job, setJob] = useState<Job | null>(null);
   const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
+  const [portraitOpen, setPortraitOpen] = useState(false);
+  const [recommendOpen, setRecommendOpen] = useState(false);
+  const [recommendLoading, setRecommendLoading] = useState(false);
+  const [recommendations, setRecommendations] = useState<LocalRecommendation[]>([]);
+  const [portraitSaving, setPortraitSaving] = useState(false);
+  const [portraitForm] = Form.useForm<PortraitFormValues>();
 
   useEffect(() => {
     if (!id) return;
@@ -34,6 +50,47 @@ export function JobDetailPage() {
   if (!job) return <Empty description="职位不存在" />;
 
   const publicUrl = `${window.location.origin}/#/public/job/${job.public_token}`;
+  const portrait = buildJobPortrait(job);
+  const hasSavedPortrait = Boolean(
+    job.ai_portrait?.summary
+    || job.ai_portrait?.required?.length
+    || job.ai_portrait?.preferred?.length
+    || job.ai_portrait?.interview_focus?.length,
+  );
+
+  async function openRecommendations() {
+    setRecommendOpen(true);
+    setRecommendLoading(true);
+    try {
+      const data = await fetchCandidates({ page: 1, page_size: 100 });
+      setRecommendations(rankCandidatesForJob(data.list as CandidateRow[], job).slice(0, 20));
+    } finally {
+      setRecommendLoading(false);
+    }
+  }
+
+  function openPortraitEditor() {
+    portraitForm.setFieldsValue({
+      summary: portrait.summary,
+      required: portrait.required,
+      preferred: portrait.preferred,
+      interview_focus: portrait.interviewFocus,
+    });
+    setPortraitOpen(true);
+  }
+
+  async function savePortrait() {
+    const values = await portraitForm.validateFields();
+    setPortraitSaving(true);
+    try {
+      const updated = await saveJob(job.id, { ai_portrait: values });
+      setJob(updated);
+      setPortraitOpen(false);
+      msg.success('岗位画像已保存');
+    } finally {
+      setPortraitSaving(false);
+    }
+  }
 
   return (
     <div>
@@ -95,6 +152,23 @@ export function JobDetailPage() {
           </Card>
         </Col>
         <Col xs={24} lg={10}>
+          <Card
+            title={<Space><RobotOutlined style={{ color: '#7c3aed' }} />AI 招聘辅助<Tag color="purple">本地演示</Tag></Space>}
+            size="small"
+            style={{ marginBottom: 16 }}
+          >
+            <Typography.Paragraph type="secondary">
+              根据职位要求生成岗位画像，并从现有人才库中给出辅助推荐。当前使用本地规则，配置 API Key 后可升级为语义分析。
+            </Typography.Paragraph>
+            <Space wrap>
+              <Button type="primary" icon={<RobotOutlined />} onClick={openPortraitEditor}>
+                {hasSavedPortrait ? '编辑岗位画像' : '生成岗位画像'}
+              </Button>
+              <Button icon={<TeamOutlined />} onClick={() => void openRecommendations()}>
+                人才库推荐
+              </Button>
+            </Space>
+          </Card>
           <Card title="公开页与投递" size="small">
             <p style={{ color: 'rgba(23,26,29,0.6)' }}>
               公开页提供简易投递表单，候选人无需注册登录。暂停/关闭的职位停止接收投递。
@@ -120,6 +194,83 @@ export function JobDetailPage() {
           </Card>
         </Col>
       </Row>
+      <Modal
+        title={<Space><RobotOutlined style={{ color: '#7c3aed' }} />智能岗位画像<Tag color="purple">本地生成</Tag></Space>}
+        open={portraitOpen}
+        onCancel={() => setPortraitOpen(false)}
+        onOk={() => void savePortrait()}
+        okText="保存画像"
+        cancelText="取消"
+        confirmLoading={portraitSaving}
+        okButtonProps={{ disabled: job.status === 'closed' }}
+        width={720}
+      >
+        <Typography.Title level={4}>{portrait.title}</Typography.Title>
+        <Typography.Paragraph type="secondary">
+          系统先根据 JD 和筛选条件生成初稿，HR 可以直接修改。标签输入后按回车添加，保存后刷新页面仍会保留。
+        </Typography.Paragraph>
+        {job.status === 'closed' && <Typography.Paragraph type="warning">已关闭职位只能查看画像，不能保存修改。</Typography.Paragraph>}
+        <Form form={portraitForm} layout="vertical" disabled={job.status === 'closed'}>
+          <Form.Item name="summary" label="岗位画像描述" rules={[{ required: true, message: '请填写岗位画像描述' }]}>
+            <Input.TextArea rows={5} placeholder="描述岗位目标、主要职责和理想候选人特征" />
+          </Form.Item>
+          <Form.Item name="required" label="必选条件">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入学历、年限、核心技能等，按回车添加" />
+          </Form.Item>
+          <Form.Item name="preferred" label="加分项">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入行业经验、工具或能力，按回车添加" />
+          </Form.Item>
+          <Form.Item name="interview_focus" label="建议面试重点">
+            <Select mode="tags" tokenSeparators={[',', '，']} placeholder="输入需要在面试中重点验证的内容" />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={<Space><TeamOutlined style={{ color: '#1677ff' }} />人才库智能推荐<Tag color="purple">本地演示</Tag></Space>}
+        open={recommendOpen}
+        onCancel={() => setRecommendOpen(false)}
+        footer={null}
+        width={900}
+      >
+        <Typography.Paragraph type="secondary">
+          已按“{job.name}”的必选技能、加分项和学历要求对人才库进行辅助排序，结果不会自动推进或淘汰候选人。
+        </Typography.Paragraph>
+        <Table
+          rowKey={(record) => record.candidate.id}
+          loading={recommendLoading}
+          dataSource={recommendations}
+          pagination={{ pageSize: 8 }}
+          columns={[
+            {
+              title: '候选人', width: 150,
+              render: (_, record) => (
+                <a onClick={() => navigate(`/candidates/${record.candidate.id}`)}>{record.candidate.name}</a>
+              ),
+            },
+            {
+              title: '匹配度', width: 145,
+              render: (_, record) => (
+                <Progress percent={record.score} size="small" strokeColor={record.score >= 75 ? '#52c41a' : '#1677ff'} />
+              ),
+            },
+            {
+              title: '匹配依据',
+              render: (_, record) => (
+                <div>
+                  <Space wrap>{record.matched.slice(0, 5).map((item) => <Tag color="success" key={item}>{item}</Tag>)}</Space>
+                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6 }}>{record.summary}</Typography.Text>
+                </div>
+              ),
+            },
+            {
+              title: '待核实', width: 180,
+              render: (_, record) => record.missing.length
+                ? record.missing.slice(0, 3).map((item) => <Tag color="gold" key={item}>{item}</Tag>)
+                : <Tag color="green">暂无明显缺失</Tag>,
+            },
+          ]}
+        />
+      </Modal>
     </div>
   );
 }

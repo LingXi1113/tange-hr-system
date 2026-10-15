@@ -4,6 +4,8 @@ export type ScreeningDecision = 'pass' | 'pending' | 'reject' | 'insufficient';
 export type ScreeningReviewDecision = 'pass' | 'pending' | 'reject';
 
 export interface ScreeningDimension {
+  key?: string;
+  evaluator?: string;
   name: string;
   score: number;
   max_score: number;

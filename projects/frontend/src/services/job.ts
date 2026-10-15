@@ -20,6 +20,12 @@ export interface Job {
   qualification: string;
   skill_tags: string;
   screening_rules: ScreeningRules;
+  ai_portrait?: {
+    summary: string;
+    required: string[];
+    preferred: string[];
+    interview_focus: string[];
+  };
   template_id: number | null;
   template_name: string;
   channels: string;
