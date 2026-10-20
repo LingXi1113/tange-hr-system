@@ -14,7 +14,6 @@ import {
 import type { CandidateClassificationSummary, CandidateRow } from '@/services/candidate';
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
-import { addToPool } from '@/services/talentPool';
 import { runScreening } from '@/services/screening';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
@@ -105,9 +104,6 @@ export function CandidatesPage() {
   const [createLinkHandled, setCreateLinkHandled] = useState(false);
   const [form] = Form.useForm();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [batchPoolOpen, setBatchPoolOpen] = useState(false);
-  const [batchPoolCategory, setBatchPoolCategory] = useState('');
-  const [batchPoolReason, setBatchPoolReason] = useState('');
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [resumeParsing, setResumeParsing] = useState(false);
   const [resumeParse, setResumeParse] = useState<Awaited<ReturnType<typeof parseResumeUpload>> | null>(null);
@@ -310,12 +306,6 @@ export function CandidatesPage() {
         <Space>
           {canManage && <Button icon={<UploadOutlined />} onClick={() => void downloadProtectedFile('/api/candidates/import-template', 'candidate_template.csv')}>导入模板</Button>}
           {canManage && <Button onClick={() => void downloadProtectedFile('/api/candidates/export', 'candidates.csv')}>导出</Button>}
-          {canManage && <Button
-            disabled={!selectedIds.length}
-            onClick={() => setBatchPoolOpen(true)}
-          >
-            批量加入人才库
-          </Button>}
           {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreateDrawer}>
             新增候选人
           </Button>}
@@ -609,7 +599,7 @@ export function CandidatesPage() {
           <Form.Item label="新增方式">
             <Space wrap>
               <Upload
-                accept=".pdf,.docx" showUploadList={false}
+                accept=".pdf,.docx,.jpg,.jpeg,.png" showUploadList={false}
                 beforeUpload={(file) => {
                   void handleResumeParse(file as File);
                   return false;
@@ -655,6 +645,15 @@ export function CandidatesPage() {
                     <div>年龄：{resumeParse.fields.age ? `${resumeParse.fields.age} 岁` : '-'}；最高学历：{resumeParse.fields.highest_education || '-'}；专业：{resumeParse.fields.major || '-'}</div>
                     <div style={{ marginTop: 4 }}>教育经历：{resumeParse.fields.education?.length || 0} 条（保存后可在候选人详情中维护）</div>
                     <div style={{ marginTop: 4 }}>{'\u5DE5\u4F5C\u7ECF\u5386'}：{resumeParse.fields.work_experience?.length || 0} 条（保存后可在候选人详情中维护）</div>
+                    {resumeParse.fields._parse_meta && (
+                      <div style={{ marginTop: 8 }}>
+                        解析方式：{{ text: '文本规则', ocr: '本地 OCR', 'text+ai': '文本规则 + AI', 'ocr+ai': 'OCR + AI', failed: '未识别' }[resumeParse.fields._parse_meta.method] ?? resumeParse.fields._parse_meta.method}
+                        ；置信度：{resumeParse.fields._parse_meta.confidence}%
+                        {resumeParse.fields._parse_meta.warnings.map((warning) => (
+                          <div key={warning} style={{ color: '#ad6800' }}>请核对：{warning}</div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               />
@@ -697,38 +696,7 @@ export function CandidatesPage() {
         </Form>
       </Drawer>
 
-      <Modal
-        title={`批量加入人才库（${selectedIds.length} 人）`}
-        open={batchPoolOpen}
-        onCancel={() => setBatchPoolOpen(false)}
-        onOk={async () => {
-          const res = await addToPool({
-            candidate_ids: selectedIds,
-            category: batchPoolCategory || undefined,
-            reason: batchPoolReason || undefined,
-            source: 'manual',
-          });
-          msg.success(`已加入 ${res.added.length} 人，重复跳过 ${res.duplicates.length} 人`);
-          setBatchPoolOpen(false);
-          setSelectedIds([]);
-          setBatchPoolCategory('');
-          setBatchPoolReason('');
-        }}
-      >
-        <p>分类</p>
-        <Select
-          style={{ width: '100%', marginBottom: 12 }} allowClear placeholder="选择分类"
-          value={batchPoolCategory || undefined}
-          onChange={(v) => setBatchPoolCategory(v ?? '')}
-          options={[
-            { value: 'tech', label: '技术类' }, { value: 'product', label: '产品类' },
-            { value: 'sales', label: '销售类' }, { value: 'general', label: '综合类' },
-          ]}
-        />
-        <p>加入原因</p>
-        <Input.TextArea rows={2} value={batchPoolReason} onChange={(e) => setBatchPoolReason(e.target.value)} />
-      </Modal>
-
     </div>
   );
 }
+

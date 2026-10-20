@@ -74,8 +74,12 @@ def test_resume_parser_logs_exception_and_returns_manual_status(monkeypatch, cap
         fields, status = parse_resume_file("broken.docx")
 
     assert status == "failed"
-    assert fields == {
+    assert {key: fields[key] for key in (
+        "name", "phone", "email", "city", "gender", "education", "work_experience",
+    )} == {
         "name": "", "phone": "", "email": "", "city": "",
         "gender": "", "education": [], "work_experience": [],
     }
+    assert fields["_parse_meta"]["method"] == "failed"
     assert "简历文本提取失败" in caplog.text
+

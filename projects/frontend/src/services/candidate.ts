@@ -224,6 +224,7 @@ export async function parseResumeUpload(file: File) {
   const form = new FormData();
   form.append('file', file);
   const resp = await http.post('/api/resume/parse-upload', form, {
+    timeout: 300_000,
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return unwrap<{
@@ -240,6 +241,11 @@ export async function parseResumeUpload(file: File) {
       major: string;
       education: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
       work_experience: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
+      _parse_meta?: {
+        method: 'text' | 'ocr' | 'text+ai' | 'ocr+ai' | 'failed';
+        confidence: number;
+        warnings: string[];
+      };
     };
     message: string;
   }>(resp);
@@ -270,7 +276,13 @@ export async function parseResume(attachmentId: number) {
       major?: string;
       education?: { school?: string; major?: string; degree?: string; graduate_at?: string }[];
       work_experience?: { company?: string; position?: string; start?: string; end?: string; desc?: string }[];
+      _parse_meta?: {
+        method: string;
+        confidence: number;
+        warnings: string[];
+      };
     };
     message: string;
   }>(resp);
 }
+

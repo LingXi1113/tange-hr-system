@@ -969,8 +969,8 @@ def resume_parse_upload():
         raise BizError(BizCode.PARAM_INVALID, "请上传简历文件")
 
     ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in {".pdf", ".docx"}:
-        raise BizError(BizCode.PARAM_INVALID, "新增候选人自动解析目前仅支持 PDF/DOCX")
+    if ext not in {".pdf", ".docx", ".jpg", ".jpeg", ".png"}:
+        raise BizError(BizCode.PARAM_INVALID, "新增候选人自动解析支持 PDF、DOCX、JPG、PNG")
 
     temp_path = ""
     try:
@@ -1051,7 +1051,7 @@ def resume_parse():
     if status == "failed":
         return ok({
             "parse_status": status, "fields": fields,
-            "message": "简历解析失败（图片简历暂不支持自动识别），请人工录入",
+            "message": "未能识别出可靠信息，请人工录入或检查 OCR/AI 配置",
         })
     return ok({"parse_status": status, "fields": fields, "message": "解析成功，请核对后保存"})
 
@@ -1078,3 +1078,4 @@ def download_attachment(att_id: int):
     return Response(data.getvalue(), mimetype=content_type,
                     headers={"Content-Disposition":
                              f'inline; filename="{fallback_name}"; filename*=UTF-8\'\'{encoded_name}'})
+
