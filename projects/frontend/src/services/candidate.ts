@@ -166,6 +166,7 @@ export async function fetchDeliveryAnalysis(id: number) {
 
 export interface DuplicateResult {
   duplicated: boolean;
+  application?: Application | null;
   duplicate_kind?: 'exact' | 'suspected';
   review_token?: string;
   merged?: boolean;
@@ -218,9 +219,10 @@ export async function fetchTransitions(applicationId: number) {
   return unwrap<{ from_stage: string; to_stage: string; reason: string; operator_name: string; created_at: string }[]>(resp);
 }
 
-export async function importCandidates(file: File) {
+export async function importCandidates(file: File, jobId?: number) {
   const form = new FormData();
   form.append('file', file);
+  if (jobId) form.append('job_id', String(jobId));
   const resp = await http.post('/api/candidates/import', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
@@ -262,10 +264,11 @@ export async function parseResumeUpload(file: File) {
   }>(resp);
 }
 
-export async function uploadResume(file: File, candidateId?: number) {
+export async function uploadResume(file: File, candidateId?: number, jobId?: number) {
   const form = new FormData();
   form.append('file', file);
   if (candidateId) form.append('candidate_id', String(candidateId));
+  if (jobId) form.append('job_id', String(jobId));
   const resp = await http.post('/api/resume/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });

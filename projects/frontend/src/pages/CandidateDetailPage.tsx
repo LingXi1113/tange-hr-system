@@ -985,7 +985,7 @@ export function CandidateDetailPage() {
                   <Upload
                     showUploadList={false} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"
                     beforeUpload={async (file) => {
-                      const up = await uploadResume(file as File, detail.id);
+                      const up = await uploadResume(file as File, detail.id, selectedApplication?.job_id);
                       msg.success('简历已上传');
                       const parsed = await parseResume(up.attachment_id);
                       if (parsed.parse_status === 'system') {

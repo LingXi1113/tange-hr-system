@@ -11,6 +11,9 @@ import re
 import unicodedata
 from datetime import date
 
+from common.resume_work import WORK_PERIOD_RE, extract_work_experience
+from common.resume_work import normalize_work_date as _normalize_work_date
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 PDF_EXTS = {".pdf"}
 WORD_EXTS = {".docx", ".doc"}
@@ -44,11 +47,6 @@ GENDER_LABEL_RE = re.compile(
     flags=re.IGNORECASE,
 )
 DATE_TOKEN = r"(?:19|20)\d{2}\s*(?:[\u5E74./-]\s*\d{1,2}\s*\u6708?)?"
-WORK_PERIOD_RE = re.compile(
-    rf"(?P<start>{DATE_TOKEN})\s*(?:[-~\uFF5E\u2014\u2013]\s*|\u81F3\s*(?!\u4ECA)|\u5230\s*|(?=\u81F3\u4ECA)|(?=\u73B0\u5728)|(?=\u76EE\u524D))"
-    rf"(?P<end>{DATE_TOKEN}|\u81F3\u4ECA|\u73B0\u5728|\u76EE\u524D)",
-    flags=re.IGNORECASE,
-)
 WORK_SECTION_HEADINGS = {
     "\u5DE5\u4F5C\u7ECF\u5386", "\u5DE5\u4F5C\u7ECF\u9A8C", "\u804C\u4E1A\u7ECF\u5386", "\u5DE5\u4F5C\u5C65\u5386", "\u4EFB\u804C\u7ECF\u5386", "employment",
     "work experience", "professional experience", "career history",
@@ -569,153 +567,13 @@ def _extract_city(text: str) -> str:
     return ""
 
 
-def _normalize_work_date(value: str) -> str:
-    value = re.sub(r"\s+", "", value)
-    if value in {"\u81F3\u4ECA", "\u73B0\u5728", "\u76EE\u524D"}:
-        return "\u81F3\u4ECA"
-    matched = re.match(r"((?:19|20)\d{2})[\u5E74./-]?(\d{1,2})?", value)
-    if not matched:
-        return value
-    year, month = matched.groups()
-    return f"{year}-{int(month):02d}" if month else year
-
-
-def _work_period(line: str):
-    matched = WORK_PERIOD_RE.search(line)
-    if not matched:
-        return None
-    return (
-        _normalize_work_date(matched.group("start")),
-        _normalize_work_date(matched.group("end")),
-        matched,
-    )
-
-
-def _strip_work_metadata(value: str) -> str:
-    value = WORK_PERIOD_RE.sub("", value)
-    value = re.sub(
-        r"(?:\u5DE5\u4F5C\u65F6\u95F4|\u4EFB\u804C\u65F6\u95F4|\u8D77\u6B62\u65F6\u95F4|\u516C\u53F8\u540D\u79F0|\u516C\u53F8|\u5355\u4F4D|\u96C7\u4E3B|\u804C\u4F4D|\u5C97\u4F4D|\u804C\u52A1)\s*[\uFF1A:|｜]\s*",
-        "",
-        value,
-    )
-    return value.strip(" \uFF1A:，,;；|/\\-—~～")
-
-
 def _is_section_heading(line: str) -> bool:
     normalized = re.sub(r"[\uFF1A:\s]+$", "", line.strip()).lower()
     return normalized in ALL_SECTION_HEADINGS
 
 
 def _extract_work_experience(text: str) -> list[dict]:
-    """Extract company, position and dates from common work-history layouts."""
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return []
-    sections = []
-    for index, line in enumerate(lines):
-        normalized = re.sub(r"[\uFF1A:\s]+$", "", line).lower()
-        if normalized in WORK_SECTION_HEADINGS:
-            end = len(lines)
-            for next_index in range(index + 1, len(lines)):
-                if _is_section_heading(lines[next_index]) and lines[next_index].lower() not in WORK_SECTION_HEADINGS:
-                    end = next_index
-                    break
-            sections.append(lines[index + 1:end])
-    if not sections:
-        sections = [lines]
-
-    records = []
-    for section in sections:
-        for index, line in enumerate(section):
-            period = _work_period(line)
-            if not period:
-                continue
-            start, end, matched = period
-            residual = _strip_work_metadata(line[:matched.start()] + " " + line[matched.end():])
-            context = []
-            if residual:
-                context.append(residual)
-            following = []
-            for next_line in section[index + 1:index + 5]:
-                if _work_period(next_line) or _is_section_heading(next_line):
-                    break
-                following.append(next_line)
-            if following:
-                context.extend(following)
-            elif not residual and index >= 2:
-                context.extend(section[max(0, index - 2):index])
-
-            company = ""
-            position = ""
-            company_labeled = False
-            plain_candidates = []
-            for context_line in context:
-                company_match = re.search(
-                    r"(?:\u516C\u53F8\u540D\u79F0|\u516C\u53F8|\u5355\u4F4D|\u96C7\u4E3B)\s*[\uFF1A:|｜]\s*([^|｜;；]+)",
-                    context_line,
-                    re.I,
-                )
-                position_match = re.search(
-                    r"(?:\u804C\u4F4D|\u5C97\u4F4D|\u804C\u52A1)\s*[\uFF1A:|｜]\s*([^|｜;；]+)",
-                    context_line,
-                    re.I,
-                )
-                if company_match and not company:
-                    company = _strip_work_metadata(company_match.group(1))
-                    company_labeled = True
-                if position_match and not position:
-                    position = _strip_work_metadata(position_match.group(1))
-                cleaned = _strip_work_metadata(context_line)
-                if not cleaned or _is_section_heading(cleaned):
-                    continue
-                parts = [part.strip() for part in re.split(r"[|｜]", cleaned) if part.strip()]
-                plain_candidates.extend(parts or [cleaned])
-
-            plain_candidates = [
-                candidate for candidate in plain_candidates
-                if len(candidate) <= 80 and not re.fullmatch(
-                    r"[\d\s./\u5E74\u6708\u65E5\u81F3\u4ECA\u73B0\u5728\u76EE\u524D~～—–\-]+",
-                    candidate,
-                )
-            ]
-            company_candidate = next(
-                (candidate for candidate in plain_candidates if "\u516C\u53F8" in candidate),
-                "",
-            )
-            if not company and company_candidate:
-                company = company_candidate
-            elif not company and plain_candidates:
-                company = plain_candidates[0]
-            if not position:
-                position_candidate = next(
-                    (candidate for candidate in plain_candidates if candidate != company),
-                    "",
-                )
-                position = position_candidate
-            if company == position:
-                position = ""
-            desc = plain_candidates[2:] if len(plain_candidates) > 2 else []
-            # Do not turn a date plus a job title/description into a fake employer.
-            # An unlabeled company must visibly contain “公司”; an explicit 公司： label
-            # is also accepted even when the value itself omits the suffix.
-            has_company_evidence = company_labeled or "\u516C\u53F8" in company
-            if has_company_evidence and company:
-                records.append({
-                    "company": company,
-                    "position": position,
-                    "start": start,
-                    "end": end,
-                    "desc": " ".join(desc)[:500],
-                })
-
-    unique = []
-    seen = set()
-    for record in records:
-        key = tuple(record.values())
-        if key not in seen:
-            seen.add(key)
-            unique.append(record)
-    return unique
+    return extract_work_experience(text)
 
 
 def _sanitize_name(value: str) -> str:
@@ -828,6 +686,8 @@ def _resume_quality(fields: dict, text: str, filename: str = "") -> tuple[int, l
     work = fields.get("work_experience") or []
     if work:
         score += min(18, 8 + len(work) * 3)
+        if any(not record.get("start") or not record.get("end") for record in work):
+            warnings.append("部分工作经历未识别到完整任职时间，请核对")
     elif re.search(r"工作经历|工作经验|职业经历|work experience", text, re.I):
         warnings.append("存在工作章节但未提取到公司")
     return max(0, min(score, 100)), warnings
@@ -995,4 +855,3 @@ def parse_resume_file(file_path: str, original_filename: str = ""):
     """Return (fields, parse_status): system=parsed, failed=manual review."""
     fields, status, _ = parse_resume_file_with_text(file_path, original_filename)
     return fields, status
-

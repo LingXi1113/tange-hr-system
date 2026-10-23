@@ -238,6 +238,8 @@ def test_import_export_and_template(client):
 def test_resume_upload_and_parse(client):
     ensure_hr(client)
     cid = make_candidate(client, phone="13955556666", email="resume@example.com")
+    job = make_job(client, name="简历解析测试岗位")
+    assign(client, cid, job["id"])
 
     import docx
 

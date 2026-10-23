@@ -29,6 +29,8 @@ def test_non_hr_cannot_disable_candidate_mask_or_export(client):
 def test_resume_access_is_role_scoped_and_logged(client):
     ensure_hr(client)
     cid = make_candidate(client, phone="13988880001", email="resume-security@example.com")
+    job = make_job(client, name="简历访问测试岗位")
+    assign(client, cid, job["id"])
     uploaded = client.post("/api/resume/upload", data={
         "candidate_id": str(cid),
         "file": (io.BytesIO(b"resume-data"), "resume.pdf"),

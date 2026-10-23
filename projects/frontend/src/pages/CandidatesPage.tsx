@@ -9,7 +9,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { PageLoading } from '@/components/PageLoading';
 import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import {
-  assignJob, deleteCandidate, fetchCandidate, fetchCandidateClassificationSummary, fetchCandidates, importCandidates,
+  deleteCandidate, fetchCandidateClassificationSummary, fetchCandidates, importCandidates,
   parseResume, parseResumeUpload, uploadResume,
 } from '@/services/candidate';
 import type { CandidateClassificationSummary, CandidateRow } from '@/services/candidate';
@@ -222,10 +222,10 @@ export function CandidatesPage() {
     msg.success('已移除当前简历，可重新选择文件');
   }
 
-  async function attachResume(candidateId: number) {
+  async function attachResume(candidateId: number, jobId: number) {
     if (!resumeFile) return;
     try {
-      const uploaded = await uploadResume(resumeFile, candidateId);
+      const uploaded = await uploadResume(resumeFile, candidateId, jobId);
       const parsed = await parseResume(uploaded.attachment_id);
       if (parsed.parse_status === 'system') {
         msg.success('候选人已创建，简历已上传并解析');
@@ -289,9 +289,9 @@ export function CandidatesPage() {
 
   async function performCreate() {
     const values = await form.validateFields();
-    const { job_id: selectedJobId, ...candidateValues } = values;
     const payload = {
-      ...candidateValues,
+      ...values,
+      job_id: Number(values.job_id),
       gender: values.gender || resumeParse?.fields.gender || '',
       age: values.age ?? resumeParse?.fields.age ?? null,
       highest_education: values.highest_education || resumeParse?.fields.highest_education || '',
@@ -302,15 +302,8 @@ export function CandidatesPage() {
     const result = await saveCandidateWithReview(null, payload);
     if (!result) return;
     if (result.candidate?.id) {
-      await attachResume(result.candidate.id);
-      const previous = result.merged ? await fetchCandidate(result.candidate.id) : null;
-      const existingApplication = previous?.applications.find((application) => (
-        application.job_id === Number(selectedJobId)
-        && ['in_progress', 'pending_onboard'].includes(application.status)
-      ));
-      const application = selectedJobId
-        ? existingApplication ?? await assignJob(result.candidate.id, Number(selectedJobId))
-        : null;
+      await attachResume(result.candidate.id, Number(values.job_id));
+      const application = result.application;
       if (application && resumeFile) {
         try {
           await runScreening(application.id);
@@ -639,6 +632,16 @@ export function CandidatesPage() {
         )}
       >
         <Form form={form} layout="vertical" disabled={creating}>
+          <Form.Item
+            name="job_id" label="应聘职位"
+            rules={[{ required: true, message: '请选择应聘职位后再保存' }]}
+          >
+            <Select
+              allowClear showSearch optionFilterProp="label"
+              placeholder="请选择应聘职位（必选）"
+              options={jobs.map((job) => ({ value: job.id, label: job.name }))}
+            />
+          </Form.Item>
           <Form.Item label="新增方式">
             <Space wrap>
               <Upload
@@ -656,7 +659,13 @@ export function CandidatesPage() {
                 accept=".csv,.xlsx"
                 showUploadList={false}
                 beforeUpload={async (file) => {
-                  const result = await importCandidates(file as File);
+                  try {
+                    await form.validateFields(['job_id']);
+                  } catch {
+                    msg.warning('请先选择应聘职位后再批量导入');
+                    return false;
+                  }
+                  const result = await importCandidates(file as File, Number(form.getFieldValue('job_id')));
                   let confirmed = 0;
                   let merged = 0;
                   for (const row of result.duplicates) {
@@ -727,13 +736,6 @@ export function CandidatesPage() {
           </Form.Item>
           <Form.Item name="name" label="姓名" rules={[{ required: true, message: '必填' }]}>
             <Input />
-          </Form.Item>
-          <Form.Item name="job_id" label="应聘职位（可选）">
-            <Select
-              allowClear showSearch optionFilterProp="label"
-              placeholder="选择后保存时同时创建应聘记录"
-              options={jobs.map((job) => ({ value: job.id, label: job.name }))}
-            />
           </Form.Item>
           <Form.Item name="gender" label="性别">
             <Select allowClear options={[{ value: '男', label: '男' }, { value: '女', label: '女' }]} />

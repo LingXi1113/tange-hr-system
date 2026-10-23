@@ -20,6 +20,7 @@ from common.access import (
 )
 from common.candidate_identity import ensure_candidate_indexes, identity_keys, identity_update
 from common.candidate_duplicates import find_matches, full_identity_key, log_review, review_token, validate_review
+from common.atomic import business_transaction
 from common.db import col, get_by_id, insert_doc, paginate, update_doc, dt
 from common.decorators import role_required
 from common.errors import BizError
@@ -124,6 +125,67 @@ def _duplicate_report_data(payload, matches, exclude_id=None):
 
 def _duplicate_report(payload, matches, exclude_id=None):
     return ok(_duplicate_report_data(payload, matches, exclude_id))
+
+
+def _selected_candidate_job(payload):
+    """Resolve an explicitly selected position before writing candidate data."""
+    if "job_id" not in payload:
+        return None  # Metadata-only records are also used by the talent pool.
+    value = payload["job_id"]
+    if isinstance(value, bool) or not str(value or "").isdigit() or int(value) <= 0:
+        raise BizError(BizCode.PARAM_INVALID, "请选择应聘职位后再保存")
+    job = get_by_id("jobs", int(value))
+    if job is None:
+        raise BizError(BizCode.PARAM_INVALID, "应聘职位不存在，请重新选择")
+    return job
+
+
+def _bind_candidate_job(candidate, job, session=None):
+    require_candidate_lock_owner(candidate["_id"])
+    existing = col("applications").find_one({
+        "candidate_id": candidate["_id"], "job_id": job["_id"],
+        "status": {"$in": [APP_IN_PROGRESS, APP_PENDING_ONBOARD]},
+    }, session=session)
+    if existing:
+        return existing, False
+    configured_stages = {stage.stage_key for stage in job_stage_sequence(job)}
+    stage = "hr_screen_passed" if "hr_screen_passed" in configured_stages else "new_resume"
+    application = create_application(
+        candidate, job, source=candidate.get("source") or "manual",
+        operator_id=g.current_user.user_id, operator_name=g.current_user.name,
+        initial_stage=stage, initial_lock_days=7,
+        initial_reason="HR分配职位并进入HR筛选", hr_assignment=True, session=session,
+    )
+    return application, True
+
+
+def _undo_new_application(application):
+    """Compensate only an application created by the current save request."""
+    if not application:
+        return
+    aid = application["_id"]
+    col("lock_records").delete_many({"application_id": aid})
+    col("stage_transitions").delete_many({"application_id": aid})
+    col("notifications").delete_many({"biz_type": "application", "biz_id": str(aid)})
+    col("operation_logs").delete_many({"biz_type": "application", "biz_id": str(aid)})
+    col("applications").delete_one({"_id": aid})
+
+
+def _insert_candidate_with_job(doc, job):
+    candidate = None
+    application = None
+    session = None
+    try:
+        with business_transaction() as session:
+            candidate = insert_doc("candidates", doc, session=session)
+            if job:
+                application, _ = _bind_candidate_job(candidate, job, session=session)
+        return candidate, application
+    except Exception:
+        if session is None and candidate:
+            _undo_new_application(application)
+            col("candidates").delete_one({"_id": candidate["_id"]})
+        raise
 
 
 def _merge_incoming_candidate(existing, payload):
@@ -593,15 +655,23 @@ def create_candidate():
     payload = request.get_json(silent=True) or {}
     if not (payload.get("name") or "").strip():
         raise BizError(BizCode.PARAM_INVALID, "姓名必填")
+    job = _selected_candidate_job(payload)
     matches = find_matches(payload)
     decisions = validate_review(payload, matches) if matches else None
     if matches and decisions is None:
         return _duplicate_report(payload, matches)
     if decisions and "same" in decisions.values():
         existing = next(c for c, _ in matches if decisions[str(c["_id"])] == "same")
-        c = _merge_incoming_candidate(existing, payload)
+        application, created_application = _bind_candidate_job(existing, job) if job else (None, False)
+        try:
+            c = _merge_incoming_candidate(existing, payload)
+        except Exception:
+            if created_application:
+                _undo_new_application(application)
+            raise
         log_review(matches, decisions, c["_id"])
-        return ok({"duplicated": False, "merged": True, "candidate": _candidate_view(c, mask=False)})
+        return ok({"duplicated": False, "merged": True, "candidate": _candidate_view(c, mask=False),
+                   "application": application_to_dict(application) if application else None})
     doc = {
         "name": "", "gender": "", "phone": "", "email": "", "city": "",
         "age": None, "highest_education": "", "major": "",
@@ -618,7 +688,7 @@ def create_candidate():
         doc["identity_full_key"] = full_key
     doc["version"] = 1
     try:
-        c = insert_doc("candidates", doc)
+        c, application = _insert_candidate_with_job(doc, job)
     except DuplicateKeyError:
         # The pre-check can race with another request; the unique identity
         # index is authoritative and the response keeps the existing UX.
@@ -627,7 +697,8 @@ def create_candidate():
         log_review(matches, decisions, c["_id"])
     write_log("candidate", "create", g.current_user.user_id, g.current_user.name,
               biz_id=str(c["_id"]), detail=c.get("name", ""))
-    return ok({"duplicated": False, "candidate": _candidate_view(c, mask=False)})
+    return ok({"duplicated": False, "candidate": _candidate_view(c, mask=False),
+               "application": application_to_dict(application) if application else None})
 
 
 @bp.put("/api/candidates/<int:cid>")
@@ -924,6 +995,7 @@ def import_template():
 @role_required(HR)
 def import_candidates():
     ensure_candidate_indexes()
+    job = _selected_candidate_job(request.form)
     file = request.files.get("file")
     if file is None or not file.filename:
         raise BizError(BizCode.PARAM_INVALID, "请上传导入文件")
@@ -958,6 +1030,8 @@ def import_candidates():
             continue
         payload = {"name": name, "gender": gender, "phone": phone, "email": email,
                    "city": city, "source": source or "manual"}
+        if job:
+            payload["job_id"] = job["_id"]
         matches = find_matches(payload)
         if matches:
             duplicates.append({"row": idx, "name": name, "phone": phone, "email": email,
@@ -976,10 +1050,13 @@ def import_candidates():
         if full_key:
             candidate_doc["identity_full_key"] = full_key
         try:
-            insert_doc("candidates", candidate_doc)
+            _insert_candidate_with_job(candidate_doc, job)
         except DuplicateKeyError:
             duplicates.append({"row": idx, "name": name, "phone": phone, "email": email,
                                "payload": payload, "review": _duplicate_report_data(payload, find_matches(payload))})
+            continue
+        except BizError as exc:
+            errors.append({"row": idx, "msg": str(exc)})
             continue
         success += 1
     write_log("candidate", "import", g.current_user.user_id, g.current_user.name,
@@ -1056,10 +1133,22 @@ def resume_upload():
     file = request.files.get("file")
     if file is None or not file.filename:
         raise BizError(BizCode.PARAM_INVALID, "请上传简历文件")
-    candidate_id = int(request.form.get("candidate_id") or 0)
-    if candidate_id:
-        _get_candidate_or_404(candidate_id)
-        require_candidate_lock_owner(candidate_id)
+    try:
+        candidate_id = int(request.form.get("candidate_id") or 0)
+    except (TypeError, ValueError):
+        raise BizError(BizCode.PARAM_INVALID, "候选人编号无效")
+    if candidate_id <= 0:
+        raise BizError(BizCode.PARAM_INVALID, "请先创建候选人并绑定应聘职位后再上传简历")
+    _get_candidate_or_404(candidate_id)
+    require_candidate_lock_owner(candidate_id)
+    query = {"candidate_id": candidate_id}
+    if "job_id" in request.form:
+        job = _selected_candidate_job(request.form)
+        query["job_id"] = job["_id"]
+    application = next((app for app in col("applications").find(query).sort("_id", -1)
+                        if get_by_id("jobs", app.get("job_id")) is not None), None)
+    if application is None:
+        raise BizError(BizCode.PARAM_INVALID, "请先为候选人绑定应聘职位后再上传简历")
     try:
         meta = save_uploaded_file(
             current_app, file, biz_type="resume",
@@ -1071,6 +1160,7 @@ def resume_upload():
         raise BizError(BizCode.PARAM_INVALID, str(e))
     att = insert_doc("attachments", {
         "candidate_id": candidate_id, "file_name": meta["originalName"],
+        "job_id": application["job_id"], "application_id": application["_id"],
         "file_path": meta["objectKey"], "file_id": meta["id"],
         "file_type": "resume", "parse_status": "",
     })
@@ -1079,7 +1169,7 @@ def resume_upload():
 
         col("files").update_one(
             {"_id": ObjectId(meta["id"])},
-            {"$set": {"candidate_id": candidate_id}},
+            {"$set": {"candidate_id": candidate_id, "job_id": application["job_id"]}},
         )
     return ok({"attachment_id": att["_id"], "file_name": att["file_name"], "file_id": meta["id"]})
 
