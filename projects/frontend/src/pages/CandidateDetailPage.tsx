@@ -7,12 +7,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
+import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import { CandidateAiAssistant } from '@/components/CandidateAiAssistant';
 import { CandidateAiEvaluation } from '@/components/CandidateAiEvaluation';
 import {
   assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
   fetchTransitions, parseResume,
-  saveCandidate, uploadResume,
+  uploadResume,
 } from '@/services/candidate';
 import { fetchInterviews, INTERVIEW_STATUS_TEXT } from '@/services/interview';
 import type { Interview } from '@/services/interview';
@@ -665,7 +666,7 @@ export function CandidateDetailPage() {
 
   async function saveResumeProfile() {
     const values = await resumeForm.validateFields();
-    const result = await saveCandidate(candidate.id, {
+    const result = await saveCandidateWithReview(candidate.id, {
       ...values,
       education: (values.education || []).map(({ school, degree, graduate_at }) => ({
         school, degree, graduate_at,
@@ -674,10 +675,7 @@ export function CandidateDetailPage() {
         company, start, end,
       })),
     });
-    if (result.duplicated) {
-      msg.error('手机号或邮箱与其他候选人重复，请确认后再保存');
-      return;
-    }
+    if (!result) return;
     msg.success('候选人简历信息已保存');
     setResumeEditOpen(false);
     await load();

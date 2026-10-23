@@ -7,9 +7,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
+import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import {
-  assignJob, deleteCandidate, fetchCandidateClassificationSummary, fetchCandidates, importCandidates,
-  parseResume, parseResumeUpload, saveCandidate, uploadResume,
+  assignJob, deleteCandidate, fetchCandidate, fetchCandidateClassificationSummary, fetchCandidates, importCandidates,
+  parseResume, parseResumeUpload, uploadResume,
 } from '@/services/candidate';
 import type { CandidateClassificationSummary, CandidateRow } from '@/services/candidate';
 import { fetchJobs } from '@/services/job';
@@ -106,6 +107,7 @@ export function CandidatesPage() {
     page: 1,
   }));
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [createLinkHandled, setCreateLinkHandled] = useState(false);
   const [form] = Form.useForm();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -276,6 +278,16 @@ export function CandidatesPage() {
   }
 
   async function handleCreate() {
+    if (creating || resumeParsing) return;
+    setCreating(true);
+    try {
+      await performCreate();
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function performCreate() {
     const values = await form.validateFields();
     const { job_id: selectedJobId, ...candidateValues } = values;
     const payload = {
@@ -287,32 +299,18 @@ export function CandidatesPage() {
       education: values.education?.length ? values.education : resumeParse?.fields.education ?? [],
       work_experience: values.work_experience?.length ? values.work_experience : resumeParse?.fields.work_experience ?? [],
     };
-    const result = await saveCandidate(null, payload);
-    if (result.duplicated && result.duplicates?.length) {
-      Modal.confirm({
-        title: '查重提示：候选人已存在',
-        content: `匹配到：${result.duplicates.map((d) => `${d.name}（${d.phone}）`).join('、')}。同一候选人不能重复建档，请使用已有候选人。`,
-        okText: '使用已有',
-        cancelText: '取消',
-        onOk: async () => {
-          const existing = result.duplicates![0];
-          const ownerId = existing.lock?.owner_id || existing.owner_id;
-          if (ownerId && ownerId !== user?.user_id) {
-            msg.error(`该候选人正在由 ${existing.lock?.owner_name || existing.owner_name || '其他 HR'} 处理，当前不能进入或操作`);
-            return;
-          }
-          if (selectedJobId) await assignJob(existing.id, Number(selectedJobId));
-          closeCreateDrawer();
-          navigate(`/candidates/${existing.id}`);
-        },
-      });
-      return;
-    }
+    const result = await saveCandidateWithReview(null, payload);
+    if (!result) return;
     if (result.candidate?.id) {
-      const application = selectedJobId
-        ? await assignJob(result.candidate.id, Number(selectedJobId))
-        : null;
       await attachResume(result.candidate.id);
+      const previous = result.merged ? await fetchCandidate(result.candidate.id) : null;
+      const existingApplication = previous?.applications.find((application) => (
+        application.job_id === Number(selectedJobId)
+        && ['in_progress', 'pending_onboard'].includes(application.status)
+      ));
+      const application = selectedJobId
+        ? existingApplication ?? await assignJob(result.candidate.id, Number(selectedJobId))
+        : null;
       if (application && resumeFile) {
         try {
           await runScreening(application.id);
@@ -322,7 +320,7 @@ export function CandidatesPage() {
         }
       }
     }
-    msg.success('候选人已创建');
+    msg.success(result.merged ? '已合并到已有候选人主档' : '候选人已创建');
     closeCreateDrawer();
     void load();
     void loadClassification();
@@ -632,14 +630,15 @@ export function CandidatesPage() {
       <Drawer
         title="新增候选人" width={480} open={drawerOpen}
         forceRender onClose={closeCreateDrawer}
+        closable={!creating} maskClosable={!creating} keyboard={!creating}
         extra={(
           <Space>
-            <Button onClick={closeCreateDrawer}>取消</Button>
-            <Button type="primary" disabled={resumeParsing} onClick={() => void handleCreate()}>保存</Button>
+            <Button disabled={creating} onClick={closeCreateDrawer}>取消</Button>
+            <Button type="primary" loading={creating} disabled={resumeParsing} onClick={() => void handleCreate()}>保存</Button>
           </Space>
         )}
       >
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" disabled={creating}>
           <Form.Item label="新增方式">
             <Space wrap>
               <Upload
@@ -658,10 +657,20 @@ export function CandidatesPage() {
                 showUploadList={false}
                 beforeUpload={async (file) => {
                   const result = await importCandidates(file as File);
+                  let confirmed = 0;
+                  let merged = 0;
+                  for (const row of result.duplicates) {
+                    if (!row.payload || !row.review) continue;
+                    const saved = await saveCandidateWithReview(null, row.payload, row.review);
+                    if (saved) {
+                      confirmed += 1;
+                      if (saved.merged) merged += 1;
+                    }
+                  }
                   closeCreateDrawer();
                   Modal.info({
                     title: '批量导入结果',
-                    content: `成功 ${result.success_count} 条；查重跳过 ${result.duplicates.length} 条；失败 ${result.errors.length} 条`,
+                    content: `新建 ${result.success_count + confirmed - merged} 条；合并 ${merged} 条；未确认 ${result.duplicates.length - confirmed} 条（未保存，可重新导入）；失败 ${result.errors.length} 条`,
                   });
                   void load();
                   void loadClassification();
@@ -756,4 +765,3 @@ export function CandidatesPage() {
     </div>
   );
 }
-

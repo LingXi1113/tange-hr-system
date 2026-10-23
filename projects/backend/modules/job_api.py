@@ -9,6 +9,7 @@ from flask import Blueprint, Response, current_app, g, request
 from pymongo.errors import DuplicateKeyError
 
 from common.candidate_identity import ensure_candidate_indexes, identity_keys
+from common.candidate_duplicates import find_matches, full_identity_key
 from common.db import col, delete_doc, get_by_id, insert_doc, paginate, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
@@ -419,18 +420,11 @@ def public_apply(token: str):
     if not privacy:
         raise BizError(BizCode.PARAM_INVALID, "请先勾选隐私授权")
 
-    # 查重：按手机号/邮箱匹配已有候选人，命中复用主档
-    candidate = None
-    if phone:
-        phone_key = identity_keys(phone, {}).get("phone_key")
-        candidate = col("candidates").find_one({
-            "$or": [{"phone_key": phone_key}, {"phone": phone}],
-        })
-    if candidate is None and email:
-        email_key = identity_keys({}, email).get("email_key")
-        candidate = col("candidates").find_one({
-            "$or": [{"email_key": email_key}, {"email": email}],
-        })
+    # Public applicants cannot confirm identity on behalf of HR.
+    matches = find_matches({"name": name, "phone": phone, "email": email})
+    if matches and len(matches[0][1]) != 3:
+        raise BizError(BizCode.CONFLICT, "存在需HR确认的候选人信息，请联系招聘HR完成身份核对后投递")
+    candidate = matches[0][0] if matches else None
     if candidate is None:
         candidate_doc = {
             "name": name, "gender": "", "phone": phone, "email": email,
@@ -440,17 +434,17 @@ def public_apply(token: str):
             "owner_id": "", "owner_name": "", "version": 1,
         }
         candidate_doc.update(identity_keys(phone, email))
+        full_key = full_identity_key(candidate_doc)
+        if full_key:
+            candidate_doc["identity_full_key"] = full_key
         try:
             candidate = insert_doc("candidates", candidate_doc)
         except DuplicateKeyError:
             # Another public submission won the identity race; reuse it.
-            candidate = None
-            if phone:
-                candidate = col("candidates").find_one({"phone_key": identity_keys(phone, {}).get("phone_key")})
-            if candidate is None and email:
-                candidate = col("candidates").find_one({"email_key": identity_keys({}, email).get("email_key")})
-            if candidate is None:
-                raise
+            matches = find_matches({"name": name, "phone": phone, "email": email})
+            if not matches or len(matches[0][1]) != 3:
+                raise BizError(BizCode.CONFLICT, "候选人信息发生变化，请联系招聘HR核对身份")
+            candidate = matches[0][0]
     write_log("candidate", "public_apply", "", name, biz_id=str(candidate["_id"]),
               detail=f"投递职位 {job.get('name', '')}")
 

@@ -166,7 +166,14 @@ export async function fetchDeliveryAnalysis(id: number) {
 
 export interface DuplicateResult {
   duplicated: boolean;
-  duplicates?: CandidateRow[];
+  duplicate_kind?: 'exact' | 'suspected';
+  review_token?: string;
+  merged?: boolean;
+  duplicates?: (CandidateRow & {
+    matched_fields?: string[];
+    education?: CandidateDetail['education'];
+    work_experience?: CandidateDetail['work_experience'];
+  })[];
   candidate?: CandidateRow;
 }
 
@@ -217,7 +224,11 @@ export async function importCandidates(file: File) {
   const resp = await http.post('/api/candidates/import', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return unwrap<{ success_count: number; duplicates: { row: number; name: string }[]; errors: { row: number; msg: string }[] }>(resp);
+  return unwrap<{
+    success_count: number;
+    duplicates: { row: number; name: string; payload?: Record<string, unknown>; review?: DuplicateResult }[];
+    errors: { row: number; msg: string }[];
+  }>(resp);
 }
 
 export async function parseResumeUpload(file: File) {
@@ -285,4 +296,3 @@ export async function parseResume(attachmentId: number) {
     message: string;
   }>(resp);
 }
-

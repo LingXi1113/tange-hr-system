@@ -48,9 +48,20 @@ def backfill_identity_keys() -> None:
     """
     seen_phone = set()
     seen_email = set()
+    seen_full = set()
+    from common.candidate_duplicates import full_identity_key
+
     candidates = col("candidates").find({}).sort("_id", 1)
     for candidate in candidates:
+        full_key = full_identity_key(candidate)
+        if full_key and full_key not in seen_full:
+            seen_full.add(full_key)
+            col("candidates").update_one({"_id": candidate["_id"]}, {"$set": {"identity_full_key": full_key}})
+        elif "identity_full_key" in candidate:
+            col("candidates").update_one({"_id": candidate["_id"]}, {"$unset": {"identity_full_key": ""}})
         if candidate.get("dedupe_exempt"):
+            if "version" not in candidate:
+                col("candidates").update_one({"_id": candidate["_id"]}, {"$set": {"version": 1}})
             continue
         set_fields = {}
         unset_fields = {}

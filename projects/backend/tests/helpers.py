@@ -35,9 +35,20 @@ def publish_job(client, job_id: int):
 
 
 def make_candidate(client, name="测试候选人", phone="13900001111", email="t1@example.com") -> int:
-    resp = client.post("/api/candidates", json={"name": name, "phone": phone, "email": email})
+    payload = {"name": name, "phone": phone, "email": email}
+    resp = client.post("/api/candidates", json=payload)
     body = resp.get_json()
     assert body["code"] == 0, body
+    # Fixtures often intentionally create different people with the same test name.
+    if body["data"].get("duplicated"):
+        report = body["data"]
+        assert report["duplicate_kind"] == "suspected", body
+        resp = client.post("/api/candidates", json={**payload, "duplicate_review": {
+            "token": report["review_token"],
+            "decisions": {str(c["id"]): "different" for c in report["duplicates"]},
+        }})
+        body = resp.get_json()
+        assert body["code"] == 0, body
     return body["data"]["candidate"]["id"]
 
 

@@ -16,9 +16,17 @@ def test_duplicate_check_prompt_not_merge(client):
     assert body["code"] == 0
     assert body["data"]["duplicated"] is True
     assert body["data"]["duplicates"][0]["phone"] == "13911112222"
-    # force 继续创建
+    # force 不再允许跳过 HR 确认。
     resp2 = client.post("/api/candidates", json={"name": "另一个人", "phone": "13911112222", "force": 1})
-    assert resp2.get_json()["data"]["duplicated"] is False
+    assert resp2.get_json()["data"]["duplicated"] is True
+    report = resp2.get_json()["data"]
+    confirmed = client.post("/api/candidates", json={
+        "name": "另一个人", "phone": "13911112222", "duplicate_review": {
+            "token": report["review_token"],
+            "decisions": {str(c["id"]): "different" for c in report["duplicates"]},
+        },
+    }).get_json()
+    assert confirmed["data"]["duplicated"] is False
 
 
 def test_masked_by_default(client):

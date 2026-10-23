@@ -11,6 +11,12 @@ from common.db import col
 
 CORE_INDEXES = (
     (
+        "candidates",
+        "uq_candidate_full_identity",
+        [("identity_full_key", 1)],
+        {"unique": True, "partialFilterExpression": {"identity_full_key": {"$exists": True}}},
+    ),
+    (
         "applications",
         "uq_active_application_candidate_job",
         [("candidate_id", 1), ("job_id", 1)],

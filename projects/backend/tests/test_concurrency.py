@@ -107,7 +107,16 @@ def test_candidate_identity_index_protects_racing_create(client, monkeypatch):
     assert first["code"] == 0
 
     # Simulate both requests passing the application-level duplicate query.
-    monkeypatch.setattr("modules.candidate_api._find_duplicates", lambda *args, **kwargs: [])
+    from modules import candidate_api
+    find_matches = candidate_api.find_matches
+    calls = 0
+
+    def skip_first_check(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else find_matches(*args, **kwargs)
+
+    monkeypatch.setattr(candidate_api, "find_matches", skip_first_check)
     second = client.post("/api/candidates", json={
         "name": "并发重复候选人", "phone": "13900002011", "email": "other@example.com",
     }).get_json()
@@ -119,14 +128,17 @@ def test_candidate_identity_index_protects_racing_create(client, monkeypatch):
         assert col("candidates").count_documents({"phone_key": "13900002011"}) == 1
 
 
-def test_force_duplicate_candidate_does_not_block_normal_identity_key(client):
+def test_confirmed_different_candidate_does_not_block_normal_identity_key(client):
     ensure_hr(client)
     first = client.post("/api/candidates", json={
         "name": "原始候选人", "phone": "13900002012", "email": "force@example.com",
     }).get_json()["data"]["candidate"]
-    forced = client.post("/api/candidates", json={
-        "name": "人工确认的重复候选人", "phone": "13900002012", "force": 1,
-    }).get_json()
+    payload = {"name": "人工确认的重复候选人", "phone": "13900002012"}
+    report = client.post("/api/candidates", json=payload).get_json()["data"]
+    forced = client.post("/api/candidates", json={**payload, "duplicate_review": {
+        "token": report["review_token"],
+        "decisions": {str(c["id"]): "different" for c in report["duplicates"]},
+    }}).get_json()
     assert forced["code"] == 0
     with client.application.app_context():
         from common.db import col
@@ -154,7 +166,16 @@ def test_candidate_edit_rejects_stale_version(client):
 def test_candidate_import_unique_index_turns_race_into_duplicate_row(client, monkeypatch):
     ensure_hr(client)
     make_candidate(client, phone="13900002014", email="import-race@example.com")
-    monkeypatch.setattr("modules.candidate_api._find_duplicates", lambda *args, **kwargs: [])
+    from modules import candidate_api
+    find_matches = candidate_api.find_matches
+    calls = 0
+
+    def skip_first_check(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return [] if calls == 1 else find_matches(*args, **kwargs)
+
+    monkeypatch.setattr(candidate_api, "find_matches", skip_first_check)
     import io
 
     content = "姓名,性别,手机号,邮箱,城市,来源\n并发导入,男,13900002014,other@example.com,上海,import\n"

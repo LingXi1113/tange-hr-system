@@ -19,6 +19,7 @@ from common.access import (
     require_candidate_lock_owner,
 )
 from common.candidate_identity import ensure_candidate_indexes, identity_keys, identity_update
+from common.candidate_duplicates import find_matches, full_identity_key, log_review, review_token, validate_review
 from common.db import col, get_by_id, insert_doc, paginate, update_doc, dt
 from common.decorators import role_required
 from common.errors import BizError
@@ -62,20 +63,6 @@ def _get_candidate_or_404(cid: int) -> dict:
     return c
 
 
-def _find_duplicates(phone: str, email: str, exclude_id: int = None):
-    conds = []
-    if phone:
-        conds.extend([{"phone": phone}, {"phone_key": identity_keys(phone, {}).get("phone_key")}])
-    if email:
-        conds.extend([{"email": email}, {"email_key": identity_keys({}, email).get("email_key")}])
-    if not conds:
-        return []
-    query = {"$or": conds}
-    if exclude_id:
-        query["_id"] = {"$ne": exclude_id}
-    return list(col("candidates").find(query))
-
-
 def _latest_application(candidate_id: int):
     app = col("applications").find_one({"candidate_id": candidate_id}, sort=[("_id", -1)])
     return reconcile_application_status(app) if app else None
@@ -116,7 +103,65 @@ def _candidate_view(c: dict, mask: bool = True) -> dict:
 def _duplicate_candidate_view(c: dict) -> dict:
     data = _candidate_view(c, mask=False)
     data["lock"] = lock_info_for_candidate(c["_id"])
+    data["education"] = c.get("education") or []
+    data["work_experience"] = c.get("work_experience") or []
     return data
+
+
+def _duplicate_report_data(payload, matches, exclude_id=None):
+    rows = []
+    for candidate, matched_fields in matches:
+        row = _duplicate_candidate_view(candidate)
+        row["matched_fields"] = matched_fields
+        rows.append(row)
+    return {
+        "duplicated": True,
+        "duplicate_kind": "exact" if any(len(fields) == 3 for _, fields in matches) else "suspected",
+        "review_token": review_token(payload, matches, exclude_id),
+        "duplicates": rows,
+    }
+
+
+def _duplicate_report(payload, matches, exclude_id=None):
+    return ok(_duplicate_report_data(payload, matches, exclude_id))
+
+
+def _merge_incoming_candidate(existing, payload):
+    """Keep the master identity; add missing information and distinct histories."""
+    require_candidate_lock_owner(existing["_id"])
+    incoming = _fill_candidate(payload)
+    fields = {key: value for key, value in incoming.items()
+              if value and not existing.get(key) and key not in {"name", "phone", "email"}}
+    for key in ("education", "work_experience"):
+        records = list(existing.get(key) or [])
+        for record in incoming.get(key) or []:
+            if record not in records:
+                records.append(record)
+        fields[key] = records
+    # Identity values only fill blanks; existing non-empty values remain authoritative.
+    for key in ("name", "phone", "email"):
+        if not existing.get(key) and incoming.get(key):
+            fields[key] = incoming[key]
+    merged = {**existing, **fields}
+    identity_set, identity_unset = identity_update(
+        merged.get("phone"), merged.get("email"), exempt=bool(existing.get("dedupe_exempt")),
+    )
+    fields.update(identity_set)
+    full_key = full_identity_key(merged)
+    if full_key:
+        fields["identity_full_key"] = full_key
+    update = {"$set": {**fields, "updated_at": datetime.now()}, "$inc": {"version": 1}}
+    if identity_unset:
+        update["$unset"] = identity_unset
+    updated = col("candidates").find_one_and_update(
+        {"_id": existing["_id"], "version": existing.get("version", 1)},
+        update, return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise BizError(BizCode.CONFLICT, "已有档案已被修改，请重新查重确认")
+    write_log("candidate", "merge", g.current_user.user_id, g.current_user.name,
+              biz_id=str(existing["_id"]), detail="HR确认同一人，补充新提交的简历信息到已有主档")
+    return updated
 
 
 def _candidate_row(c: dict, mask: bool) -> dict:
@@ -548,14 +593,15 @@ def create_candidate():
     payload = request.get_json(silent=True) or {}
     if not (payload.get("name") or "").strip():
         raise BizError(BizCode.PARAM_INVALID, "姓名必填")
-    phone = (payload.get("phone") or "").strip()
-    email = (payload.get("email") or "").strip()
-    duplicates = _find_duplicates(phone, email)
-    if duplicates and not payload.get("force"):
-        return ok({
-            "duplicated": True,
-            "duplicates": [_duplicate_candidate_view(c) for c in duplicates],
-        })
+    matches = find_matches(payload)
+    decisions = validate_review(payload, matches) if matches else None
+    if matches and decisions is None:
+        return _duplicate_report(payload, matches)
+    if decisions and "same" in decisions.values():
+        existing = next(c for c, _ in matches if decisions[str(c["_id"])] == "same")
+        c = _merge_incoming_candidate(existing, payload)
+        log_review(matches, decisions, c["_id"])
+        return ok({"duplicated": False, "merged": True, "candidate": _candidate_view(c, mask=False)})
     doc = {
         "name": "", "gender": "", "phone": "", "email": "", "city": "",
         "age": None, "highest_education": "", "major": "",
@@ -565,19 +611,20 @@ def create_candidate():
         "owner_name": payload.get("owner_name") or g.current_user.name,
     }
     doc.update(_fill_candidate(payload))
-    set_identity, _ = identity_update(doc.get("phone"), doc.get("email"), exempt=bool(payload.get("force")))
+    set_identity, _ = identity_update(doc.get("phone"), doc.get("email"), exempt=bool(decisions))
     doc.update(set_identity)
+    full_key = full_identity_key(doc)
+    if full_key:
+        doc["identity_full_key"] = full_key
     doc["version"] = 1
     try:
         c = insert_doc("candidates", doc)
     except DuplicateKeyError:
         # The pre-check can race with another request; the unique identity
         # index is authoritative and the response keeps the existing UX.
-        duplicates = _find_duplicates(phone, email)
-        return ok({
-            "duplicated": True,
-            "duplicates": [_duplicate_candidate_view(d) for d in duplicates],
-        })
+        return _duplicate_report(payload, find_matches(payload))
+    if decisions:
+        log_review(matches, decisions, c["_id"])
     write_log("candidate", "create", g.current_user.user_id, g.current_user.name,
               biz_id=str(c["_id"]), detail=c.get("name", ""))
     return ok({"duplicated": False, "candidate": _candidate_view(c, mask=False)})
@@ -590,25 +637,30 @@ def update_candidate(cid: int):
     c = _get_candidate_or_404(cid)
     require_candidate_lock_owner(cid)
     payload = request.get_json(silent=True) or {}
-    if "phone" in payload or "email" in payload:
-        duplicates = _find_duplicates(
-            payload.get("phone", c.get("phone", "")),
-            payload.get("email", c.get("email", "")), exclude_id=cid)
-        if duplicates and not payload.get("force"):
-            return ok({"duplicated": True,
-                       "duplicates": [_candidate_view(d, mask=False) for d in duplicates]})
+    next_identity = {key: payload.get(key, c.get(key, "")) for key in ("name", "phone", "email")}
+    identity_changed = any(next_identity[key] != c.get(key, "") for key in next_identity)
+    matches = find_matches(next_identity, exclude_id=cid) if identity_changed else []
+    decisions = validate_review(payload, matches, cid) if matches else None
+    if matches and decisions is None:
+        return _duplicate_report(payload, matches, cid)
+    if decisions and "same" in decisions.values():
+        raise BizError(BizCode.PARAM_INVALID, "该人员已有主档，请在已有主档维护资料，勿将两个现有档案改为同一人")
     fields = _fill_candidate(payload)
-    identity_changed = "phone" in payload or "email" in payload or bool(payload.get("force"))
     set_fields = dict(fields)
     unset_fields = {}
     if identity_changed:
         next_phone = fields.get("phone", c.get("phone", ""))
         next_email = fields.get("email", c.get("email", ""))
         identity_set, identity_unset = identity_update(
-            next_phone, next_email, exempt=bool(payload.get("force")),
+            next_phone, next_email, exempt=bool(decisions) or bool(c.get("dedupe_exempt")),
         )
         set_fields.update(identity_set)
         unset_fields.update(identity_unset)
+        full_key = full_identity_key({**c, **fields})
+        if full_key:
+            set_fields["identity_full_key"] = full_key
+        else:
+            unset_fields["identity_full_key"] = ""
     set_fields["updated_at"] = datetime.now()
     query = {"_id": cid}
     has_version = "version" in payload
@@ -625,13 +677,7 @@ def update_candidate(cid: int):
             query, update, return_document=ReturnDocument.AFTER,
         )
     except DuplicateKeyError:
-        next_phone = fields.get("phone", c.get("phone", ""))
-        next_email = fields.get("email", c.get("email", ""))
-        duplicates = _find_duplicates(next_phone, next_email, exclude_id=cid)
-        return ok({
-            "duplicated": True,
-            "duplicates": [_candidate_view(d, mask=False) for d in duplicates],
-        })
+        return _duplicate_report(payload, find_matches({**c, **fields}, exclude_id=cid), cid)
     if updated is None:
         if get_by_id("candidates", cid) is None:
             raise BizError(BizCode.NOT_FOUND, "候选人不存在")
@@ -639,6 +685,8 @@ def update_candidate(cid: int):
             raise BizError(BizCode.CONFLICT, "候选人信息已被其他人修改，请刷新后重试")
         raise BizError(BizCode.CONFLICT, "候选人信息更新失败，请刷新后重试")
     c = updated
+    if decisions:
+        log_review(matches, decisions, cid)
     write_log("candidate", "update", g.current_user.user_id, g.current_user.name, biz_id=str(cid))
     return ok({"duplicated": False, "candidate": _candidate_view(c, mask=False)})
 
@@ -908,8 +956,12 @@ def import_candidates():
         if not name:
             errors.append({"row": idx, "msg": "姓名缺失"})
             continue
-        if _find_duplicates(phone, email):
-            duplicates.append({"row": idx, "name": name, "phone": phone, "email": email})
+        payload = {"name": name, "gender": gender, "phone": phone, "email": email,
+                   "city": city, "source": source or "manual"}
+        matches = find_matches(payload)
+        if matches:
+            duplicates.append({"row": idx, "name": name, "phone": phone, "email": email,
+                               "payload": payload, "review": _duplicate_report_data(payload, matches)})
             continue
         candidate_doc = {
             "name": name, "gender": gender, "phone": phone, "email": email, "city": city,
@@ -920,10 +972,14 @@ def import_candidates():
             "version": 1,
         }
         candidate_doc.update(identity_keys(phone, email))
+        full_key = full_identity_key(candidate_doc)
+        if full_key:
+            candidate_doc["identity_full_key"] = full_key
         try:
             insert_doc("candidates", candidate_doc)
         except DuplicateKeyError:
-            duplicates.append({"row": idx, "name": name, "phone": phone, "email": email})
+            duplicates.append({"row": idx, "name": name, "phone": phone, "email": email,
+                               "payload": payload, "review": _duplicate_report_data(payload, find_matches(payload))})
             continue
         success += 1
     write_log("candidate", "import", g.current_user.user_id, g.current_user.name,
@@ -1078,4 +1134,3 @@ def download_attachment(att_id: int):
     return Response(data.getvalue(), mimetype=content_type,
                     headers={"Content-Disposition":
                              f'inline; filename="{fallback_name}"; filename*=UTF-8\'\'{encoded_name}'})
-

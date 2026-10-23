@@ -108,7 +108,7 @@ def test_public_page_and_apply_flow(client):
     no_privacy = _apply(anon, token, phone="13700003333", email="p3@example.com", privacy_agreed="")
     assert no_privacy.get_json()["code"] == 1001
 
-    # 手机号命中已有候选人：复用主档，不重复建档
+    # 手机号命中但邮箱缺失：公开用户不能代替 HR 确认身份。
     login(client, "hr-001")
     before = client.get("/api/candidates", query_string={"keyword": "13700002222"}).get_json()["data"]["total"]
     job2 = make_job(client, name="前端工程师", template_id=tpl)
@@ -116,9 +116,9 @@ def test_public_page_and_apply_flow(client):
     resp = anon.post(f"/api/public/jobs/{job2['public_token']}/apply", data={
         "name": "投递候选人", "phone": "13700002222", "privacy_agreed": "1",
     }, content_type="multipart/form-data")
-    assert resp.get_json()["code"] == 0
+    assert resp.get_json()["code"] == 1007
     after = client.get("/api/candidates", query_string={"keyword": "13700002222"}).get_json()["data"]["total"]
-    assert after == before  # 复用主档，候选人数量不变
+    assert after == before  # 未经 HR 确认，不修改主档或创建应聘记录。
 
 
 def test_public_apply_auto_parses_resume(client):
