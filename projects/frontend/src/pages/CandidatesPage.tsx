@@ -3,7 +3,7 @@ import {
   Alert, Avatar, Button, Checkbox, Drawer, Empty, Form, Input, InputNumber, Modal, Pagination,
   Popconfirm, Select, Space, Tag, Tooltip, Upload,
 } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
@@ -23,6 +23,11 @@ const SOURCE_TEXT: Record<string, string> = {
   manual: '手动录入', website: '官网投递', referral: '内部推荐',
   headhunt: '猎头', job_site: '招聘网站', campus: '校园招聘', import: '批量导入',
 };
+
+const RESUME_AUTOFILL_FIELDS = [
+  'name', 'gender', 'phone', 'email', 'age', 'highest_education', 'major',
+  'education', 'work_experience',
+];
 
 // 接口保存阶段编码，候选人页面统一展示业务中文名称。
 const STAGE_TEXT: Record<string, string> = {
@@ -107,6 +112,8 @@ export function CandidatesPage() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [resumeParsing, setResumeParsing] = useState(false);
   const [resumeParse, setResumeParse] = useState<Awaited<ReturnType<typeof parseResumeUpload>> | null>(null);
+  const resumeParseRequestId = useRef(0);
+  const resumeFormSnapshot = useRef<Record<string, unknown> | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [classification, setClassification] = useState<CandidateClassificationSummary | null>(null);
@@ -187,10 +194,30 @@ export function CandidatesPage() {
   }, [canManage, createLinkHandled, form, searchParams]);
 
   function closeCreateDrawer() {
+    resumeParseRequestId.current += 1;
+    resumeFormSnapshot.current = null;
     setDrawerOpen(false);
     setResumeFile(null);
     setResumeParse(null);
+    setResumeParsing(false);
     form.resetFields();
+  }
+
+  function restoreFormBeforeResume() {
+    const snapshot = resumeFormSnapshot.current ?? {};
+    form.setFieldsValue(Object.fromEntries(
+      RESUME_AUTOFILL_FIELDS.map((field) => [field, snapshot[field]]),
+    ));
+  }
+
+  function removeSelectedResume() {
+    resumeParseRequestId.current += 1;
+    restoreFormBeforeResume();
+    resumeFormSnapshot.current = null;
+    setResumeFile(null);
+    setResumeParse(null);
+    setResumeParsing(false);
+    msg.success('已移除当前简历，可重新选择文件');
   }
 
   async function attachResume(candidateId: number) {
@@ -209,11 +236,19 @@ export function CandidatesPage() {
   }
 
   async function handleResumeParse(file: File) {
+    if (!resumeFile) {
+      resumeFormSnapshot.current = form.getFieldsValue(RESUME_AUTOFILL_FIELDS);
+    } else {
+      restoreFormBeforeResume();
+    }
+    const requestId = resumeParseRequestId.current + 1;
+    resumeParseRequestId.current = requestId;
     setResumeFile(file);
     setResumeParse(null);
     setResumeParsing(true);
     try {
       const result = await parseResumeUpload(file);
+      if (resumeParseRequestId.current !== requestId) return;
       setResumeParse(result);
       if (result.parse_status === 'system') {
         const current = form.getFieldsValue(true);
@@ -233,9 +268,10 @@ export function CandidatesPage() {
         msg.warning('未能识别出基础信息，请手工填写');
       }
     } catch {
+      if (resumeParseRequestId.current !== requestId) return;
       msg.error('简历解析失败，请确认文件为可读取的 PDF 或 DOCX');
     } finally {
-      setResumeParsing(false);
+      if (resumeParseRequestId.current === requestId) setResumeParsing(false);
     }
   }
 
@@ -293,9 +329,12 @@ export function CandidatesPage() {
   }
 
   function openCreateDrawer() {
+    resumeParseRequestId.current += 1;
+    resumeFormSnapshot.current = null;
     form.resetFields();
     setResumeFile(null);
     setResumeParse(null);
+    setResumeParsing(false);
     setDrawerOpen(true);
   }
 
@@ -593,7 +632,12 @@ export function CandidatesPage() {
       <Drawer
         title="新增候选人" width={480} open={drawerOpen}
         forceRender onClose={closeCreateDrawer}
-        extra={<Button type="primary" onClick={() => void handleCreate()}>保存</Button>}
+        extra={(
+          <Space>
+            <Button onClick={closeCreateDrawer}>取消</Button>
+            <Button type="primary" disabled={resumeParsing} onClick={() => void handleCreate()}>保存</Button>
+          </Space>
+        )}
       >
         <Form form={form} layout="vertical">
           <Form.Item label="新增方式">
@@ -628,8 +672,21 @@ export function CandidatesPage() {
               </Upload>
             </Space>
             {resumeFile && (
-              <div style={{ marginTop: 8, color: 'rgba(23,26,29,0.65)' }}>
-                已选择：{resumeFile.name}
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ color: 'rgba(23,26,29,0.65)', overflowWrap: 'anywhere' }}>
+                  已选择：{resumeFile.name}
+                </span>
+                <Popconfirm
+                  title="删除当前简历？"
+                  description="将清除该简历的解析结果和自动填入内容"
+                  okText="删除"
+                  cancelText="取消"
+                  onConfirm={removeSelectedResume}
+                >
+                  <Button type="link" danger size="small" icon={<DeleteOutlined />} disabled={resumeParsing}>
+                    删除简历
+                  </Button>
+                </Popconfirm>
               </div>
             )}
             {resumeParse && (
