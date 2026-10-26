@@ -4,6 +4,7 @@ from collections import defaultdict
 from common.db import col
 from common.flow import active_lock_for_candidate, application_process_state
 from common.stages import STAGE_NAMES
+from common.resume_parser import candidate_highest_education
 
 TALENT_RECOMMENDATION_SOURCES = {"referral", "headhunt", "talent_pool", "business_recommendation"}
 SUBCATEGORY_FILTERS = {
@@ -31,6 +32,8 @@ def stage_bucket(application):
 class CandidateQuery:
     def __init__(self):
         self.candidates = list(col("candidates").find({}).sort("_id", -1))
+        for candidate in self.candidates:
+            candidate["highest_education"] = candidate_highest_education(candidate)
         self.jobs = {job["_id"]: job for job in col("jobs").find({}, {"name": 1, "dept_id": 1, "dept_name": 1})}
         self.apps = defaultdict(list)
         for application in col("applications").find({}).sort("_id", -1):

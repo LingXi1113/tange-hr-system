@@ -40,6 +40,8 @@ from common.logstore import write_log
 from common.mongo import MongoUnavailable
 from common.privacy import purge_candidate
 from common.resume_parser import (
+    candidate_highest_education,
+    highest_education_record,
     highest_education_from_records,
     major_from_records,
     parse_resume_file,
@@ -73,6 +75,7 @@ def _latest_application(candidate_id: int):
 def _candidate_view(c: dict, mask: bool = True) -> dict:
     # mask 参数仅保留兼容性，不能让普通角色通过 mask=0 关闭脱敏。
     data = redact_candidate(c, include_pii=can_view_pii() and not mask)
+    data["highest_education"] = candidate_highest_education(c)
     data["version"] = int(c.get("version", 1))
     return data
 
@@ -214,7 +217,7 @@ def _candidate_row(c: dict, mask: bool, application=None, use_context=False) -> 
             default={},
         )
 
-    data["education_summary"] = latest_record(education)
+    data["education_summary"] = highest_education_record(education)
     data["work_summary"] = latest_record(work_experience)
     app = application if use_context else _latest_application(c["_id"])
     data["application_id"] = app["_id"] if app else None
@@ -444,8 +447,7 @@ def _fill_candidate(payload: dict) -> dict:
                     raise BizError(BizCode.PARAM_INVALID, f"{jfield} 必须是 JSON 数组")
             fields[jfield] = value or []
     if "education" in fields:
-        if not str(payload.get("highest_education") or "").strip():
-            fields["highest_education"] = highest_education_from_records(fields["education"])
+        fields["highest_education"] = candidate_highest_education(fields)
         if not str(payload.get("major") or "").strip():
             fields["major"] = major_from_records(fields["education"])
     return fields

@@ -5,7 +5,7 @@ import logging
 from common.db import get_by_id, update_doc
 from common.file_service import get_storage, resolve_local
 from common.logstore import write_log
-from common.resume_parser import parse_resume_file_with_text
+from common.resume_parser import candidate_highest_education, parse_resume_file_with_text
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,9 @@ def auto_parse_attachment(app, attachment_id: int, candidate_id: int):
                 key: value for key, value in fields.items()
                 if key in EMPTY_FIELDS and value and not candidate.get(key)
             }
+            highest = candidate_highest_education({**candidate, **updates})
+            if highest and highest != candidate.get("highest_education"):
+                updates["highest_education"] = highest
             if updates:
                 update_doc("candidates", candidate_id, updates)
                 write_log("candidate", "resume_auto_parse", "", "系统",

@@ -222,7 +222,8 @@ function PdfImagePreview({ url }: { url: string }) {
 
     return () => {
       active = false;
-      void loadingTask.destroy();
+      // Re-parsing refreshes attachment URLs and cancels an in-flight preview.
+      void loadingTask.destroy().catch(() => {});
     };
   }, [url]);
 
@@ -286,6 +287,7 @@ export function CandidateDetailPage() {
   const [changeJobReason, setChangeJobReason] = useState('');
   const [changeJobSaving, setChangeJobSaving] = useState(false);
   const [resumeEditOpen, setResumeEditOpen] = useState(false);
+  const [parsingAttachmentId, setParsingAttachmentId] = useState<number | null>(null);
   const [deliveryAnalysisLoading, setDeliveryAnalysisLoading] = useState(false);
   const [deliveryAnalysisFailed, setDeliveryAnalysisFailed] = useState(false);
   const [deliveryAnalysis, setDeliveryAnalysis] = useState<DeliveryAnalysis | null>(null);
@@ -403,16 +405,22 @@ export function CandidateDetailPage() {
     }
   }, [user?.role]);
 
+  // Parse status/profile refreshes do not change immutable attachment content.
+  // Keep preview URLs stable so re-parsing does not terminate a loading PDF.
+  const previewAttachmentKey = JSON.stringify((detail?.attachments || []).map(({ id: attachmentId, file_name }) => ({
+    id: attachmentId, file_name,
+  })));
   useEffect(() => {
     let active = true;
     const createdUrls: string[] = [];
+    const attachments = JSON.parse(previewAttachmentKey) as { id: number; file_name: string }[];
 
     async function loadResumePreviews() {
-      if (!detail?.attachments.length) {
+      if (!attachments.length) {
         setResumePreviews({});
         return;
       }
-      const entries = await Promise.all(detail.attachments.map(async (attachment) => {
+      const entries = await Promise.all(attachments.map(async (attachment) => {
         try {
           const preview = await createProtectedFileUrl(`/api/attachments/${attachment.id}`);
           createdUrls.push(preview.url);
@@ -435,7 +443,7 @@ export function CandidateDetailPage() {
       active = false;
       createdUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [detail?.attachments]);
+  }, [previewAttachmentKey]);
 
   if (loading && !detail) return <PageLoading />;
   if (!detail) return <Empty description="候选人不存在" />;
@@ -697,8 +705,12 @@ export function CandidateDetailPage() {
     const values = await resumeForm.validateFields();
     const result = await saveCandidateWithReview(candidate.id, {
       ...values,
-      education: (values.education || []).map(({ school, degree, graduate_at }) => ({
-        school, degree, graduate_at,
+      // Unchanged masked display values are not real contact information.
+      // Re-parsing education must not replace stored contacts with asterisks.
+      phone: values.phone === candidate.phone ? undefined : values.phone,
+      email: values.email === candidate.email ? undefined : values.email,
+      education: (values.education || []).map(({ school, major, degree, graduate_at }) => ({
+        school, major, degree, graduate_at,
       })),
       work_experience: (values.work_experience || []).map(({ company, start, end }) => ({
         company, start, end,
@@ -708,6 +720,38 @@ export function CandidateDetailPage() {
     msg.success('候选人简历信息已保存');
     setResumeEditOpen(false);
     await load();
+  }
+
+  async function handleParseAttachment(attachmentId: number) {
+    if (parsingAttachmentId !== null) return;
+    setParsingAttachmentId(attachmentId);
+    try {
+      const parsed = await parseResume(attachmentId);
+      if (parsed.parse_status !== 'system') {
+        msg.error(parsed.message);
+        return;
+      }
+      const fields = parsed.fields;
+      if (canManage) {
+        openResumeEditor({
+          name: fields.name || candidate.name,
+          gender: fields.gender || candidate.gender,
+          phone: fields.phone || candidate.phone,
+          email: fields.email || candidate.email,
+          age: fields.age ?? candidate.age,
+          highest_education: fields.highest_education || candidate.highest_education,
+          major: fields.major || candidate.major,
+          education: fields.education?.length ? fields.education : candidate.education,
+          work_experience: fields.work_experience?.length ? fields.work_experience : candidate.work_experience,
+        });
+        msg.success('解析完成，请核对各段学历和最高学历后保存');
+      } else {
+        Modal.info({ title: '解析结果', content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre> });
+      }
+      await load();
+    } finally {
+      setParsingAttachmentId(null);
+    }
   }
 
   function openDeliveryAnalysis() {
@@ -1023,17 +1067,27 @@ export function CandidateDetailPage() {
               <Descriptions.Item label="性别">{detail.gender || '-'}</Descriptions.Item>
               <Descriptions.Item label="城市">{detail.city || '-'}</Descriptions.Item>
               <Descriptions.Item label="年龄">{detail.age ? `${detail.age} 岁` : '-'}</Descriptions.Item>
-              <Descriptions.Item label="最高学历">{detail.highest_education || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最高学历">
+                {detail.highest_education ? <Tag color="blue">{detail.highest_education}</Tag> : '待核对'}
+              </Descriptions.Item>
               <Descriptions.Item label="专业">{detail.major || '-'}</Descriptions.Item>
               <Descriptions.Item label="手机号">{detail.phone}</Descriptions.Item>
               <Descriptions.Item label="邮箱">{detail.email}</Descriptions.Item>
               <Descriptions.Item label="来源">{detail.source}</Descriptions.Item>
-              <Descriptions.Item label="负责人">{detail.owner_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="负责人" span={2}>{detail.owner_name || '-'}</Descriptions.Item>
               <Descriptions.Item label="教育经历" span={2}>
-                {detail.education.length
-                  ? detail.education.map((item) => [item.school, item.degree, item.graduate_at]
-                    .filter(Boolean).join(' · ')).filter(Boolean).join('；')
-                  : '-'}
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {detail.education.length ? detail.education.map((item, index) => (
+                    <div key={`${item.school}-${item.graduate_at}-${index}`}>
+                      <Typography.Text>{item.school || '院校待核对'}</Typography.Text>
+                      <Tag style={{ marginLeft: 8 }} color={item.degree === '博士' ? 'purple' : item.degree === '硕士' ? 'cyan' : 'default'}>
+                        {item.degree || '学历待核对'}
+                      </Tag>
+                      {item.major && <Typography.Text type="secondary">{item.major} · </Typography.Text>}
+                      <Typography.Text type="secondary">{item.graduate_at || '毕业时间待核对'}</Typography.Text>
+                    </div>
+                  )) : '-'}
+                </div>
               </Descriptions.Item>
               <Descriptions.Item label="标签" span={2}>{detail.tags || '-'}</Descriptions.Item>
               <Descriptions.Item label="备注" span={2}>{detail.remark || '-'}</Descriptions.Item>
@@ -1052,31 +1106,7 @@ export function CandidateDetailPage() {
                     beforeUpload={async (file) => {
                       const up = await uploadResume(file as File, detail.id, selectedApplication?.job_id);
                       msg.success('简历已上传');
-                      const parsed = await parseResume(up.attachment_id);
-                      if (parsed.parse_status === 'system') {
-                        const fields = parsed.fields;
-                        if (canManage) {
-                          openResumeEditor({
-                            name: fields.name || detail.name,
-                            gender: fields.gender || detail.gender,
-                            phone: fields.phone || detail.phone,
-                            email: fields.email || detail.email,
-                            age: fields.age ?? detail.age,
-                            highest_education: fields.highest_education || detail.highest_education,
-                            major: fields.major || detail.major,
-                            education: fields.education?.length ? fields.education : detail.education,
-                            work_experience: fields.work_experience?.length ? fields.work_experience : detail.work_experience,
-                          });
-                        } else {
-                          Modal.info({
-                            title: '解析结果',
-                            content: <pre style={{ fontSize: 12 }}>{JSON.stringify(fields, null, 2)}</pre>,
-                          });
-                        }
-                      } else {
-                        msg.error(parsed.message);
-                      }
-                      void load();
+                      await handleParseAttachment(up.attachment_id);
                       return false;
                     }}
                   >
@@ -1093,7 +1123,12 @@ export function CandidateDetailPage() {
               locale={{ emptyText: '暂无附件' }}
               dataSource={detail.attachments}
               renderItem={(a) => (
-                <List.Item>
+                <List.Item actions={canManage ? [
+                  <Button key="reparse" type="link" size="small"
+                    loading={parsingAttachmentId === a.id}
+                    disabled={parsingAttachmentId !== null && parsingAttachmentId !== a.id}
+                    onClick={() => void handleParseAttachment(a.id)}>重新解析</Button>,
+                ] : []}>
                   {a.file_name}
                   {a.parse_status === 'system' && <Tag color="success" style={{ marginLeft: 8 }}>系统解析</Tag>}
                   {a.parse_status === 'failed' && <Tag color="warning" style={{ marginLeft: 8 }}>解析失败·人工录入</Tag>}
@@ -1569,8 +1604,13 @@ export function CandidateDetailPage() {
                         <Col flex="1 1 180px">
                           <Form.Item {...field} name={[field.name, 'school']} label="学校"><Input /></Form.Item>
                         </Col>
+                        <Col flex="1 1 150px">
+                          <Form.Item {...field} name={[field.name, 'major']} label="专业"><Input /></Form.Item>
+                        </Col>
                         <Col flex="0 1 110px">
-                          <Form.Item {...field} name={[field.name, 'degree']} label="学历"><Input /></Form.Item>
+                          <Form.Item {...field} name={[field.name, 'degree']} label="学历">
+                            <Select allowClear options={['初中', '高中', '中专', '大专', '本科', '硕士', '博士'].map((value) => ({ value, label: value }))} />
+                          </Form.Item>
                         </Col>
                         <Col flex="0 1 130px">
                           <Form.Item {...field} name={[field.name, 'graduate_at']} label="毕业时间"><Input /></Form.Item>

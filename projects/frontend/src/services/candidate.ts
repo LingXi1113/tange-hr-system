@@ -298,7 +298,7 @@ export async function uploadResume(file: File, candidateId?: number, jobId?: num
 }
 
 export async function parseResume(attachmentId: number) {
-  const resp = await http.post('/api/resume/parse', { attachment_id: attachmentId });
+  const resp = await http.post('/api/resume/parse', { attachment_id: attachmentId }, { timeout: 300_000 });
   return unwrap<{
     parse_status: string;
     fields: {

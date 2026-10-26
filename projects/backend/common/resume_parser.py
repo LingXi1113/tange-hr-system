@@ -30,7 +30,18 @@ DEGREE_LEVELS = {
 }
 
 DEGREE_RE = re.compile(
-    r"博士后|博士研究生|博士在读|工商管理硕士|工程硕士|专业硕士|在职研究生|硕士研究生|研究生|本科|大专|高职|中专|高中|初中|博士|硕士|学士|MBA|EMBA",
+    r"博士后|博士研究生|博士在读|工商管理硕士|工程硕士|专业硕士|在职研究生|硕士研究生|研究生|本科|大专|高职|专科|中专|高中|初中|博士|硕士|学士"
+    r"|\b(?:post[- ]?doc(?:toral)?|Ph\.?\s*D\.?|D\.?Phil\.?|Doctor(?:ate|\s+of\s+Philosophy)"
+    r"|Master(?:['’]s)?(?:\s+of\s+(?:Science|Arts|Engineering|Business\s+Administration))?"
+    r"|M\.?\s*(?:Sc|Eng|Phil|Res)\.?|M\.?A\.?|EMBA|MBA"
+    r"|Bachelor(?:['’]s)?(?:\s+of\s+(?:Science|Arts|Engineering))?"
+    r"|B\.?\s*(?:Sc|Eng)\.?|B\.?A\.?)(?![A-Za-z])",
+    flags=re.IGNORECASE,
+)
+ENGLISH_SCHOOL_RE = re.compile(
+    r"\b(?:University\s+of\s+[A-Z][A-Za-zÀ-ž'’.-]*(?:\s+(?:of|and|the|[A-Z][A-Za-zÀ-ž'’.-]*)){0,5}"
+    r"|(?:[A-Z][A-Za-zÀ-ž'’.-]*\s+){1,7}(?:University|College|School)"
+    r"|(?:[A-Z][A-Za-zÀ-ž'’.-]*\s+){1,5}Institute\s+of\s+Technology)\b",
 )
 SCHOOL_RE = re.compile(
     r"[\u4e00-\u9fffA-Za-z0-9·&.\-]{2,50}?(?:大学|学院|学校|分校|电大)",
@@ -98,17 +109,44 @@ class OcrService:
         return recognize_resume(file_path)
 
 
+def _pdf_rows(layout) -> list[str]:
+    """Restore visual rows before PDFMiner's column reading order loses links."""
+    from pdfminer.layout import LTTextLine
+
+    fragments = []
+
+    def visit(item):
+        if isinstance(item, LTTextLine):
+            value = re.sub(r"\s+", " ", item.get_text()).strip()
+            if value:
+                fragments.append((item.x0, (item.y0 + item.y1) / 2, max(item.height, 1), value))
+        elif hasattr(item, "__iter__"):
+            for child in item:
+                visit(child)
+
+    visit(layout)
+    rows = []
+    for fragment in sorted(fragments, key=lambda item: (-item[1], item[0])):
+        if rows and abs(rows[-1][0] - fragment[1]) <= min(rows[-1][1], fragment[2]) * 0.35:
+            rows[-1][2].append(fragment)
+        else:
+            rows.append([fragment[1], fragment[2], [fragment]])
+    return [" | ".join(item[3] for item in sorted(row[2], key=lambda item: item[0])) for row in rows]
+
+
 def _extract_pdf(file_path: str) -> str:
     """Extract PDF text with layout analysis, falling back to pypdf."""
     text = ""
     try:
-        from pdfminer.high_level import extract_text
+        from pdfminer.high_level import extract_pages
         from pdfminer.layout import LAParams
 
-        text = extract_text(
-            file_path,
-            laparams=LAParams(char_margin=2.0, line_margin=0.4, word_margin=0.1),
-        ) or ""
+        text = "\n".join(
+            line for page in extract_pages(
+                file_path,
+                laparams=LAParams(char_margin=2.0, line_margin=0.4, word_margin=0.1, boxes_flow=None),
+            ) for line in _pdf_rows(page)
+        )
     except Exception:
         logger.exception("PDFMiner 文本提取失败 extension=pdf")
 
@@ -218,14 +256,18 @@ def _school_candidates(line: str) -> list[str]:
         item for item in matches
         if item.endswith(("大学", "学校", "分校", "电大"))
     ]
-    return universities or matches
+    if universities or matches:
+        return universities or matches
+    # Degree/major columns must not become part of an English institution name.
+    prefix = DEGREE_RE.split(line, maxsplit=1)[0]
+    return list(dict.fromkeys(match.strip() for match in ENGLISH_SCHOOL_RE.findall(prefix)))
 
 
 def _pick_degree(text: str) -> str:
-    matches = DEGREE_RE.findall(text)
-    if not matches:
-        return ""
-    return sorted(matches, key=lambda item: (-len(item), text.find(item)))[0]
+    text = re.split(r"(?:导师|指导教师)\s*[：:]", text, maxsplit=1)[0]
+    text = re.sub(r"(?:博士|硕士)生?导师", "", text)
+    matches = [normalize_degree(value) for value in DEGREE_RE.findall(text)]
+    return max((value for value in matches if value), key=lambda value: DEGREE_LEVELS[value], default="")
 
 
 def _pick_major(text: str) -> str:
@@ -240,11 +282,11 @@ def normalize_degree(value: str) -> str:
     value = str(value or "").strip()
     if not value:
         return ""
-    if "博士" in value:
+    if re.search(r"博士(?!后)|\b(?:Ph\.?\s*D\.?|D\.?Phil\.?|Doctorate|Doctor\s+of\s+Philosophy)(?![A-Za-z])", value, re.I):
         return "博士"
-    if any(token in value.upper() for token in ("硕士", "研究生", "MBA", "EMBA")):
+    if re.search(r"硕士|\b(?:EMBA|MBA|Master(?:['’]s)?|M\.?\s*(?:Sc|Eng|Phil|Res)\.?|M\.?A\.?)(?![A-Za-z])", value, re.I):
         return "硕士"
-    if "本科" in value or "学士" in value:
+    if re.search(r"本科|学士|\b(?:Bachelor(?:['’]s)?|B\.?\s*(?:Sc|Eng)\.?|B\.?A\.?)(?![A-Za-z])", value, re.I):
         return "本科"
     if any(token in value for token in ("大专", "专科", "高职")):
         return "大专"
@@ -272,14 +314,29 @@ def _education_rank(record: dict) -> tuple[int, str]:
     return DEGREE_LEVELS.get(degree, 0), str(record.get("graduate_at") or "")
 
 
+def highest_education_record(records: list[dict]) -> dict:
+    return max(records, key=_education_rank, default={})
+
+
 def highest_education_from_records(records: list[dict], text: str = "") -> str:
     """Return the highest normalized education level found in records/text."""
     candidates = [normalize_degree(item.get("degree", "")) for item in records]
+    labelled = re.search(r"最高学历\s*[：:|｜]?\s*([^\r\n|｜]{1,30})", text or "")
+    if labelled:
+        candidates.append(_pick_degree(labelled.group(1)))
     # 已识别到教育记录时，只使用记录内学历，避免把“岗位要求硕士”等正文误作候选人学历。
     if not any(candidates):
-        candidates.extend(normalize_degree(item) for item in DEGREE_RE.findall(text or ""))
+        candidates.extend(_pick_degree(line) for line in _education_lines(text or "") if _education_degree_line(line))
     candidates = [item for item in candidates if item]
     return max(candidates, key=lambda item: DEGREE_LEVELS.get(item, 0), default="")
+
+
+def candidate_highest_education(candidate: dict) -> str:
+    """Use complete histories without discarding a manually supplied higher level."""
+    return highest_education_from_records([
+        *(candidate.get("education") or []),
+        {"degree": candidate.get("highest_education", "")},
+    ])
 
 
 def major_from_records(records: list[dict], text: str = "") -> str:
@@ -323,6 +380,7 @@ def _extract_age(text: str) -> int | None:
 def _major_from_school_line(line: str, school: str) -> str:
     """Handle compact rows such as '2020-2024 某大学 计算机 本科'."""
     value = line.replace(school, " ")
+    value = re.sub(r"(?:工科|理科|文科|学历|学位)\s*[/／]\s*", " ", value)
     value = WORK_PERIOD_RE.sub(" ", value)
     value = re.sub(r"(?:19|20)\d{2}\s*(?:[年./-]\s*\d{1,2}\s*月?)?", " ", value)
     value = DEGREE_RE.sub(" ", value)
@@ -358,12 +416,15 @@ def _education_lines(text: str) -> list[str]:
     found_heading = False
     collecting = False
     for line in lines:
-        heading = _normalized_heading(line)
+        parts = re.split(r"[|｜]", line, maxsplit=1)
+        heading = _normalized_heading(parts[0])
         if heading in EDUCATION_SECTION_HEADINGS:
             found_heading = True
             collecting = True
+            if len(parts) > 1 and parts[1].strip():
+                sections.append(parts[1].strip())
             continue
-        if collecting and _is_section_heading(line):
+        if collecting and (_is_section_heading(line) or _is_section_heading(parts[0])):
             collecting = False
             continue
         if collecting:
@@ -376,15 +437,51 @@ def _education_context(lines: list[str], index: int) -> str:
     selected = [lines[index]]
     for offset in (1, 2):
         previous = index - offset
-        if previous < 0 or _school_candidates(lines[previous]):
+        if previous < 0 or _real_schools(lines[previous]) or _is_section_heading(lines[previous]):
             break
-        selected.insert(0, lines[previous])
-    for offset in (1, 2):
+        # Only borrow a preceding date row, not the previous school's degree.
+        if DATE_RE.search(lines[previous]) and not _pick_degree(lines[previous]):
+            selected.insert(0, lines[previous])
+        else:
+            break
+    for offset in range(1, 13):
         following = index + offset
-        if following >= len(lines) or _school_candidates(lines[following]):
+        if following >= len(lines) or _real_schools(lines[following]) or _is_section_heading(lines[following]):
             break
-        selected.append(lines[following])
+        if _education_degree_line(lines[following]):
+            selected.append(lines[following])
     return "\n".join(selected)
+
+
+def _real_schools(line: str) -> list[str]:
+    return [school for school in _school_candidates(line) if school not in FACULTY_ONLY_NAMES]
+
+
+def _education_degree_line(line: str) -> bool:
+    """Reject coursework and JD requirements as evidence of an earned degree."""
+    return not re.search(r"课程|论文题目|导师|指导教师|岗位要求|职位要求|招聘要求|学历要求|硕士优先|博士优先|\bcourses?\b|\brequirements?\b", line, re.I)
+
+
+def _column_degrees(lines: list[str]) -> dict[int, str]:
+    """Recover a detached degree column only when a one-to-one order exists.
+
+    Native PDFs are fixed by coordinates first. OCR/legacy text can still put
+    a full degree column after the institution column. Ambiguous counts are
+    deliberately left unassigned for HR/AI review, never guessed by proximity.
+    """
+    schools = [(index, line) for index, line in enumerate(lines) if _real_schools(line)]
+    if len(schools) < 2:
+        return {}
+    missing = [index for index, line in schools if not _pick_degree(line)]
+    degree_rows = [(index, _pick_degree(line)) for index, line in enumerate(lines)
+                   if not _real_schools(line) and _education_degree_line(line) and _pick_degree(line)]
+    if not missing:
+        return {}
+    if not all(index > schools[-1][0] for index, _ in degree_rows):
+        return {}
+    if degree_rows and len(degree_rows) != len(missing):
+        return {index: "" for index in missing}
+    return dict(zip(missing, (degree for _, degree in degree_rows)))
 
 
 def _merge_education_records(records: list[dict]) -> list[dict]:
@@ -411,9 +508,10 @@ def _merge_education_records(records: list[dict]) -> list[dict]:
 def _extract_education(text: str) -> list[dict]:
     """Associate nearby date/degree/major tokens with each school."""
     lines = _education_lines(text)
+    column_degrees = _column_degrees(lines)
     records = []
     for index, line in enumerate(lines):
-        schools = _school_candidates(line)
+        schools = _real_schools(line)
         if not schools:
             continue
         context = _education_context(lines, index)
@@ -425,7 +523,7 @@ def _extract_education(text: str) -> list[dict]:
             school = _clean_school(school)
             if not school or school in FACULTY_ONLY_NAMES:
                 continue
-            record_degree = _pick_degree(line) or context_degree
+            record_degree = _pick_degree(line) or (column_degrees[index] if index in column_degrees else context_degree)
             record_degree = normalize_degree(record_degree) or _infer_degree_from_school(school) or record_degree
             record_major = (
                 _pick_major(line)
@@ -439,18 +537,8 @@ def _extract_education(text: str) -> list[dict]:
                 "graduate_at": (line_dates or context_dates)[-1] if (line_dates or context_dates) else "",
             })
 
-    best_school_scores = {}
-    for record in records:
-        score = sum(bool(record.get(key)) for key in ("major", "degree", "graduate_at"))
-        best_school_scores[record["school"]] = max(
-            score,
-            best_school_scores.get(record["school"], -1),
-        )
-    records = [
-        record for record in records
-        if sum(bool(record.get(key)) for key in ("major", "degree", "graduate_at"))
-        == best_school_scores[record["school"]]
-    ]
+    # A sparse master's/doctorate record must not be discarded just because
+    # the same institution has a more complete undergraduate record.
     unique = []
     seen = set()
     for record in records:
@@ -568,7 +656,7 @@ def _extract_city(text: str) -> str:
 
 
 def _is_section_heading(line: str) -> bool:
-    normalized = re.sub(r"[\uFF1A:\s]+$", "", line.strip()).lower()
+    normalized = re.sub(r"[\uFF1A:\s]+$", "", re.split(r"[|｜]", line, maxsplit=1)[0].strip()).lower()
     return normalized in ALL_SECTION_HEADINGS
 
 
@@ -679,10 +767,16 @@ def _resume_quality(fields: dict, text: str, filename: str = "") -> tuple[int, l
     education = fields.get("education") or []
     if education:
         score += min(20, 8 + len(education) * 4)
+        if any(not normalize_degree(record.get("degree", "")) for record in education):
+            warnings.append("部分教育经历未识别到明确学历，请核对本科/硕士/博士")
         if len(education) > 4:
             warnings.append("教育经历数量异常，建议核对")
     elif re.search(r"教育经历|教育背景|学历背景|education", text, re.I):
         warnings.append("存在教育章节但未提取到院校")
+    education_degrees = {_pick_degree(line) for line in _education_lines(text) if _education_degree_line(line)} - {""}
+    recorded_degrees = {normalize_degree(record.get("degree", "")) for record in education}
+    if education and education_degrees - recorded_degrees:
+        warnings.append("教育章节存在尚未关联的学历，请核对各段教育经历")
     work = fields.get("work_experience") or []
     if work:
         score += min(18, 8 + len(work) * 3)
@@ -737,6 +831,58 @@ def _clean_ai_work(value: object) -> list[dict]:
     return records
 
 
+def _merge_education_evidence(records: list[dict], ai_records: list[dict], text: str) -> list[dict]:
+    """Supplement missing histories without promoting a degree on AI say-so."""
+    source_records = _extract_education(text)
+    lines = _education_lines(text)
+    merged = [dict(record) for record in records]
+
+    def key(value):
+        return re.sub(r"\s+", "", _normalize_resume_text(value)).casefold()
+
+    def same_period(left, right):
+        a, b = left.get("graduate_at", ""), right.get("graduate_at", "")
+        return not a or not b or a == b or a[:4] == b[:4] and (len(a) == 4 or len(b) == 4)
+
+    for incoming in ai_records:
+        school = key(incoming["school"])
+        source = [record for record in source_records
+                  if key(record["school"]) == school and same_period(record, incoming)]
+        degree = normalize_degree(incoming.get("degree", ""))
+        # Recheck both institution and degree in the education section, not
+        # in a work-project description or a copied job requirement.
+        indexes = [index for index, line in enumerate(lines) if school in key(line) and _education_degree_line(line)]
+        if not indexes:
+            continue
+        context = "\n".join(_education_context(lines, index) for index in indexes)
+        supported = any(normalize_degree(record.get("degree", "")) == degree for record in source) if source else (
+            degree in {_pick_degree(line) for line in context.splitlines() if _education_degree_line(line)}
+        )
+        if degree and not supported:
+            continue
+        record = dict(incoming)
+        existing = next((item for item in merged if key(item["school"]) == school
+                         and same_period(item, record)
+                         and (not item.get("degree") or normalize_degree(item["degree"]) == degree)), None)
+        if existing is None and degree:
+            # Repair a wrong degree only when the same dated school record has
+            # explicit source evidence; never overwrite a distinct earlier degree.
+            existing = next((item for item in merged if key(item["school"]) == school
+                             and item.get("graduate_at") and record.get("graduate_at")
+                             and same_period(item, record)
+                             and source and not any(normalize_degree(origin.get("degree", "")) == normalize_degree(item.get("degree", ""))
+                                                    for origin in source)), None)
+            if existing is not None:
+                existing["degree"] = degree
+        if existing is not None:
+            for field in ("degree", "major", "graduate_at"):
+                if not existing.get(field) and record.get(field):
+                    existing[field] = record[field]
+        else:
+            merged.append(record)
+    return _merge_education_records(merged)
+
+
 def _merge_ai_fields(fields: dict, ai_fields: dict, text: str, filename: str) -> dict:
     """Use AI only for missing or explicitly low-confidence deterministic fields."""
     result = dict(fields)
@@ -781,8 +927,8 @@ def _merge_ai_fields(fields: dict, ai_fields: dict, text: str, filename: str) ->
         record for record in _clean_ai_education(ai_fields.get("education"))
         if has_evidence(record["school"])
     ]
-    if ai_education and (not result.get("education") or len(result.get("education") or []) > 4):
-        result["education"] = ai_education
+    if ai_education:
+        result["education"] = _merge_education_evidence(result.get("education") or [], ai_education, text)
     ai_work = [
         record for record in _clean_ai_work(ai_fields.get("work_experience"))
         if has_evidence(record["company"])
@@ -791,7 +937,7 @@ def _merge_ai_fields(fields: dict, ai_fields: dict, text: str, filename: str) ->
         result["work_experience"] = ai_work
 
     if result.get("education"):
-        result["highest_education"] = highest_education_from_records(result["education"])
+        result["highest_education"] = highest_education_from_records(result["education"], text)
         result["major"] = major_from_records(result["education"])
     else:
         ai_degree = normalize_degree(ai_fields.get("highest_education", ""))
