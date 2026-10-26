@@ -4,7 +4,6 @@ import io
 import json
 import mimetypes
 import os
-import re
 import tempfile
 from datetime import datetime
 from urllib.parse import quote
@@ -19,6 +18,7 @@ from common.access import (
     require_candidate_lock_owner,
 )
 from common.candidate_identity import ensure_candidate_indexes, identity_keys, identity_update
+from common.candidate_query import CandidateQuery
 from common.candidate_duplicates import find_matches, full_identity_key, log_review, review_token, validate_review
 from common.atomic import business_transaction
 from common.db import col, get_by_id, insert_doc, paginate, update_doc, dt
@@ -31,7 +31,6 @@ from common.file_service import (
 )
 from common.flow import (
     active_lock_for_candidate,
-    application_process_state,
     application_to_dict,
     create_application,
     job_stage_sequence,
@@ -69,29 +68,6 @@ def _latest_application(candidate_id: int):
     return reconcile_application_status(app) if app else None
 
 
-def _stage_bucket(app: dict | None) -> str:
-    """把历史阶段编码和具体面试轮次归入候选人页面的统一分类。"""
-    if not app:
-        return "pending_screen"
-    stage = app.get("current_stage", "pending_screen")
-    round_name = app.get("interview_round", "")
-    if stage in {"new_resume", "pending_screen", "hr_screen_passed"}:
-        return "pending_screen"
-    if stage in {"pending_interview", "interviewing", "interview_passed"}:
-        if round_name == "二面":
-            return "interview_2"
-        if round_name in {"三面", "终面", "HR面试", "终面（HR）"}:
-            return "interview_3"
-        return "interview_1"
-    if stage == "hr_interview":
-        return "interview_3"
-    if stage == "offer":
-        return "offer_pending"
-    return stage
-
-
-def _matches_stage_bucket(app: dict | None, requested_stage: str) -> bool:
-    return _stage_bucket(app) == requested_stage
 
 
 def _candidate_view(c: dict, mask: bool = True) -> dict:
@@ -226,7 +202,7 @@ def _merge_incoming_candidate(existing, payload):
     return updated
 
 
-def _candidate_row(c: dict, mask: bool) -> dict:
+def _candidate_row(c: dict, mask: bool, application=None, use_context=False) -> dict:
     data = _candidate_view(c, mask=mask)
     education = list(c.get("education") or [])
     work_experience = list(c.get("work_experience") or [])
@@ -240,7 +216,8 @@ def _candidate_row(c: dict, mask: bool) -> dict:
 
     data["education_summary"] = latest_record(education)
     data["work_summary"] = latest_record(work_experience)
-    app = _latest_application(c["_id"])
+    app = application if use_context else _latest_application(c["_id"])
+    data["application_id"] = app["_id"] if app else None
     if app:
         data["latest_application"] = application_to_dict(app)
     else:
@@ -255,201 +232,27 @@ def _candidate_row(c: dict, mask: bool) -> dict:
 def list_candidates():
     args = request.args
     mask = True if not can_view_pii() else args.get("mask", "1") != "0"
-    query = {}
-    if args.get("keyword"):
-        kw = args["keyword"].strip()
-        keyword_pattern = re.compile(re.escape(kw), re.IGNORECASE)
-        matched_job_ids = col("jobs").distinct("_id", {
-            "$or": [
-                {"name": keyword_pattern},
-                {"dept_name": keyword_pattern},
-            ],
-        })
-        matched_candidate_ids = set(col("applications").distinct(
-            "candidate_id", {"job_id": {"$in": matched_job_ids}},
-        )) if matched_job_ids else set()
-        keyword_conditions = [
-            {"name": keyword_pattern},
-            {"phone": keyword_pattern},
-            {"email": keyword_pattern},
-            {"major": keyword_pattern},
-            {"education.school": keyword_pattern},
-            {"education.major": keyword_pattern},
-            {"work_experience.company": keyword_pattern},
-            {"work_experience.position": keyword_pattern},
-        ]
-        if matched_candidate_ids:
-            keyword_conditions.append({"_id": {"$in": list(matched_candidate_ids)}})
-        query["$or"] = keyword_conditions
-    if args.get("highest_education"):
-        query["highest_education"] = args["highest_education"]
-    if args.get("tag"):
-        query["tags"] = {"$regex": args["tag"]}
-    items = list(col("candidates").find(query).sort("_id", -1))
-    if args.get("source"):
-        source = args["source"]
-        source_candidate_ids = set(col("applications").distinct("candidate_id", {"source": source}))
-        items = [
-            item for item in items
-            if item.get("source") == source or item["_id"] in source_candidate_ids
-        ]
-    if args.get("job_dept_id"):
-        job_ids = col("jobs").distinct("_id", {"dept_id": args["job_dept_id"]})
-        department_candidate_ids = set(col("applications").distinct(
-            "candidate_id", {"job_id": {"$in": job_ids}},
-        )) if job_ids else set()
-        items = [item for item in items if item["_id"] in department_candidate_ids]
-    category = args.get("category", "")
-    if category == "pending":
-        items = [item for item in items if "待定" in (item.get("tags") or "")]
-    elif category == "recommended":
-        recommended_sources = ["referral", "headhunt", "talent_pool", "business_recommendation"]
-        recommended_ids = set(col("applications").distinct(
-            "candidate_id", {"source": {"$in": recommended_sources}},
-        ))
-        items = [
-            item for item in items
-            if item["_id"] in recommended_ids or item.get("source") in recommended_sources
-        ]
-    recommendation_status = args.get("recommendation_status", "")
-    recommendation_app_ids = None
-    if recommendation_status in {"passed", "failed"}:
-        target_stages = (
-            [
-                "pending_interview", "interviewing", "interview_1", "interview_2",
-                "interview_3", "hr_interview", "re_interview", "interview_passed",
-                "hrbp_interview",
-            ]
-            if recommendation_status == "passed"
-            else ["eliminated", "abandoned", "talent_pool"]
-        )
-        recommendation_app_ids = set(col("stage_transitions").distinct("application_id", {
-            "from_stage": "business_screen",
-            "to_stage": {"$in": target_stages},
-        }))
-
-    if args.get("source_group") == "talent_recommendation":
-        recommendation_sources = ["headhunt", "talent_pool", "business_recommendation"]
-        recommendation_candidate_ids = set(col("applications").distinct(
-            "candidate_id", {"source": {"$in": recommendation_sources}},
-        ))
-        items = [
-            item for item in items
-            if item.get("source") in recommendation_sources
-            or item["_id"] in recommendation_candidate_ids
-        ]
-
-    # 应聘记录相关过滤（职位、阶段、工作台子分类）
-    if any(args.get(key) for key in (
-        "job_id", "stage", "assigned", "unassigned", "unprocessed",
-        "recommendation_status", "action_state",
-    )):
-        filtered = []
-        for c in items:
-            app_query = {"candidate_id": c["_id"]}
-            if args.get("job_id"):
-                app_query["job_id"] = int(args["job_id"])
-            matching_apps = list(col("applications").find(app_query))
-            all_apps = matching_apps if not args.get("job_id") else list(
-                col("applications").find({"candidate_id": c["_id"]})
-            )
-            if args.get("unassigned") == "1":
-                if not all_apps:
-                    filtered.append(c)
-                continue
-            if args.get("assigned") == "1" and not matching_apps:
-                continue
-            if args.get("unprocessed") == "1" and not any(
-                app.get("current_stage") in {"new_resume", "pending_screen"}
-                and app.get("status") == APP_IN_PROGRESS for app in matching_apps
-            ):
-                continue
-            requested_stage = args.get("stage", "")
-            if requested_stage and not any(
-                _matches_stage_bucket(app, requested_stage) for app in matching_apps
-            ):
-                if requested_stage == "pending_screen" and not args.get("job_id") \
-                        and not all_apps and args.get("assigned") != "1":
-                    filtered.append(c)
-                continue
-            if recommendation_status == "pending" and not any(
-                app.get("current_stage") == "business_screen"
-                and app.get("status") == APP_IN_PROGRESS for app in matching_apps
-            ):
-                continue
-            if recommendation_app_ids is not None and not any(
-                app.get("_id") in recommendation_app_ids for app in matching_apps
-            ):
-                continue
-            requested_action_state = args.get("action_state", "")
-            if requested_action_state and not any(
-                application_process_state(app).get("key") == requested_action_state
-                for app in matching_apps
-            ):
-                continue
-            if matching_apps or not any((
-                args.get("job_id"), requested_stage, args.get("assigned"),
-                args.get("unprocessed"), recommendation_status, requested_action_state,
-            )):
-                filtered.append(c)
-            elif requested_stage == "pending_screen" and not args.get("job_id") \
-                    and not all_apps and args.get("assigned") != "1":
-                # No application means the candidate is still waiting for HR screening.
-                filtered.append(c)
-        items = filtered
-    if args.get("locked") == "1":
-        items = [c for c in items if active_lock_for_candidate(c["_id"])]
+    snapshot = CandidateQuery()
+    matches = snapshot.filter(args)
     page = max(int(args.get("page", 1)), 1)
     page_size = min(max(int(args.get("page_size", 10)), 1), 100)
-    sliced, total, page, page_size = paginate(items, page, page_size)
+    sliced, total, page, page_size = paginate(matches, page, page_size)
+    data = {
+        "list": [_candidate_row(candidate, mask, application=application, use_context=True)
+                 for candidate, application in sliced],
+        "total": total, "page": page, "page_size": page_size,
+    }
+    if args.get("include_summary") == "1":
+        data["classification"] = snapshot.summary(args)
     write_log("candidate", "list_view", g.current_user.user_id, g.current_user.name,
               detail=f"page={page}; page_size={page_size}; rows={len(sliced)}")
-    return paged([_candidate_row(c, mask) for c in sliced], total, page, page_size)
+    return ok(data)
 
 
 @bp.get("/api/candidates/classification-summary")
 @role_required(*CANDIDATE_READ_ROLES)
 def candidate_classification_summary():
-    candidates = list(col("candidates").find({}, {"_id": 1, "source": 1, "tags": 1}))
-    applications = list(col("applications").find(
-        {}, {"_id": 1, "candidate_id": 1, "current_stage": 1, "interview_round": 1,
-             "source": 1, "status": 1},
-    ).sort("_id", -1))
-    latest_by_candidate = {}
-    recommended_ids = set()
-    recommended_sources = {"referral", "headhunt", "talent_pool", "business_recommendation"}
-    for application in applications:
-        candidate_id = application.get("candidate_id")
-        if candidate_id not in latest_by_candidate:
-            latest_by_candidate[candidate_id] = application
-        if application.get("source") in recommended_sources:
-            recommended_ids.add(candidate_id)
-
-    stage_counts = {}
-    for candidate in candidates:
-        application = latest_by_candidate.get(candidate["_id"])
-        stage = _stage_bucket(application)
-        stage_counts[stage] = stage_counts.get(stage, 0) + 1
-    pending_count = sum(1 for candidate in candidates if "待定" in (candidate.get("tags") or ""))
-    recommended_count = sum(
-        1 for candidate in candidates
-        if candidate["_id"] in recommended_ids or candidate.get("source") in recommended_sources
-    )
-    unprocessed_ids = set(col("applications").distinct("candidate_id", {
-        "current_stage": {"$in": ["new_resume", "pending_screen"]},
-        "status": APP_IN_PROGRESS,
-    }))
-    unassigned_count = sum(1 for candidate in candidates if candidate["_id"] not in latest_by_candidate)
-    return ok({
-        "stage_counts": stage_counts,
-        "categories": {
-            "unprocessed": sum(1 for candidate in candidates if candidate["_id"] in unprocessed_ids),
-            "pending": pending_count,
-            "recommended": recommended_count,
-        },
-        "total": len(candidates),
-        "unassigned": unassigned_count,
-    })
+    return ok(CandidateQuery().summary(request.args))
 
 
 @bp.get("/api/candidates/<int:cid>")
@@ -835,15 +638,25 @@ def delivery_analysis(cid: int):
 
     details = []
     overall_highest = {"rank": -1, "name": "-"}
+    recommendation_count = 0
+    recommendation_passed = 0
     for app in apps:
         job = get_by_id("jobs", app.get("job_id")) or {}
         sequence = job_stage_sequence(job)
         rank_by_key = {stage.stage_key: index for index, stage in enumerate(sequence)}
+        rank_by_key.update({
+            "new_resume": 0, "pending_screen": 5, "hr_screen_passed": 10, "business_screen": 20,
+            "pending_interview": 30, "interviewing": 30, "interview_passed": 30,
+            "interview_1": 30, "interview_2": 40, "interview_3": 50, "hr_interview": 55,
+            "hrbp_interview": 60, "offer_pending": 70, "offer_approval": 70, "offer": 75,
+            "pending_onboard": 80, "onboarded": 90,
+        })
         name_by_key = {stage.stage_key: stage.name for stage in sequence}
         transitions = list(col("stage_transitions").find({
             "application_id": app["_id"],
         }).sort("_id", 1))
         reached_keys = [app.get("current_stage", "")]
+        reached_keys.extend(item.get("from_stage", "") for item in transitions)
         reached_keys.extend(item.get("to_stage", "") for item in transitions)
         reached = max(
             (key for key in reached_keys if key in rank_by_key),
@@ -851,12 +664,61 @@ def delivery_analysis(cid: int):
             default=app.get("current_stage", ""),
         )
         reached_rank = rank_by_key.get(reached, -1)
+        app_interviews = [item for item in interviews if item.get("application_id") == app["_id"]]
+        round_rank = {"一面": 30, "二面": 40, "三面": 50, "HR面试": 55, "复试": 55}
+        rounds = [item.get("round", "") for item in app_interviews if item.get("status") != "cancelled"]
+        if app.get("interview_round"):
+            rounds.append(app["interview_round"])
+        highest_round = max(rounds, key=lambda value: round_rank.get(value, -1), default="")
+        reached_name = name_by_key.get(reached, STAGE_NAMES.get(reached, reached or "-"))
+        if highest_round in round_rank and round_rank[highest_round] >= reached_rank:
+            reached_rank = round_rank[highest_round]
+            reached_name = highest_round
         if reached_rank > overall_highest["rank"]:
             overall_highest = {
                 "rank": reached_rank,
-                "name": name_by_key.get(reached, STAGE_NAMES.get(reached, reached or "-")),
+                "name": reached_name,
             }
-        app_interviews = [item for item in interviews if item.get("application_id") == app["_id"]]
+        recommendations = [item for item in transitions if item.get("to_stage") == "business_screen"]
+        recommendation_count += len(recommendations)
+        for recommendation in recommendations:
+            departure = next((item for item in transitions
+                              if item.get("from_stage") == "business_screen"
+                              and item.get("to_stage") != "business_screen"
+                              and item.get("_id", 0) > recommendation.get("_id", 0)), None)
+            if departure and departure.get("to_stage") not in {
+                "eliminated", "abandoned", "talent_pool", "new_resume", "pending_screen", "hr_screen_passed",
+            }:
+                recommendation_passed += 1
+        timeline = [{
+            "id": f"application-{app['_id']}", "title": "投递简历",
+            "detail": app.get("source", ""), "operator_name": app.get("owner_name", ""),
+            "created_at": dt(app.get("created_at")),
+        }]
+        timeline.extend({
+            "id": f"transition-{item['_id']}",
+            "title": "推荐业务复筛" if item.get("to_stage") == "business_screen"
+                else f"进入{name_by_key.get(item.get('to_stage'), STAGE_NAMES.get(item.get('to_stage'), item.get('to_stage', '')))}",
+            "detail": item.get("reason", ""), "operator_name": item.get("operator_name", ""),
+            "created_at": dt(item.get("created_at")),
+        } for item in transitions if item.get("from_stage"))
+        for interview in app_interviews:
+            timeline.append({
+                "id": f"interview-{interview['_id']}", "title": f"安排{interview.get('round', '')}面试",
+                "detail": f"面试时间：{dt(interview.get('start_at'))}；面试官：{interview.get('interviewer_name', '')}",
+                "operator_name": "", "created_at": dt(interview.get("created_at")),
+            })
+            feedback = feedback_by_interview.get(interview["_id"])
+            if feedback:
+                timeline.append({
+                    "id": f"feedback-{feedback['_id']}", "title": "提交面试评价",
+                    "detail": {"pass": "通过", "fail": "不通过", "hold": "待定"}.get(feedback.get("conclusion"), "待核对")
+                        + "；" + feedback.get("comment", ""),
+                    "operator_name": feedback.get("evaluator_name", ""),
+                    "created_at": dt(feedback.get("updated_at") or feedback.get("created_at")),
+                })
+        timeline.reverse()
+        timeline.sort(key=lambda item: item["created_at"], reverse=True)
         details.append({
             **application_to_dict(app),
             "created_at": dt(app.get("created_at")),
@@ -864,9 +726,8 @@ def delivery_analysis(cid: int):
                 app.get("current_stage", ""),
                 STAGE_NAMES.get(app.get("current_stage", ""), app.get("current_stage", "-")),
             ),
-            "highest_stage_name": name_by_key.get(
-                reached, STAGE_NAMES.get(reached, reached or "-"),
-            ),
+            "highest_stage_name": reached_name,
+            "timeline": timeline,
             "transitions": [{
                 "from_stage": item.get("from_stage", ""),
                 "to_stage": item.get("to_stage", ""),
@@ -918,15 +779,12 @@ def delivery_analysis(cid: int):
             attachment.get("file_name", ""), attachment.get("created_at"), kind="resume",
         )
 
-    related_ids = {str(cid)}
-    related_ids.update(str(item["_id"]) for item in apps)
-    related_ids.update(str(item["_id"]) for item in interviews)
-    related_ids.update(str(item["_id"]) for item in offers)
-    related_ids.update(str(item["_id"]) for item in approvals)
-    related_ids.update(str(item["_id"]) for item in attachment_docs)
+    related = [("candidate", [cid]), ("application", app_ids), ("interview", interview_ids),
+               ("offer", offer_ids), ("offer_approval", list(approval_by_id)),
+               ("attachment", [item["_id"] for item in attachment_docs])]
     logs = col("operation_logs").find({
-        "biz_id": {"$in": list(related_ids)},
-        "biz_type": {"$in": ["candidate", "application", "interview", "offer", "offer_approval", "attachment"]},
+        "$or": [{"biz_type": kind, "biz_id": {"$in": [str(value) for value in ids]}}
+                for kind, ids in related if ids],
     }).sort("_id", 1)
     passive_actions = {"view", "list_view", "file_preview", "file_download", "download"}
     for log in logs:
@@ -957,7 +815,10 @@ def delivery_analysis(cid: int):
         "summary": {
             "total_deliveries": len(apps),
             "highest_stage": overall_highest["name"],
-            "interviews": len(interviews),
+            "recommendations": recommendation_count,
+            "passed_recommendations": recommendation_passed,
+            "recommendation_pass_rate": round(recommendation_passed / recommendation_count * 100, 1) if recommendation_count else 0,
+            "interviews": sum(item.get("status") != "cancelled" for item in interviews),
             "evaluated_interviews": len(evaluated),
             "passed_interviews": passed,
             "interview_pass_rate": round(passed / len(evaluated) * 100, 1) if evaluated else 0,

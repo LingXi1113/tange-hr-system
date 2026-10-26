@@ -1,7 +1,7 @@
 import { PlusOutlined } from '@ant-design/icons';
 import {
   Button, DatePicker, Drawer, Form, Input, InputNumber, Modal,
-  Select, Space, Table, Tag,
+  Select, Space, Table, Tabs, Tag, Typography,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -9,12 +9,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { assignJob, directInterview, fetchCandidate, fetchCandidates } from '@/services/candidate';
+import type { Application } from '@/services/candidate';
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
 import { fetchEvalTemplates } from '@/services/template';
 import {
   INTERVIEW_ROUND_OPTIONS, INTERVIEW_STATUS_TEXT, INTERVIEW_TYPE_TEXT,
-  completeInterview, fetchInterview, fetchInterviews,
+  completeInterview, fetchInterview, fetchInterviews, fetchPendingInterviewApplications,
   rescheduleInterview, saveFeedback, saveInterview,
 } from '@/services/interview';
 import type { Interview } from '@/services/interview';
@@ -23,6 +24,7 @@ import { fetchPlatformUsers } from '@/services/system';
 import type { PlatformUser } from '@/services/system';
 import { msg } from '@/utils/message';
 import { useCurrentUser } from '@/services/user';
+import { useBusinessRefresh } from '@/utils/useBusinessRefresh';
 
 const TIME_FMT = 'YYYY-MM-DD HH:mm';
 
@@ -48,12 +50,19 @@ export function InterviewsPage() {
   const [searchParams] = useSearchParams();
   const [list, setList] = useState<Interview[]>([]);
   const [total, setTotal] = useState(0);
+  const [pendingApplications, setPendingApplications] = useState<Application[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
+  const [pendingPage, setPendingPage] = useState(1);
+  const [listTab, setListTab] = useState(searchParams.get('action_state') === 'awaiting_interview_schedule' ? 'pending' : 'all');
+  const listRequest = useRef(0);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     status: '', round: '', interviewer: '',
     action_state: searchParams.get('action_state') ?? '',
     job_id: searchParams.get('job_id') ? Number(searchParams.get('job_id')) : undefined,
     status_group: searchParams.get('status_group') ?? '', page: 1,
+    candidate_id: Number(searchParams.get('candidate_id')) || undefined,
+    application_id: Number(searchParams.get('application_id')) || undefined,
   });
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -74,7 +83,7 @@ export function InterviewsPage() {
   const feedbackConclusion = Form.useWatch('conclusion', feedbackForm) as string | undefined;
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [roundLocked, setRoundLocked] = useState(false);
-  const autoOpenedCandidate = useRef<number | null>(null);
+  const autoOpenedCandidate = useRef<string | null>(null);
   const autoOpenedInterview = useRef<number | null>(null);
 
   const roundForApplication = (application?: Pick<AppOption, 'current_stage' | 'interview_round'>) => {
@@ -90,23 +99,49 @@ export function InterviewsPage() {
   };
 
   const load = useCallback(async () => {
+    const requestId = ++listRequest.current;
     setLoading(true);
     try {
-      const data = await fetchInterviews({
+      const [data, pending] = await Promise.all([fetchInterviews({
         status: filters.status || undefined,
         round: filters.round || undefined,
         interviewer: filters.interviewer || undefined,
         action_state: filters.action_state || undefined,
         job_id: filters.job_id || undefined,
         status_group: filters.status_group || undefined,
+        candidate_id: filters.candidate_id,
+        application_id: filters.application_id,
         page: filters.page, page_size: 10,
-      });
+      }), canHrManage && !filters.status && !filters.interviewer && !filters.status_group
+        && (!filters.action_state || filters.action_state === 'awaiting_interview_schedule')
+        ? fetchPendingInterviewApplications({
+          job_id: filters.job_id, round: filters.round || undefined,
+          candidate_id: filters.candidate_id, application_id: filters.application_id,
+          page: pendingPage, page_size: 10,
+        }) : Promise.resolve({ list: [], total: 0 })]);
+      if (requestId !== listRequest.current) return;
       setList(data.list);
       setTotal(data.total);
+      setPendingApplications(pending.list);
+      setPendingTotal(pending.total);
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
-  }, [filters]);
+  }, [filters, pendingPage, canHrManage]);
+  useBusinessRefresh(load);
+
+  useEffect(() => { setPendingPage(1); }, [filters]);
+
+  useEffect(() => {
+    setFilters((current) => ({ ...current,
+      job_id: Number(searchParams.get('job_id')) || undefined,
+      candidate_id: Number(searchParams.get('candidate_id')) || undefined,
+      application_id: Number(searchParams.get('application_id')) || undefined,
+      action_state: searchParams.get('action_state') || '',
+      status_group: searchParams.get('status_group') || '', page: 1,
+    }));
+    setListTab(searchParams.get('action_state') === 'awaiting_interview_schedule' ? 'pending' : 'all');
+  }, [searchParams]);
 
   useEffect(() => {
     void load();
@@ -198,11 +233,11 @@ export function InterviewsPage() {
     form.setFieldsValue({
       candidate_id: candidateId,
       // 新建面试由职位选择驱动，保存时再创建/绑定应聘记录。
-      application_id: undefined,
+      application_id: selectedApplication?.id,
       job_id: selectedApplication?.job_id,
       round: roundForApplication(selectedApplication) || INTERVIEW_ROUND_OPTIONS[0],
     });
-    setRoundLocked(false);
+    setRoundLocked(Boolean(selectedApplication));
     setDrawerOpen(true);
   }, [candidates.length, evalTemplates.length, form, interviewers.length, loadAppOptions, loadJobs]);
 
@@ -222,8 +257,9 @@ export function InterviewsPage() {
     }
     const candidateId = Number(searchParams.get('candidate_id'));
     const applicationId = Number(searchParams.get('application_id')) || undefined;
-    if (!candidateId || autoOpenedCandidate.current === candidateId) return;
-    autoOpenedCandidate.current = candidateId;
+    const openKey = `${candidateId}:${applicationId || ''}`;
+    if (!candidateId || searchParams.get('open') !== '1' || autoOpenedCandidate.current === openKey) return;
+    autoOpenedCandidate.current = openKey;
     void openEditorForCandidate(candidateId, applicationId).catch(() => {
       autoOpenedCandidate.current = null;
     });
@@ -313,7 +349,9 @@ export function InterviewsPage() {
   }
 
   const columns = [
-    { title: '候选人', dataIndex: 'candidate_name', width: 100 },
+    { title: '候选人', dataIndex: 'candidate_name', width: 100,
+      render: (name: string, row: Interview) => <Button type="link" size="small"
+        onClick={() => navigate(`/candidates/${row.candidate_id}?application_id=${row.application_id}`)}>{name}</Button> },
     { title: '职位', dataIndex: 'job_name', width: 140 },
     { title: '轮次', dataIndex: 'round', width: 80 },
     { title: '类型', dataIndex: 'type', width: 70, render: (v: string) => INTERVIEW_TYPE_TEXT[v] ?? v },
@@ -372,6 +410,11 @@ export function InterviewsPage() {
         </Button>
       </div>
       <div className="hrats-block">
+        <Tabs activeKey={listTab} onChange={setListTab} items={[
+          { key: 'all', label: '全部面试' },
+          ...(canHrManage ? [{ key: 'pending', label: `待安排面试（${pendingTotal}）` }] : []),
+          { key: 'records', label: '面试记录' },
+        ]} />
         <Space style={{ marginBottom: 12 }} wrap>
           <Select
             placeholder="状态" allowClear style={{ width: 130 }}
@@ -416,7 +459,33 @@ export function InterviewsPage() {
             </Tag>
           )}
         </Space>
-        {loading ? <PageLoading /> : (
+        {loading ? <PageLoading /> : <>
+          {canHrManage && listTab !== 'records' && (
+            <div style={{ marginBottom: 24 }}>
+              <Typography.Title level={5}>待安排面试</Typography.Title>
+              <Typography.Paragraph type="secondary">
+                已进入面试阶段、尚未安排本轮时间的候选人会显示在这里；安排成功后转入下方的面试记录。
+              </Typography.Paragraph>
+              <Table<Application>
+                rowKey="id" size="middle" dataSource={pendingApplications} scroll={{ x: 750 }}
+                columns={[
+                  { title: '候选人', dataIndex: 'candidate_name', render: (name: string, row) => (
+                    <Button type="link" onClick={() => navigate(`/candidates/${row.candidate_id}?application_id=${row.id}`)}>{name}</Button>
+                  ) },
+                  { title: '职位', dataIndex: 'job_name' },
+                  { title: '当前轮次', dataIndex: 'interview_round' },
+                  { title: '进入阶段时间', dataIndex: 'stage_entered_at' },
+                  { title: '状态', render: () => <Tag color="blue">待安排面试</Tag> },
+                  { title: '操作', render: (_: unknown, row) => (
+                    <Button type="link" onClick={() => void openEditorForCandidate(row.candidate_id, row.id)}>安排面试</Button>
+                  ) },
+                ]}
+                pagination={{ current: pendingPage, pageSize: 10, total: pendingTotal, onChange: setPendingPage }}
+              />
+            </div>
+          )}
+          {listTab !== 'pending' && <>
+          <Typography.Title level={5}>面试记录</Typography.Title>
           <Table
             rowKey="id" size="middle" columns={columns} dataSource={list} scroll={{ x: 1050 }}
             pagination={{
@@ -424,7 +493,8 @@ export function InterviewsPage() {
               onChange: (page) => setFilters((f) => ({ ...f, page })),
             }}
           />
-        )}
+          </>}
+        </>}
       </div>
 
       {/* 新建/编辑抽屉 */}
@@ -459,10 +529,11 @@ export function InterviewsPage() {
               }))}
               onChange={(value: number) => {
                 const application = appOptions.find((item) => item.job_id === value);
+                form.setFieldValue('application_id', application?.id);
                 const round = roundForApplication(application)
                   || (value === editingJobId ? form.getFieldValue('round') : INTERVIEW_ROUND_OPTIONS[0]);
                 if (round) form.setFieldValue('round', round);
-                setRoundLocked(Boolean(editingId && value === editingJobId && round));
+                setRoundLocked(Boolean(application));
               }}
             />
           </Form.Item>

@@ -2,7 +2,8 @@
 
 - 集合 talent_pool：候选人关联结构（只存 candidate_id 引用，不复制主数据）；
 - candidate_id 唯一索引：同一候选人不能重复进入人才库；
-- 加入/移出/重新激活/批量操作/导出全部写 operation_logs，导出写 export_logs；
+- 加入/重新激活/批量改标签/导出全部写 operation_logs，导出写 export_logs；
+- 归档简历不提供单条或批量移出；旧移出接口统一拒绝，避免旧客户端删除记录；
 - 重新激活 = 为候选人新建目标职位的应聘记录（复用 flow.create_application 的
   锁定期与重复投递校验），库内记录状态置为 activated。
 """
@@ -417,28 +418,14 @@ def batch_tags():
 @bp.delete("/<int:entry_id>")
 @role_required(HR)
 def remove_entry(entry_id: int):
-    if request.args.get("confirm") != "1":
-        raise BizError(BizCode.PARAM_INVALID, "移出需要二次确认（confirm=1）")
-    doc = get_by_id("talent_pool", entry_id)
-    if doc is None:
-        raise BizError(BizCode.NOT_FOUND, "人才库记录不存在")
-    col("talent_pool").delete_one({"_id": entry_id})
-    write_log("talent_pool", "remove", g.current_user.user_id, g.current_user.name,
-              biz_id=str(entry_id), detail=f"candidate={doc['candidate_id']}")
-    return ok(None)
+    """保留旧路由的明确错误响应，但不再允许删除人才库记录。"""
+    raise BizError(BizCode.FORBIDDEN, "人才库不支持移出，归档简历将持续保留")
 
 
 @bp.post("/batch-remove")
 @role_required(HR)
 def batch_remove():
-    payload = request.get_json(silent=True) or {}
-    entry_ids = payload.get("entry_ids") or []
-    if not entry_ids:
-        raise BizError(BizCode.PARAM_INVALID, "缺少 entry_ids")
-    result = col("talent_pool").delete_many({"_id": {"$in": [int(i) for i in entry_ids]}})
-    write_log("talent_pool", "batch_remove", g.current_user.user_id, g.current_user.name,
-              detail=f"removed={result.deleted_count}")
-    return ok({"removed": result.deleted_count})
+    raise BizError(BizCode.FORBIDDEN, "人才库不支持批量移出，归档简历将持续保留")
 
 
 @bp.post("/<int:entry_id>/activate")

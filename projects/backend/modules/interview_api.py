@@ -20,7 +20,7 @@ from common.db import col, get_by_id, insert_doc, update_doc, dt
 from common.decorators import login_required, role_required
 from common.errors import BizError
 from common.flow import (
-    application_to_dict, configured_interview_rounds,
+    application_process_state, application_to_dict, configured_interview_rounds,
     effective_interview_round, eliminate_application, expected_interview_round,
     interview_process_state, move_application,
 )
@@ -295,6 +295,35 @@ def list_interviews():
     from common.response import paged
 
     return paged(data, total, page, page_size)
+
+
+@bp.get("/pending-applications")
+@role_required(HR, SUPER_ADMIN)
+def pending_applications():
+    """已进入面试但尚未安排本轮场次的应聘记录，不伪造 interviews 数据。"""
+    query = {
+        "status": APP_IN_PROGRESS,
+        "current_stage": {"$in": ["pending_interview", "interviewing", *INTERVIEW_STAGE_ROUNDS]},
+    }
+    for key in ("job_id", "candidate_id", "application_id"):
+        value = request.args.get(key, type=int)
+        if value:
+            query["_id" if key == "application_id" else key] = value
+    rows = []
+    for application in col("applications").find(query).sort("stage_entered_at", -1):
+        if application_process_state(application)["key"] != "awaiting_interview_schedule":
+            continue
+        row = application_to_dict(application)
+        job = get_by_id("jobs", application["job_id"]) or {}
+        row["interview_round"] = _expected_round_for_stage(application, job) or "一面"
+        if request.args.get("round") and row["interview_round"] != request.args["round"]:
+            continue
+        rows.append(row)
+    page = max(request.args.get("page", 1, type=int), 1)
+    page_size = min(max(request.args.get("page_size", 10, type=int), 1), 100)
+    from common.response import paged
+
+    return paged(rows[(page - 1) * page_size:page * page_size], len(rows), page, page_size)
 
 
 @bp.get("/<int:interview_id>")

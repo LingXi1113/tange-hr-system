@@ -9,7 +9,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { PageLoading } from '@/components/PageLoading';
 import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import {
-  deleteCandidate, fetchCandidateClassificationSummary, fetchCandidates, importCandidates,
+  deleteCandidate, fetchCandidates, importCandidates,
   parseResume, parseResumeUpload, uploadResume,
 } from '@/services/candidate';
 import type { CandidateClassificationSummary, CandidateRow } from '@/services/candidate';
@@ -19,6 +19,7 @@ import { runScreening } from '@/services/screening';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
 import { downloadProtectedFile } from '@/services/http';
+import { useBusinessRefresh } from '@/utils/useBusinessRefresh';
 
 const SOURCE_TEXT: Record<string, string> = {
   manual: '手动录入', website: '官网投递', referral: '内部推荐',
@@ -81,15 +82,8 @@ const EMPTY_WORKBENCH_FILTERS = {
   action_state: '',
 };
 
-export function CandidatesPage() {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { user } = useCurrentUser();
-  const canManage = user?.role === 'hr';
-  const [list, setList] = useState<CandidateRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState(() => ({
+function filtersFromSearch(searchParams: URLSearchParams) {
+  return {
     keyword: searchParams.get('keyword') ?? '',
     stage: searchParams.get('stage') ?? '',
     source: searchParams.get('source') ?? '',
@@ -105,7 +99,24 @@ export function CandidatesPage() {
     recommendation_status: searchParams.get('recommendation_status') ?? '',
     action_state: searchParams.get('action_state') ?? '',
     page: 1,
-  }));
+  };
+}
+
+export function CandidatesPage() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { user } = useCurrentUser();
+  const canManage = user?.role === 'hr';
+  const [list, setList] = useState<CandidateRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState(() => filtersFromSearch(searchParams));
+  const previousSearch = useRef(searchParams.toString());
+  useEffect(() => {
+    if (previousSearch.current === searchParams.toString()) return;
+    previousSearch.current = searchParams.toString();
+    setFilters(filtersFromSearch(searchParams));
+  }, [searchParams]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createLinkHandled, setCreateLinkHandled] = useState(false);
@@ -119,13 +130,13 @@ export function CandidatesPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [classification, setClassification] = useState<CandidateClassificationSummary | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const listRequestId = useRef(0);
 
-  const loadClassification = useCallback(async () => {
-    setClassification(await fetchCandidateClassificationSummary());
-  }, []);
-
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    const requestId = ++listRequestId.current;
+    setLoadError('');
+    if (!silent) setLoading(true);
     try {
       const data = await fetchCandidates({
         keyword: filters.keyword || undefined,
@@ -142,22 +153,37 @@ export function CandidatesPage() {
         source_group: filters.source_group || undefined,
         recommendation_status: filters.recommendation_status || undefined,
         action_state: filters.action_state || undefined,
+        include_summary: '1',
         page: filters.page, page_size: 10,
       });
+      if (requestId !== listRequestId.current) return;
       setList(data.list);
       setTotal(data.total);
+      setClassification(data.classification ?? null);
+    } catch {
+      if (requestId === listRequestId.current) {
+        setLoadError('候选人数据加载失败，请重试');
+        setClassification(null);
+        setList([]);
+        setTotal(0);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === listRequestId.current) setLoading(false);
     }
   }, [filters]);
+  const refresh = useCallback(() => load(true), [load]);
+  useBusinessRefresh(refresh);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    void loadClassification();
-  }, [loadClassification]);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(true);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   useEffect(() => {
     if (jobs.length) return;
@@ -316,7 +342,6 @@ export function CandidatesPage() {
     msg.success(result.merged ? '已合并到已有候选人主档' : '候选人已创建');
     closeCreateDrawer();
     void load();
-    void loadClassification();
   }
 
   function openCreateDrawer() {
@@ -348,13 +373,10 @@ export function CandidatesPage() {
               <button
                 type="button"
                 key={stage.key}
-                className={filters.stage === stage.key && !filters.category
-                  && !filters.unassigned && !filters.source && !filters.source_group
-                  && !filters.unprocessed && !filters.recommendation_status
-                  && !filters.action_state ? 'is-active' : ''}
+                className={filters.stage === stage.key ? 'is-active' : ''}
                 onClick={() => setFilters((current) => ({
                   ...current, ...EMPTY_WORKBENCH_FILTERS,
-                  stage: stage.key, category: '', source: '', page: 1,
+                  stage: stage.key, category: '', page: 1,
                 }))}
               >
                 <span>{stage.label}</span>
@@ -367,10 +389,10 @@ export function CandidatesPage() {
               className={`candidate-unassigned${filters.unassigned === '1' ? ' is-active' : ''}`}
               onClick={() => setFilters((current) => ({
                 ...current, ...EMPTY_WORKBENCH_FILTERS,
-                stage: '', category: '', source: '', unassigned: '1', page: 1,
+                category: '', unassigned: '1', page: 1,
               }))}
             >
-              待分配 <strong>{classification?.unassigned ?? 0}</strong>
+              待分配 <strong>{loading ? '…' : classification?.unassigned ?? '—'}</strong>
             </button>
           </div>
         </div>
@@ -380,33 +402,41 @@ export function CandidatesPage() {
             className={filters.unprocessed === '1' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
               ...current, ...EMPTY_WORKBENCH_FILTERS,
-              stage: '', category: '', source: '', unprocessed: '1', page: 1,
+              category: '', unprocessed: '1', page: 1,
             }))}
           >
-            未处理 <strong>{classification?.categories.unprocessed ?? 0}</strong>
+            未处理 <strong>{loading ? '…' : classification?.categories.unprocessed ?? '—'}</strong>
           </button>
           <button
             type="button"
             className={filters.category === 'pending' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
               ...current, ...EMPTY_WORKBENCH_FILTERS,
-              stage: '', category: 'pending', source: '', page: 1,
+              category: 'pending', page: 1,
             }))}
           >
-            待定 <strong>{classification?.categories.pending ?? 0}</strong>
+            待定 <strong>{loading ? '…' : classification?.categories.pending ?? '—'}</strong>
           </button>
           <button
             type="button"
-            className={filters.category === 'recommended' ? 'is-active' : ''}
+            className={filters.category === 'recommended' || filters.source_group === 'talent_recommendation' ? 'is-active' : ''}
             onClick={() => setFilters((current) => ({
               ...current, ...EMPTY_WORKBENCH_FILTERS,
-              stage: '', category: 'recommended', source: '', page: 1,
+              category: 'recommended', page: 1,
             }))}
           >
-            人才推荐 <strong>{classification?.categories.recommended ?? 0}</strong>
+            人才推荐 <strong>{loading ? '…' : classification?.categories.recommended ?? '—'}</strong>
           </button>
         </div>
+        <div style={{ marginTop: 8, color: '#8c8c8c', fontSize: 12 }}
+          title="各子分类可能重叠，不是全部候选人的互斥分组；点击后的数字与列表总人数对应。">
+          统计范围：{CANDIDATE_STAGE_TABS.find((stage) => stage.key === filters.stage)?.label || '当前阶段'}及当前筛选条件，按候选人去重
+        </div>
       </section>
+      {!loading && !classification && <Alert
+        type="warning" showIcon style={{ marginBottom: 12 }}
+        message={loadError || '统计接口尚未更新，请重启后端加载新版本后刷新页面'}
+      />}
       <div className="hrats-block">
         <div className="candidate-filter-toolbar">
           <Select
@@ -487,10 +517,11 @@ export function CandidatesPage() {
         )}
         <Space style={{ marginBottom: 12 }} wrap>
           <Input.Search
+            key={filters.keyword}
+            defaultValue={filters.keyword}
             placeholder="姓名/手机/邮箱" allowClear style={{ width: 220 }}
             onSearch={(v) => setFilters((f) => ({
-              ...f, ...EMPTY_WORKBENCH_FILTERS,
-              keyword: v, stage: '', category: '', page: 1,
+              ...f, keyword: v, page: 1,
             }))}
           />
         </Space>
@@ -522,7 +553,7 @@ export function CandidatesPage() {
                   <article
                     className="candidate-profile-card"
                     key={record.id}
-                    onClick={() => navigate(`/candidates/${record.id}`)}
+                    onClick={() => navigate(`/candidates/${record.id}${record.application_id ? `?application_id=${record.application_id}` : ''}`)}
                   >
                     <div className="candidate-card-checkbox" onClick={(event) => event.stopPropagation()}>
                       <Checkbox
@@ -595,7 +626,6 @@ export function CandidatesPage() {
                             msg.success('候选人及关联数据已彻底删除');
                             setSelectedIds((current) => current.filter((id) => id !== record.id));
                             void load();
-                            void loadClassification();
                           }}
                         >
                           <Button type="text" danger icon={<DeleteOutlined />} disabled={lockedByOther} />
@@ -682,7 +712,6 @@ export function CandidatesPage() {
                     content: `新建 ${result.success_count + confirmed - merged} 条；合并 ${merged} 条；未确认 ${result.duplicates.length - confirmed} 条（未保存，可重新导入）；失败 ${result.errors.length} 条`,
                   });
                   void load();
-                  void loadClassification();
                   return false;
                 }}
               >

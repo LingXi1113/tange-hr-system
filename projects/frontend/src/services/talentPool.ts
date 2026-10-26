@@ -99,16 +99,6 @@ export async function updatePoolEntry(id: number, payload: Record<string, unknow
   return unwrap<PoolEntry>(resp);
 }
 
-export async function removeFromPool(id: number) {
-  const resp = await http.delete(`/api/talent-pool/${id}`, { params: { confirm: 1 } });
-  return unwrap(resp);
-}
-
-export async function batchRemoveFromPool(entryIds: number[]) {
-  const resp = await http.post('/api/talent-pool/batch-remove', { entry_ids: entryIds });
-  return unwrap<{ removed: number }>(resp);
-}
-
 export async function batchPoolTags(entryIds: number[], tags: string[], mode: 'replace' | 'append') {
   const resp = await http.post('/api/talent-pool/batch-tags', { entry_ids: entryIds, tags, mode });
   return unwrap<{ updated: number }>(resp);

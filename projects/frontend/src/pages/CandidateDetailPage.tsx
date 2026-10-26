@@ -1,15 +1,18 @@
 import { DeleteOutlined, DownOutlined, EditOutlined, LockOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Avatar, Button, Card, Checkbox, Col, Descriptions, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Progress, Radio, Row,
-  Select, Segmented, Space, Table, Tag, Timeline, Typography, Upload,
+  Select, Segmented, Space, Table, Tabs, Tag, Timeline, Typography, Upload,
 } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import { CandidateAiAssistant } from '@/components/CandidateAiAssistant';
 import { CandidateAiEvaluation } from '@/components/CandidateAiEvaluation';
+import { CandidateDeliveryAnalysis } from '@/components/CandidateDeliveryAnalysis';
+import { applicationStatus, deliverySource } from '@/utils/applicationPresentation';
+import { useBusinessRefresh } from '@/utils/useBusinessRefresh';
 import {
   assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
   fetchTransitions, parseResume,
@@ -28,7 +31,6 @@ import type { PlatformUser } from '@/services/system';
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
 import { abandonApplication, moveApplication, restoreApplication } from '@/services/pipeline';
-import { removeFromPool } from '@/services/talentPool';
 import {
   fetchScreeningProfiles, fetchScreeningResult, previewCandidateJobMatch, reviewScreening, runScreening,
 } from '@/services/screening';
@@ -64,42 +66,11 @@ function stageText(stage: string | undefined) {
   return labels[stage ?? ''] ?? '其他阶段';
 }
 
-const OPERATION_ACTION_TEXT: Record<string, string> = {
-  create: '新建记录',
-  update: '更新信息',
-  upload: '上传文件',
-  delete: '删除记录',
-  assign_business_screener: '推荐业务复筛',
-  recommend_business_screener: '推荐业务复筛',
-  direct_interview: '直接进入面试',
-  enter_second_interview: '进入二面',
-  advance_interview_round: '推进下一轮面试',
-  reschedule: '面试改期',
-  feedback: '提交面试评价',
-  complete: '完成面试',
-  apply_conclusion_pass: '应用通过结论',
-  apply_conclusion_fail: '应用未通过结论',
-  eliminate: '淘汰候选人',
-  abandon: '放弃候选人',
-  status_reconcile: '修正流程状态',
-  add: '加入人才库',
-  add_auto: '自动加入人才库',
-  activate: '激活人才库记录',
-  remove: '移出人才库',
-};
 
 const SCREENING_REVIEW_TEXT: Record<string, string> = {
   pass: '通过', pending: '待定', reject: '不通过',
 };
 
-function operationActionText(action: string, kind: string) {
-  if (kind === 'resume') return action;
-  const moveMatch = action.match(/^move_(.+)_to_(.+)$/);
-  if (moveMatch) {
-    return `从${stageText(moveMatch[1])}推进到${stageText(moveMatch[2])}`;
-  }
-  return OPERATION_ACTION_TEXT[action] || '更新招聘流程';
-}
 
 const DEFAULT_STAGE_FLOW = [
   { key: 'pending_screen', label: '简历初筛' },
@@ -291,6 +262,9 @@ type ResumeFormValues = {
 export function CandidateDetailPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedApplicationId = Number(searchParams.get('application_id')) || null;
+  const detailTab = searchParams.get('tab') === 'delivery-analysis' ? 'analysis' : 'resume';
   const { user } = useCurrentUser();
   const [detail, setDetail] = useState<CandidateDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -308,9 +282,11 @@ export function CandidateDetailPage() {
   const [offerJobId, setOfferJobId] = useState<number | null>(null);
   const [offerJobSaving, setOfferJobSaving] = useState(false);
   const [resumeEditOpen, setResumeEditOpen] = useState(false);
-  const [deliveryAnalysisOpen, setDeliveryAnalysisOpen] = useState(false);
   const [deliveryAnalysisLoading, setDeliveryAnalysisLoading] = useState(false);
+  const [deliveryAnalysisFailed, setDeliveryAnalysisFailed] = useState(false);
   const [deliveryAnalysis, setDeliveryAnalysis] = useState<DeliveryAnalysis | null>(null);
+  const candidateRequest = useRef(0);
+  const analysisRequest = useRef(0);
   const [screeningCategory, setScreeningCategory] = useState<'all' | 'recommendation' | 'interview' | 'offer'>('all');
   const [screeningResult, setScreeningResult] = useState<ScreeningResult | null>(null);
   const [screeningBusy, setScreeningBusy] = useState(false);
@@ -331,12 +307,40 @@ export function CandidateDetailPage() {
 
   const load = useCallback(async () => {
     if (!id) return;
+    const requestId = ++candidateRequest.current;
     const data = await fetchCandidate(Number(id));
+    if (requestId !== candidateRequest.current) return;
     setDetail(data);
-    if (data.applications.length && selectedAppId == null) {
-      setSelectedAppId(data.applications[0].id);
+    setSelectedAppId((current) => data.applications.some((app) => app.id === current)
+      ? current
+      : data.applications.find((app) => ['in_progress', 'pending_onboard'].includes(app.status))?.id
+        ?? data.applications[0]?.id ?? null);
+  }, [id]);
+  useBusinessRefresh(load);
+
+  useEffect(() => { if (requestedApplicationId) setSelectedAppId(requestedApplicationId); }, [requestedApplicationId]);
+
+  const loadDeliveryAnalysis = useCallback(async () => {
+    const requestId = ++analysisRequest.current;
+    setDeliveryAnalysisLoading(true);
+    setDeliveryAnalysisFailed(false);
+    try {
+      const data = await fetchDeliveryAnalysis(Number(id));
+      if (requestId === analysisRequest.current) setDeliveryAnalysis(data);
+    } catch {
+      if (requestId === analysisRequest.current) {
+        setDeliveryAnalysis(null);
+        setDeliveryAnalysisFailed(true);
+      }
+    } finally {
+      if (requestId === analysisRequest.current) setDeliveryAnalysisLoading(false);
     }
-  }, [id, selectedAppId]);
+  }, [id]);
+
+  useEffect(() => {
+    if (detailTab === 'analysis') void loadDeliveryAnalysis();
+    return () => { analysisRequest.current += 1; };
+  }, [detailTab, detail, loadDeliveryAnalysis]);
 
   useEffect(() => {
     setLoading(true);
@@ -344,9 +348,12 @@ export function CandidateDetailPage() {
   }, [load]);
 
   useEffect(() => {
+    let active = true;
+    setTransitions([]);
     if (selectedAppId) {
-      fetchTransitions(selectedAppId).then(setTransitions);
+      fetchTransitions(selectedAppId).then((rows) => { if (active) setTransitions(rows); });
     }
+    return () => { active = false; };
   }, [selectedAppId]);
 
   useEffect(() => {
@@ -565,7 +572,6 @@ export function CandidateDetailPage() {
   const canRestore = Boolean(isInterrupted && hasHrPermission);
   const isAbandoned = selectedApplication?.current_stage === 'abandoned'
     && selectedApplication.status === 'closed';
-  const canRemoveFromPool = Boolean(canManage && isAbandoned && detail.talent_pool_entry);
   const flowActionItems = [
     ...(canManage ? [{ key: 'business', label: '推给业务复筛', disabled: !canArrangeFlow }] : []),
     { key: 'interview_1', label: '进入一面（业务）', disabled: !canDirectInterview },
@@ -636,14 +642,6 @@ export function CandidateDetailPage() {
     setTransitions(await fetchTransitions(selectedApplication.id));
   }
 
-  async function handleRemoveFromPool() {
-    const entry = detail?.talent_pool_entry;
-    if (!entry || !canRemoveFromPool) return;
-    await removeFromPool(entry.id);
-    msg.success('已移除人才库');
-    await load();
-  }
-
   function openResumeEditor(values?: Partial<ResumeFormValues>) {
     resumeForm.setFieldsValue({
       version: candidate.version,
@@ -681,14 +679,18 @@ export function CandidateDetailPage() {
     await load();
   }
 
-  async function openDeliveryAnalysis() {
-    setDeliveryAnalysisOpen(true);
-    setDeliveryAnalysisLoading(true);
-    try {
-      setDeliveryAnalysis(await fetchDeliveryAnalysis(candidate.id));
-    } finally {
-      setDeliveryAnalysisLoading(false);
-    }
+  function openDeliveryAnalysis() {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', 'delivery-analysis');
+    setSearchParams(next);
+  }
+
+  function selectApplication(applicationId: number, showResume = false) {
+    setSelectedAppId(applicationId);
+    const next = new URLSearchParams(searchParams);
+    next.set('application_id', String(applicationId));
+    if (showResume) next.delete('tab');
+    setSearchParams(next);
   }
 
   async function handleAssignBusiness() {
@@ -713,7 +715,7 @@ export function CandidateDetailPage() {
       await assignBusinessScreener(application.id, screenerId, application.version);
       msg.success(selectedApplication ? '已推送给业务复筛人员' : '已分配职位并推送给业务复筛人员');
       setBusinessAssignOpen(false);
-      setSelectedAppId(application.id);
+      selectApplication(application.id);
       await load();
       setScreeningResult(await fetchScreeningResult(application.id));
       setTransitions(await fetchTransitions(application.id));
@@ -810,7 +812,7 @@ export function CandidateDetailPage() {
       });
       msg.success('已创建应聘记录并进入录用审批');
       setOfferJobOpen(false);
-      setSelectedAppId(updated.id);
+      selectApplication(updated.id);
       await load();
       setTransitions(await fetchTransitions(updated.id));
     } finally {
@@ -885,24 +887,30 @@ export function CandidateDetailPage() {
                   <Dropdown
                     trigger={['click']}
                     menu={{
-                      items: [...detail.applications].reverse().map((application, index) => ({
+                      items: detail.applications.map((application) => ({
                         key: String(application.id),
                         label: (
-                          <div style={{ minWidth: 260 }}>
-                            <Typography.Text strong>第{index + 1}次投递</Typography.Text>
+                          <div className="candidate-application-option">
+                            <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <Typography.Text strong>{application.job_name || '职位已删除'}</Typography.Text>
+                              <Tag color={applicationStatus(application).color}>
+                                {applicationStatus(application).label} · {stageText(application.current_stage)}
+                              </Tag>
+                            </Space>
                             <div style={{ color: '#8c8c8c', marginTop: 2 }}>
-                              {application.job_name || '未关联职位'} · {application.created_at || application.stage_entered_at || '-'}
+                              {application.created_at || application.stage_entered_at || '-'} 投递 | {application.owner_name || '负责人未填写'} | {deliverySource(application.source)}
                             </div>
                           </div>
                         ),
                       })),
                       selectable: true,
                       selectedKeys: selectedApplication ? [String(selectedApplication.id)] : [],
-                      onClick: ({ key }) => setSelectedAppId(Number(key)),
+                      onClick: ({ key }) => selectApplication(Number(key)),
+                      style: { maxHeight: 400, overflowY: 'auto' },
                     }}
                   >
                     <Button size="small" type="primary" ghost>
-                      投递情况 <DownOutlined />
+                      {detail.applications.length} 次投递 · {selectedApplication?.job_name || '未关联职位'} <DownOutlined />
                     </Button>
                   </Dropdown>
                   <CandidateAiEvaluation
@@ -941,7 +949,26 @@ export function CandidateDetailPage() {
           </Col>
         </Row>
       </Card>
-      <Row gutter={16}>
+      <Tabs
+        activeKey={detailTab}
+        items={[{ key: 'resume', label: '简历' }, { key: 'analysis', label: '投递分析' }]}
+        onChange={(key) => {
+          if (key === 'analysis') openDeliveryAnalysis();
+          else {
+            const next = new URLSearchParams(searchParams);
+            next.delete('tab');
+            setSearchParams(next);
+          }
+        }}
+      />
+      {detailTab === 'analysis' ? (
+        <CandidateDeliveryAnalysis
+          data={deliveryAnalysis} loading={deliveryAnalysisLoading} failed={deliveryAnalysisFailed}
+          selectedId={selectedApplication?.id ?? null}
+          onSelect={(applicationId) => selectApplication(applicationId, true)}
+          onRetry={() => void loadDeliveryAnalysis()}
+        />
+      ) : <Row gutter={16}>
         <Col xs={24} lg={15}>
           <Card
             title="基本信息" size="small" style={{ marginBottom: 16 }}
@@ -1238,11 +1265,6 @@ export function CandidateDetailPage() {
                   <Button danger ghost disabled={!canAbandon} onClick={() => setAbandonOpen(true)}>
                     放弃
                   </Button>
-                  {detail.talent_pool_entry && isAbandoned && (
-                    <Button danger ghost disabled={!canRemoveFromPool} onClick={() => void handleRemoveFromPool()}>
-                      移除人才库
-                    </Button>
-                  )}
                 </Space>
               </div>
             )}
@@ -1418,55 +1440,7 @@ export function CandidateDetailPage() {
             />
           </Card>
         </Col>
-      </Row>
-      <Modal
-        title={`投递分析：${detail.name}`}
-        open={deliveryAnalysisOpen}
-        width={1120}
-        footer={null}
-        destroyOnClose
-        onCancel={() => setDeliveryAnalysisOpen(false)}
-      >
-        {deliveryAnalysisLoading ? (
-          <PageLoading tip="正在加载投递分析" />
-        ) : deliveryAnalysis ? (
-          <>
-            <Row gutter={[12, 12]} style={{ marginBottom: 18 }}>
-              <Col xs={12} sm={6}>
-                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.total_deliveries}</Typography.Title><Typography.Text type="secondary">投递次数</Typography.Text></Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.highest_stage}</Typography.Title><Typography.Text type="secondary">最高到达阶段</Typography.Text></Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.passed_interviews}/{deliveryAnalysis.summary.evaluated_interviews}</Typography.Title><Typography.Text type="secondary">面试评价通过/已评价</Typography.Text></Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small"><Typography.Title level={3} style={{ margin: 0 }}>{deliveryAnalysis.summary.interview_pass_rate}%</Typography.Title><Typography.Text type="secondary">面试评价通过率</Typography.Text></Card>
-              </Col>
-            </Row>
-            <Typography.Title level={5} style={{ margin: '8px 0 12px' }}>操作时间线</Typography.Title>
-            <Table
-              rowKey="id"
-              size="small"
-              pagination={false}
-              scroll={{ x: 900 }}
-              dataSource={deliveryAnalysis.activities}
-              columns={[
-                { title: '时间', dataIndex: 'created_at', width: 170 },
-                { title: '类型', dataIndex: 'kind', width: 100, render: (value: string) => value === 'resume' ? '简历投递' : 'HR操作' },
-                { title: '操作人', dataIndex: 'operator_name', width: 120 },
-                {
-                  title: '操作内容', dataIndex: 'title', width: 180,
-                  render: (value: string, record) => operationActionText(value, record.kind),
-                },
-                { title: '详细说明', dataIndex: 'detail' },
-                { title: '关联职位', dataIndex: 'job_name', width: 150, render: (value: string) => value || '-' },
-              ]}
-            />
-          </>
-        ) : <Empty description="暂无投递分析数据" />}
-      </Modal>
+      </Row>}
       <Modal
         title="维护候选人简历"
         open={resumeEditOpen}

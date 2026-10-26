@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import Blueprint, g
 
 from common.db import col, dt
+from common.candidate_query import CandidateQuery
 from common.decorators import login_required
 from common.flow import application_process_state, interview_process_state
 from common.response import ok
@@ -21,24 +22,10 @@ def _count(collection, query):
 def summary():
     now = datetime.now()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    pending_screen_query = {
-        "current_stage": {"$in": ["new_resume", "pending_screen"]},
-        "status": "in_progress",
-    }
-    unprocessed_candidate_ids = set(col("applications").distinct(
-        "candidate_id", pending_screen_query,
-    ))
-    referral_candidate_ids = set(col("candidates").distinct("_id", {"source": "referral"}))
-    referral_candidate_ids.update(col("applications").distinct(
-        "candidate_id", {"source": "referral"},
-    ))
-    recommendation_sources = ["headhunt", "talent_pool", "business_recommendation"]
-    recommended_candidate_ids = set(col("candidates").distinct(
-        "_id", {"source": {"$in": recommendation_sources}},
-    ))
-    recommended_candidate_ids.update(col("applications").distinct(
-        "candidate_id", {"source": {"$in": recommendation_sources}},
-    ))
+    snapshot = CandidateQuery()
+    unprocessed_candidate_ids = {candidate["_id"] for candidate, _ in snapshot.filter({"unprocessed": "1"})}
+    referral_candidate_ids = {candidate["_id"] for candidate, _ in snapshot.filter({"source": "referral"})}
+    recommended_candidate_ids = {candidate["_id"] for candidate, _ in snapshot.filter({"category": "recommended"})}
     application_candidate_ids = col("applications").distinct("candidate_id")
     unassigned_query = {"_id": {"$nin": application_candidate_ids}} if application_candidate_ids else {}
     active_interview_statuses = ["pending", "invited", "confirmed", "rescheduled"]

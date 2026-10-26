@@ -815,6 +815,35 @@ select {
   }
 }
 
+.candidate-application-option {
+  width: min(620px, calc(100vw - 80px));
+  padding: 10px 8px;
+  border-bottom: 1px solid #edf0f4;
+  white-space: normal;
+}
+
+.candidate-delivery-analysis {
+  padding: 20px;
+  border-radius: 12px;
+  background: #f3f8fd;
+
+  .ant-card { height: 100%; border: 0; }
+  .delivery-metrics {
+    display: flex;
+    gap: 24px;
+    min-height: 70px;
+    > div { flex: 1; min-width: 0; }
+    strong { display: block; font-size: 20px; overflow-wrap: anywhere; }
+    span { display: block; margin-top: 8px; color: #86909c; font-size: 13px; }
+  }
+  .delivery-section-head { display: flex; justify-content: space-between; align-items: center; margin: 24px 0 10px; }
+  .ant-collapse-item { margin-bottom: 10px; background: #fff; border-radius: 6px; }
+  .ant-collapse-header { background: #f6f8fa; border-radius: 6px !important; }
+  .delivery-record-heading { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+  .delivery-record-body { padding: 8px 12px; }
+  .delivery-event-detail { background: #f8fafc; margin-top: 8px; padding: 12px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
 @media (max-width: 520px) {
   .position-progress-toolbar,
   .position-progress-metrics {

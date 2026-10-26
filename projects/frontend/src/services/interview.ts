@@ -1,5 +1,6 @@
 import { http, unwrap } from './http';
 import type { PagedData } from './template';
+import type { Application } from './candidate';
 
 export interface Interview {
   id: number;
@@ -66,6 +67,11 @@ export const INTERVIEW_ROUND_OPTIONS = ['一面', '二面', '三面', 'HR面试'
 export async function fetchInterviews(params: Record<string, unknown> = {}) {
   const resp = await http.get('/api/interviews', { params });
   return unwrap<PagedData<Interview>>(resp);
+}
+
+export async function fetchPendingInterviewApplications(params: Record<string, unknown> = {}) {
+  const resp = await http.get('/api/interviews/pending-applications', { params });
+  return unwrap<PagedData<Application>>(resp);
 }
 
 export async function fetchInterview(id: number) {

@@ -13,8 +13,8 @@ import { PageLoading } from '@/components/PageLoading';
 import { fetchJobs } from '@/services/job';
 import {
   POOL_SOURCE_TEXT, activatePoolEntry, batchPoolTags,
-  batchRemoveFromPool, createPoolFolder, deletePoolFolder, fetchPool, fetchPoolFolders,
-  removeFromPool, renamePoolFolder, updatePoolEntry,
+  createPoolFolder, deletePoolFolder, fetchPool, fetchPoolFolders,
+  renamePoolFolder, updatePoolEntry,
 } from '@/services/talentPool';
 import type { PoolEntry, PoolFolder, PoolFolderSummary } from '@/services/talentPool';
 import { msg } from '@/utils/message';
@@ -154,19 +154,6 @@ export function TalentPoolPage() {
           >
             批量改标签
           </Button>}
-          {canManage && <Popconfirm
-            title={`确认批量移出 ${selectedIds.length} 条记录？`}
-            disabled={!selectedIds.length}
-            onConfirm={async () => {
-              const res = await batchRemoveFromPool(selectedIds);
-              msg.success(`已移出 ${res.removed} 条`);
-              setSelectedIds([]);
-              void load();
-              void loadFolders();
-            }}
-          >
-            <Button danger disabled={!selectedIds.length}>批量移出</Button>
-          </Popconfirm>}
           {canManage && <Button onClick={() => void downloadProtectedFile(
             `/api/talent-pool/export?folder_key=${encodeURIComponent(filters.folder_key)}`,
             'talent_pool.csv',
@@ -356,18 +343,6 @@ export function TalentPoolPage() {
                               重新激活
                             </Button>
                           )}
-                          <Popconfirm
-                            title="确认移出人才库？"
-                            onConfirm={async () => {
-                              await removeFromPool(record.id);
-                              msg.success('已移出人才库');
-                              setSelectedIds((current) => current.filter((id) => id !== record.id));
-                              void load();
-                              void loadFolders();
-                            }}
-                          >
-                            <Button size="small" danger>移出</Button>
-                          </Popconfirm>
                         </>
                       )}
                     </div>

@@ -5,7 +5,7 @@ import logging
 from common.db import get_by_id, update_doc
 from common.file_service import get_storage, resolve_local
 from common.logstore import write_log
-from common.resume_parser import parse_resume_file
+from common.resume_parser import parse_resume_file_with_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,9 @@ def auto_parse_attachment(app, attachment_id: int, candidate_id: int):
     status = "failed"
     try:
         local_path, is_tmp = resolve_local(app, attachment.get("file_path", ""))
-        fields, status = parse_resume_file(local_path, attachment.get("file_name", ""))
+        fields, status, parsed_text = parse_resume_file_with_text(
+            local_path, attachment.get("file_name", ""),
+        )
     except Exception:
         logger.exception("公开投递简历自动解析失败 attachment_id=%s candidate_id=%s",
                          attachment_id, candidate_id)
@@ -47,6 +49,7 @@ def auto_parse_attachment(app, attachment_id: int, candidate_id: int):
     update_doc("attachments", attachment_id, {
         "parse_status": status,
         "parsed_fields": fields,
+        "parsed_text": locals().get("parsed_text", ""),
     })
 
     if status == "system":

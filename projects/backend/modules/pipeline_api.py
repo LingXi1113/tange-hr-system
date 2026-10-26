@@ -97,7 +97,7 @@ def board():
             raise BizError(BizCode.NOT_FOUND, "招聘需求不存在")
         jobs = list(col("jobs").find({"requirement_id": requirement_id}).sort("_id", 1))
     else:
-        raise BizError(BizCode.PARAM_INVALID, "job_id 或 requirement_id 必填")
+        jobs = list(col("jobs").find({}).sort("_id", 1))
 
     release_expired_locks()
     columns = []
@@ -114,13 +114,19 @@ def board():
                             "job_id": job["_id"], "job_name": job.get("name", "")})
 
     job_ids = [j["_id"] for j in jobs]
+    # 全部职位按阶段合并列，避免默认选中第一个职位后误以为其他候选人丢失。
+    combined = not job_id and not requirement_id
+    if combined:
+        columns = list({item["stage_key"]: {
+            **item, "job_id": 0, "job_name": "全部职位",
+        } for item in columns}.values())
     apps = list(col("applications").find({"job_id": {"$in": job_ids}}))
     now = datetime.now()
     cards = []
     for app in apps:
         # 看板展示：进行中 + 已淘汰（淘汰列）；待入职/已入职等属于后续阶段视图
         if app.get("status") not in (APP_IN_PROGRESS, APP_PENDING_ONBOARD,
-                                      APP_ONBOARDED, APP_ELIMINATED):
+                                      APP_ONBOARDED, APP_ELIMINATED) and app.get("current_stage") not in {"abandoned", "talent_pool"}:
             continue
         stay = ""
         if app.get("stage_entered_at"):
@@ -134,7 +140,22 @@ def board():
             "lock": lock_info_for_candidate(app["candidate_id"])
             if app.get("status") in (APP_IN_PROGRESS, APP_PENDING_ONBOARD) else None,
         })
+        # 模板更新或历史阶段键不一致时保留真实阶段列，不能返回了卡片却没有列承接。
+        column_job_id = 0 if combined else app["job_id"]
+        if not any(item["stage_key"] == app.get("current_stage")
+                   and item["job_id"] == column_job_id for item in columns):
+            columns.append({
+                "stage_key": app.get("current_stage", ""), "name": card["stage_name"],
+                "category": "历史阶段", "job_id": column_job_id,
+                "job_name": "全部职位" if combined else card["job_name"],
+            })
         cards.append(card)
+    if combined:
+        order = ["new_resume", "pending_screen", "hr_screen_passed", "business_screen",
+                 "pending_interview", "interview_1", "interviewing", "interview_2", "interview_3",
+                 "hr_interview", "interview_passed", "hrbp_interview", "offer_approval", "offer_pending", "offer",
+                 "pending_onboard", "onboarded", "eliminated", "abandoned", "talent_pool"]
+        columns.sort(key=lambda item: order.index(item["stage_key"]) if item["stage_key"] in order else len(order))
     return ok({"columns": columns, "cards": cards})
 
 

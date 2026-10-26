@@ -35,6 +35,7 @@ export interface LockInfo {
 
 export interface CandidateRow {
   id: number;
+  application_id?: number | null;
   name: string;
   gender: string;
   phone: string;
@@ -94,7 +95,7 @@ export interface CandidateDetail extends CandidateRow {
 
 export async function fetchCandidates(params: Record<string, unknown> = {}) {
   const resp = await http.get('/api/candidates', { params });
-  return unwrap<PagedData<CandidateRow>>(resp);
+  return unwrap<PagedData<CandidateRow> & { classification?: CandidateClassificationSummary }>(resp);
 }
 
 export interface CandidateClassificationSummary {
@@ -108,8 +109,8 @@ export interface CandidateClassificationSummary {
   total: number;
 }
 
-export async function fetchCandidateClassificationSummary() {
-  const resp = await http.get('/api/candidates/classification-summary');
+export async function fetchCandidateClassificationSummary(params: Record<string, unknown> = {}) {
+  const resp = await http.get('/api/candidates/classification-summary', { params });
   return unwrap<CandidateClassificationSummary>(resp);
 }
 
@@ -122,6 +123,9 @@ export interface DeliveryAnalysis {
   summary: {
     total_deliveries: number;
     highest_stage: string;
+    recommendations: number;
+    passed_recommendations: number;
+    recommendation_pass_rate: number;
     interviews: number;
     evaluated_interviews: number;
     passed_interviews: number;
@@ -131,6 +135,13 @@ export interface DeliveryAnalysis {
     created_at: string;
     stage_name: string;
     highest_stage_name: string;
+    timeline: {
+      id: string;
+      title: string;
+      detail: string;
+      operator_name: string;
+      created_at: string;
+    }[];
     transitions: {
       from_stage: string;
       to_stage: string;

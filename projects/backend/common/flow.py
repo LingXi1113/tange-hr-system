@@ -700,10 +700,16 @@ def application_process_state(app_doc: dict) -> dict:
     )
     if interview:
         interview_state = interview_process_state(interview)
+        if interview_state["key"] == "cancelled":
+            return {"key": "awaiting_interview_schedule", "label": "待安排面试", "role": "hr"}
         if interview_state["key"] in {
             "interview_evaluated", "awaiting_interviewer_feedback", "awaiting_interview",
         }:
             return interview_state
+
+    if stage in interview_stages and interview is None:
+        # 历史的 next_action 可能仍指向上一轮；没有本轮场次时必须先安排。
+        return {"key": "awaiting_interview_schedule", "label": "待安排面试", "role": "hr"}
 
     action = app_doc.get("next_action", "")
     if action == "business_screen_feedback" or stage == "business_screen":

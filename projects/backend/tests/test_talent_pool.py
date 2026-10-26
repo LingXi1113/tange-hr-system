@@ -1,4 +1,5 @@
-"""人才库：唯一约束、加入/移出/激活、批量操作、筛选分页、脱敏、导出留痕、权限。"""
+"""人才库：唯一约束、归档保留/激活、批量标签、筛选分页、脱敏、导出留痕、权限。"""
+import pytest
 from conftest import login
 from helpers import assign, ensure_hr, make_candidate, make_job, make_template, publish_job
 
@@ -96,27 +97,32 @@ def test_batch_tags(client):
     assert lst[e1["id"]]["tags"] == ["仅存"]
 
 
-def test_remove_and_readd(client):
+@pytest.mark.parametrize("user_id", ["hr-001", "super-admin-001"])
+def test_remove_disabled_and_entry_retained(client, user_id):
     _setup(client)
     cid = _mk_cand(client, "0008")
     entry = _add(client, cid).get_json()["data"]["added"][0]
-    # 需要二次确认
-    assert client.delete(f"/api/talent-pool/{entry['id']}").get_json()["code"] == 1001
-    assert client.delete(f"/api/talent-pool/{entry['id']}?confirm=1").get_json()["code"] == 0
+    login(client, user_id)
+    assert client.delete(f"/api/talent-pool/{entry['id']}").get_json()["code"] == 1006
+    assert client.delete(f"/api/talent-pool/{entry['id']}?confirm=1").get_json()["code"] == 1006
     assert client.get("/api/talent-pool",
-                      query_string={"keyword": "库候选人0008"}).get_json()["data"]["total"] == 0
-    # 移出后可再次加入
-    assert _add(client, cid).get_json()["code"] == 0
+                      query_string={"keyword": "库候选人0008"}).get_json()["data"]["total"] == 1
+    login(client, "hr-001")
+    assert _add(client, cid).get_json()["code"] == 1004
 
 
-def test_batch_remove(client):
+@pytest.mark.parametrize("user_id", ["hr-001", "super-admin-001"])
+def test_batch_remove_disabled_and_entries_retained(client, user_id):
     _setup(client)
     c1, c2 = _mk_cand(client, "0009"), _mk_cand(client, "0010")
     e1 = _add(client, c1).get_json()["data"]["added"][0]
     e2 = _add(client, c2).get_json()["data"]["added"][0]
+    login(client, user_id)
     body = client.post("/api/talent-pool/batch-remove",
                        json={"entry_ids": [e1["id"], e2["id"]]}).get_json()
-    assert body["data"]["removed"] == 2
+    assert body["code"] == 1006
+    rows = client.get("/api/talent-pool").get_json()["data"]["list"]
+    assert {e1["id"], e2["id"]}.issubset({row["id"] for row in rows})
 
 
 def test_activate_creates_application(client):

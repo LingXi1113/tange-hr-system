@@ -9,6 +9,7 @@ import type { BoardCard, BoardColumn } from '@/services/pipeline';
 import { fetchJobs } from '@/services/job';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
+import { useBusinessRefresh } from '@/utils/useBusinessRefresh';
 
 const APPLICATION_STATUS_TEXT: Record<string, string> = {
   in_progress: '进行中', pending_onboard: '待入职', onboarded: '已入职', eliminated: '已淘汰',
@@ -20,22 +21,24 @@ function csvCell(value: unknown) {
 
 export function PipelinePage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useCurrentUser();
   const canManage = Boolean(user && (user.role === 'hr' || user.role === 'super_admin'
     || user.roles?.some((role) => role === 'hr' || role === 'super_admin')));
   const [jobs, setJobs] = useState<{ id: number; name: string }[]>([]);
   const requestedJobId = Number(searchParams.get('job_id')) || null;
   const requestedApplicationId = Number(searchParams.get('application_id')) || null;
-  const [jobId, setJobId] = useState<number | null>(requestedJobId);
+  const [jobId, setJobId] = useState<number>(requestedJobId || 0);
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<BoardCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [moveTarget, setMoveTarget] = useState<BoardCard | null>(null);
   const [moveStage, setMoveStage] = useState('');
   const [moveReason, setMoveReason] = useState('');
+  const [moveColumns, setMoveColumns] = useState<BoardColumn[]>([]);
   const autoOpenedApplication = useRef<number | null>(null);
-  const selectedJob = jobs.find((job) => job.id === jobId);
+  const selectedJob = jobId ? jobs.find((job) => job.id === jobId) : { id: 0, name: '全部职位' };
+  const boardRequest = useRef(0);
 
   function exportCurrentBoard() {
     if (!selectedJob || !columns.length) return;
@@ -44,7 +47,8 @@ export function PipelinePage() {
       '锁定开始时间', '锁定结束时间', '淘汰原因',
     ]];
     columns.forEach((column) => {
-      const columnCards = cards.filter((card) => card.current_stage === column.stage_key);
+      const columnCards = cards.filter((card) => card.current_stage === column.stage_key
+        && (!column.job_id || card.job_id === column.job_id));
       if (!columnCards.length) {
         rows.push([selectedJob.name, column.name, '', '暂无候选人', '', '', '', '', '', '', '']);
         return;
@@ -78,26 +82,38 @@ export function PipelinePage() {
   useEffect(() => {
     fetchJobs({ page_size: 100 }).then((data) => {
       setJobs(data.list.map((j) => ({ id: j.id, name: j.name })));
-      if (data.list.length && jobId == null) setJobId(data.list[0].id);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => { setJobId(requestedJobId || 0); }, [requestedJobId]);
+
   const loadBoard = useCallback(async () => {
-    if (!jobId) return;
+    const requestId = ++boardRequest.current;
     setLoading(true);
     try {
-      const data = await fetchBoard({ job_id: jobId });
+      const data = await fetchBoard({ job_id: jobId || undefined });
+      if (requestId !== boardRequest.current) return;
       setColumns(data.columns);
       setCards(data.cards);
     } finally {
-      setLoading(false);
+      if (requestId === boardRequest.current) setLoading(false);
     }
   }, [jobId]);
+  useBusinessRefresh(loadBoard);
 
   useEffect(() => {
     void loadBoard();
   }, [loadBoard]);
+
+  useEffect(() => {
+    let active = true;
+    setMoveColumns([]);
+    if (moveTarget) void fetchBoard({ job_id: moveTarget.job_id }).then((data) => {
+      if (active) setMoveColumns(data.columns);
+    });
+    return () => { active = false; };
+  }, [moveTarget]);
 
   useEffect(() => {
     if (!canManage || searchParams.get('adjust') !== '1' || !requestedApplicationId
@@ -167,15 +183,21 @@ export function PipelinePage() {
         <Select
           style={{ width: 260 }} placeholder="选择职位" showSearch optionFilterProp="label"
           value={jobId ?? undefined}
-          onChange={(v) => setJobId(v)}
-          options={jobs.map((j) => ({ value: j.id, label: j.name }))}
+          onChange={(v) => {
+            const next = new URLSearchParams(searchParams);
+            if (v) next.set('job_id', String(v)); else next.delete('job_id');
+            next.delete('application_id');
+            next.delete('adjust');
+            setSearchParams(next);
+          }}
+          options={[{ value: 0, label: '全部职位' }, ...jobs.map((j) => ({ value: j.id, label: j.name }))]}
         />
         <Button
           icon={<DownloadOutlined />}
-          disabled={!jobId || loading || !columns.length}
+          disabled={loading || !columns.length}
           onClick={exportCurrentBoard}
         >
-          导出当前职位
+          导出当前看板
         </Button>
       </div>
       <div className="hrats-block">
@@ -186,7 +208,8 @@ export function PipelinePage() {
         ) : (
           <div className="hrates-board">
             {columns.map((col) => {
-              const colCards = cards.filter((c) => c.current_stage === col.stage_key);
+              const colCards = cards.filter((c) => c.current_stage === col.stage_key
+                && (!col.job_id || c.job_id === col.job_id));
               return (
                 <div className="hrates-board-col" key={`${col.job_id}-${col.stage_key}`}>
                   <div className="col-head">
@@ -196,7 +219,10 @@ export function PipelinePage() {
                   {colCards.map((card) => (
                     <div className="hrates-card" key={card.id}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <strong>{card.candidate_name}</strong>
+                        <Button type="link" style={{ padding: 0, fontWeight: 600 }}
+                          onClick={() => navigate(`/candidates/${card.candidate_id}?application_id=${card.id}`)}>
+                          {card.candidate_name}
+                        </Button>
                         {card.lock && (
                           <Tooltip title={`锁定中：${card.lock.start_at} ~ ${card.lock.end_at}`}>
                             <LockOutlined style={{ color: '#FF5219' }} />
@@ -224,7 +250,7 @@ export function PipelinePage() {
                           {card.process_state_key === 'awaiting_interview_schedule' ? (
                             <Button
                               size="small" type="link" style={{ padding: 0 }}
-                              onClick={() => navigate(`/interviews?candidate_id=${card.candidate_id}&application_id=${card.id}`)}
+                              onClick={() => navigate(`/interviews?candidate_id=${card.candidate_id}&application_id=${card.id}&open=1`)}
                             >
                               安排面试
                             </Button>
@@ -274,8 +300,8 @@ export function PipelinePage() {
           style={{ width: '100%', marginBottom: 12 }} placeholder="目标阶段"
           value={moveStage || undefined}
           onChange={setMoveStage}
-          options={columns
-            .filter((c) => c.stage_key !== moveTarget?.current_stage && c.category !== '终态')
+          options={moveColumns
+            .filter((c) => c.stage_key !== moveTarget?.current_stage && !['终态', '历史阶段'].includes(c.category))
             .map((c) => ({ value: c.stage_key, label: c.name }))}
         />
         <Input.TextArea
