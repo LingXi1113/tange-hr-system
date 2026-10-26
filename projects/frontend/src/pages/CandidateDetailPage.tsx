@@ -458,6 +458,17 @@ export function CandidateDetailPage() {
   const candidate = detail;
   const selectedApplication = detail.applications.find((application) => application.id === selectedAppId)
     ?? detail.applications[0];
+  const assignedBusinessScreenerId = selectedApplication?.business_screener_id;
+  const businessScreenerName = selectedApplication?.business_screener_name?.trim()
+    || businessUsers.find((person) => person.user_id === assignedBusinessScreenerId)?.name
+    || (assignedBusinessScreenerId && selectedApplication?.current_handler_role === 'business_screener'
+      && selectedApplication.current_handler_id === assignedBusinessScreenerId
+      ? selectedApplication.current_handler_name : '')
+    || (assignedBusinessScreenerId && user?.user_id === assignedBusinessScreenerId ? user.name : '')
+    || assignedBusinessScreenerId;
+  const showBusinessScreener = Boolean(
+    businessScreenerName || selectedApplication?.current_stage === 'business_screen',
+  );
   const canScheduleInterview = Boolean(
     canManage
       && selectedApplication?.status === 'in_progress'
@@ -543,26 +554,28 @@ export function CandidateDetailPage() {
   );
   const canOfferFlowAction = canEnterOfferApproval;
   const canUseFlowButton = canDirectInterview || canEnterSecondInterview
-    || canEnterFinalInterview || canOfferFlowAction || canCreateOffer;
+    || canEnterFinalInterview || canOfferFlowAction || canCreateOffer || canScheduleInterview;
   const flowPrimaryLabel = canApproveBusinessScreen
     ? '通过业务复筛'
     : canEnterFinalInterview
       ? '进入三面'
       : canEnterSecondInterview
         ? '进入二面（业务）'
-        : alreadyInFinalInterview
-          ? '三面进行中'
-          : alreadyInSecondInterview
-            ? '二面进行中'
-            : alreadyInHrbpInterview
-              ? '进入录用审批'
-              : canDirectInterview
-                ? '进入一面（业务）'
-                : canCreateOffer
-                  ? '创建 Offer'
-                  : selectedApplication
-                    ? `当前阶段：${stageText(selectedApplication.current_stage)}`
-                    : '进入一面（业务）';
+        : canScheduleInterview && !interviewEvaluated
+          ? (currentInterview ? '编辑本轮面试' : '安排本轮面试')
+          : alreadyInFinalInterview
+            ? '三面进行中'
+            : alreadyInSecondInterview
+              ? '二面进行中'
+              : alreadyInHrbpInterview
+                ? '进入录用审批'
+                : canDirectInterview
+                  ? '进入一面（业务）'
+                  : canCreateOffer
+                    ? '创建 Offer'
+                    : selectedApplication
+                      ? `当前阶段：${stageText(selectedApplication.current_stage)}`
+                      : '进入一面（业务）';
   const inInterviewStage = Boolean(
     selectedApplication && INTERVIEW_STAGE_KEYS.has(selectedApplication.current_stage),
   );
@@ -963,9 +976,9 @@ export function CandidateDetailPage() {
                   <Typography.Text>{detail.phone}</Typography.Text>
                   <Typography.Text type="secondary">　|　</Typography.Text>
                   <Typography.Text>{detail.email}</Typography.Text>
-                  {selectedApplication?.business_screener_name && (
+                  {businessScreenerName && (
                     <Tag color="blue" style={{ marginLeft: 12 }}>
-                      业务复筛：{selectedApplication.business_screener_name}
+                      业务复筛：{businessScreenerName}
                     </Tag>
                   )}
                 </div>
@@ -1228,9 +1241,22 @@ export function CandidateDetailPage() {
           <Card
             title="阶段流转记录" size="small" style={{ marginBottom: 16 }}
           >
+            {showBusinessScreener && (
+              <div role="status" aria-label="业务复筛接收人" style={{
+                marginBottom: 12, padding: '10px 12px', background: '#fafafa',
+                border: '1px solid #f0f0f0', borderRadius: 6, overflowWrap: 'anywhere',
+              }}>
+                <Typography.Text strong>
+                  {selectedApplication?.current_stage === 'job_changed' ? '原投递业务复筛接收人：' : '业务复筛接收人：'}
+                </Typography.Text>
+                <Typography.Text type={businessScreenerName ? undefined : 'warning'}>
+                  {businessScreenerName || '未指派，请由 HR 选择业务复筛人员'}
+                </Typography.Text>
+              </div>
+            )}
             {canShowFlowButton && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-                <Space>
+                <Space wrap style={{ justifyContent: 'flex-end' }}>
                   <Dropdown.Button
                   type="primary"
                   disabled={!canUseFlowButton && !canRestore}
@@ -1251,6 +1277,8 @@ export function CandidateDetailPage() {
                       void handleEnterFinalInterview();
                     } else if (canEnterSecondInterview) {
                       void handleEnterSecondInterview();
+                    } else if (canScheduleInterview && !interviewEvaluated) {
+                      handleArrangeInterview();
                     } else if (alreadyInFinalInterview) {
                       msg.info('候选人已进入三面，请点击“安排面试”');
                     } else if (alreadyInSecondInterview) {
