@@ -374,7 +374,7 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
                        initial_stage: str = "new_resume",
                        initial_lock_days=None,
                        initial_reason: str = "进入流程",
-                       hr_assignment: bool = False):
+                       hr_assignment: bool = False, send_notification: bool = True):
     """新建应聘记录：校验接收状态、锁定期、重复投递；写入流转记录并开始锁定。"""
     ensure_core_indexes()
     check_job_accepting(job_doc, hr_assignment=hr_assignment)
@@ -453,6 +453,13 @@ def create_application(candidate_doc: dict, job_doc: dict, source: str,
             if lock_doc:
                 col("lock_records").delete_one({"_id": lock_doc["_id"]})
         raise
+    if send_notification:
+        notify_application_created(app_doc)
+    return app_doc
+
+
+def notify_application_created(app_doc: dict):
+    """Best-effort side effect; callers doing a transaction may defer it."""
     try:
         from common.notifier import _notify_new_candidate
 
@@ -747,6 +754,10 @@ def application_to_dict(app_doc: dict) -> dict:
         "job_name": job.get("name", ""),
         "source": app_doc.get("source", ""),
         "current_stage": app_doc.get("current_stage", ""),
+        "previous_application_id": app_doc.get("previous_application_id"),
+        "replacement_application_id": app_doc.get("replacement_application_id"),
+        "archived_from_stage": app_doc.get("archived_from_stage", ""),
+        "closed_reason": app_doc.get("closed_reason", ""),
         "interview_round": effective_interview_round(app_doc, job),
         "business_screener_id": app_doc.get("business_screener_id", ""),
         "business_screener_name": app_doc.get("business_screener_name", ""),

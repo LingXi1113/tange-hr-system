@@ -83,6 +83,13 @@ export function CandidateDeliveryAnalysis({ data, loading, failed, selectedId, o
                     <Typography.Text type="secondary">负责人：{app.owner_name || '-'}</Typography.Text>
                     <Typography.Text type="secondary">来源：{deliverySource(app.source)}</Typography.Text>
                     <Button size="small" onClick={() => onSelect(app.id)}>查看本次投递及处理流程</Button>
+                    {app.closed_reason && <Typography.Text type="secondary">归档原因：{app.closed_reason}</Typography.Text>}
+                    {app.replacement_application_id && (
+                      <Button size="small" onClick={() => onSelect(app.replacement_application_id!)}>查看更换后的投递</Button>
+                    )}
+                    {app.previous_application_id && (
+                      <Button size="small" onClick={() => onSelect(app.previous_application_id!)}>查看上次投递</Button>
+                    )}
                   </Space>
                   <Timeline items={(app.timeline || []).map((event) => ({
                     key: event.id,

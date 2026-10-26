@@ -57,6 +57,9 @@ STAGE_NAMES = {s[0]: s[1] for s in DEFAULT_STAGES} \
     | {s[0]: s[1] for s in TERMINAL_STAGES} \
     | {s[0]: s[1] for s in LEGACY_STAGES}
 
+# System-only archive state: not an HR-selectable process stage.
+STAGE_NAMES["job_changed"] = "已更换职位（归档）"
+
 # 系统参数 key
 PARAM_LOCK_DAYS_DEFAULT = "lock_days_default"
 PARAM_ONBOARDING_CHECKLIST_DEFAULT = "onboarding_checklist_default"

@@ -2,7 +2,7 @@ import type { Application } from '@/services/candidate';
 
 const SOURCE_TEXT: Record<string, string> = {
   manual: 'HR录入', public: '公开投递', interview_arrangement: '面试安排',
-  hr_direct_offer: 'HR直发Offer', import: '批量导入',
+  hr_direct_offer: 'HR直发Offer', import: '批量导入', job_change: 'HR更换职位',
 };
 
 export function applicationStatus(application: Pick<Application, 'status' | 'current_stage'>) {

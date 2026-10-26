@@ -128,6 +128,10 @@ def _interview_view(doc: dict) -> dict:
     candidate = get_by_id("candidates", doc["candidate_id"]) or {}
     job = get_by_id("jobs", doc["job_id"]) or {}
     process_state = interview_process_state(doc)
+    application = get_by_id("applications", doc.get("application_id")) or {}
+    archived = application.get("current_stage") == "job_changed"
+    if archived:
+        process_state = {"key": "archived", "label": "原投递已归档", "role": ""}
     return {
         "id": doc["_id"],
         "candidate_id": doc["candidate_id"],
@@ -135,6 +139,7 @@ def _interview_view(doc: dict) -> dict:
         "job_id": doc["job_id"],
         "job_name": job.get("name", ""),
         "application_id": doc.get("application_id"),
+        "application_archived": archived,
         "round": doc.get("round", ""),
         "type": doc.get("type", ""),
         "start_at": dt(doc.get("start_at"))[:16],
@@ -366,6 +371,9 @@ def create_interview():
         template_id = int(template_id)
 
     with candidate_schedule_guard(candidate["_id"]):
+        # Bindings were read before acquiring the lease. A job change may have
+        # archived the application while this scheduling request was waiting.
+        app_doc = require_interview_application(get_by_id("applications", app_doc["_id"]))
         existing = col("interviews").find_one({
             "application_id": app_doc["_id"], "round": round_,
             "status": {"$ne": IV_CANCELLED},

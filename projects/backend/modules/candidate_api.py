@@ -609,6 +609,29 @@ def candidate_applications(cid: int):
     return ok([application_to_dict(a) for a in apps])
 
 
+@bp.post("/api/candidates/<int:cid>/change-job")
+@role_required(HR, SUPER_ADMIN)
+def change_job(cid: int):
+    from common.job_change import change_application_job
+
+    candidate = _get_candidate_or_404(cid)
+    require_candidate_lock_owner(cid)
+    payload = request.get_json(silent=True) or {}
+    job = _selected_candidate_job(payload)
+    if not job:
+        raise BizError(BizCode.PARAM_INVALID, "请选择新投递职位")
+    try:
+        application_id = int(payload.get("application_id", ""))
+        version = int(payload.get("version", ""))
+    except (ValueError, TypeError) as exc:
+        raise BizError(BizCode.PARAM_INVALID, "application_id 和 version 必填") from exc
+    application = change_application_job(
+        candidate, application_id, job, version,
+        str(payload.get("reason") or "HR更换投递职位").strip(),
+    )
+    return ok(application_to_dict(application))
+
+
 @bp.get("/api/candidates/<int:cid>/delivery-analysis")
 @role_required(*CANDIDATE_READ_ROLES)
 def delivery_analysis(cid: int):
@@ -667,7 +690,13 @@ def delivery_analysis(cid: int):
         app_interviews = [item for item in interviews if item.get("application_id") == app["_id"]]
         round_rank = {"一面": 30, "二面": 40, "三面": 50, "HR面试": 55, "复试": 55}
         rounds = [item.get("round", "") for item in app_interviews if item.get("status") != "cancelled"]
-        if app.get("interview_round"):
+        # A fresh screening delivery already has the template's first round
+        # configured, but has not actually reached that round yet.
+        round_stage = app.get("archived_from_stage") or app.get("current_stage", "")
+        if app.get("interview_round") and round_stage in {
+            "pending_interview", "interviewing", "interview_passed", "interview_1",
+            "interview_2", "interview_3", "hr_interview", "re_interview",
+        }:
             rounds.append(app["interview_round"])
         highest_round = max(rounds, key=lambda value: round_rank.get(value, -1), default="")
         reached_name = name_by_key.get(reached, STAGE_NAMES.get(reached, reached or "-"))
@@ -687,12 +716,14 @@ def delivery_analysis(cid: int):
                               and item.get("to_stage") != "business_screen"
                               and item.get("_id", 0) > recommendation.get("_id", 0)), None)
             if departure and departure.get("to_stage") not in {
+                "job_changed",
                 "eliminated", "abandoned", "talent_pool", "new_resume", "pending_screen", "hr_screen_passed",
             }:
                 recommendation_passed += 1
         timeline = [{
             "id": f"application-{app['_id']}", "title": "投递简历",
-            "detail": app.get("source", ""), "operator_name": app.get("owner_name", ""),
+            "detail": "HR更换投递职位，重新开始简历筛选" if app.get("source") == "job_change" else app.get("source", ""),
+            "operator_name": app.get("owner_name", ""),
             "created_at": dt(app.get("created_at")),
         }]
         timeline.extend({

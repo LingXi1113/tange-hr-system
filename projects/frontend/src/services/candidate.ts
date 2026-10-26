@@ -6,6 +6,10 @@ export interface ApplicationInfo {
   job_name: string;
   current_stage: string;
   status: string;
+  previous_application_id?: number | null;
+  replacement_application_id?: number | null;
+  archived_from_stage?: string;
+  closed_reason?: string;
   interview_round?: string;
   awaiting_hr_action?: boolean;
   next_action_role?: string;
@@ -204,6 +208,13 @@ export async function deleteCandidate(id: number, hard = true) {
 export async function assignJob(candidateId: number, jobId: number, source = 'manual') {
   const resp = await http.post(`/api/candidates/${candidateId}/applications`, {
     job_id: jobId, source,
+  });
+  return unwrap<Application>(resp);
+}
+
+export async function changeCandidateJob(candidateId: number, application: Application, jobId: number, reason = '') {
+  const resp = await http.post(`/api/candidates/${candidateId}/change-job`, {
+    application_id: application.id, version: application.version, job_id: jobId, reason,
   });
   return unwrap<Application>(resp);
 }

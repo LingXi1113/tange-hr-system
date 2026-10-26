@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
-import { assignJob, directInterview, fetchCandidate, fetchCandidates } from '@/services/candidate';
+import { assignJob, changeCandidateJob, directInterview, fetchCandidate, fetchCandidates } from '@/services/candidate';
 import type { Application } from '@/services/candidate';
 import { fetchJobs } from '@/services/job';
 import type { Job } from '@/services/job';
@@ -266,10 +266,41 @@ export function InterviewsPage() {
   }, [openEditor, openEditorForCandidate, searchParams]);
 
   async function handleSave() {
+    if (saving) return;
     const values = await form.validateFields();
     let applicationId = values.application_id as number | undefined;
     const candidateId = Number(values.candidate_id);
     const jobId = Number(values.job_id);
+    const candidate = await fetchCandidate(candidateId);
+    const activeApplications = candidate.applications.filter((app) => ['in_progress', 'pending_onboard'].includes(app.status));
+    const editedInterview = editingId ? await fetchInterview(editingId) : null;
+    const original = editedInterview
+      ? candidate.applications.find((app) => app.id === editedInterview.application_id)
+      : activeApplications.length === 1 ? activeApplications[0] : undefined;
+    if ((editedInterview && editedInterview.job_id !== jobId)
+      || (!activeApplications.some((app) => app.job_id === jobId) && activeApplications.length > 0)) {
+      if (!original || !['in_progress', 'pending_onboard'].includes(original.status)) {
+        msg.info('请到候选人详情选择进行中的投递，再点击“更换投递职位”');
+        return;
+      }
+      Modal.confirm({
+        title: '更换职位后需要重新筛选',
+        content: '原投递将归档并保留历史，未完成的旧面试和审批将停止。新投递从简历初筛开始，本次不会直接创建新职位的面试。',
+        okText: '更换并重新筛选', cancelText: '取消',
+        onOk: async () => {
+          setSaving(true);
+          try {
+            const application = await changeCandidateJob(candidateId, original, jobId, '面试安排中更换投递职位');
+            setDrawerOpen(false);
+            navigate(`/candidates/${candidateId}?application_id=${application.id}`);
+            msg.success('职位已更换，请先完成新职位的简历筛选');
+          } finally {
+            setSaving(false);
+          }
+        },
+      });
+      return;
+    }
     if (editingId && editingJobId && jobId !== editingJobId) {
       // 更换职位时不能继续使用原应聘记录，改为切换到新职位对应的记录。
       applicationId = undefined;
@@ -279,8 +310,12 @@ export function InterviewsPage() {
         msg.error('安排面试前请选择职位');
         return;
       }
-      const existingApplication = appOptions.find((item) => item.job_id === jobId);
+      const existingApplication = activeApplications.find((item) => item.job_id === jobId);
       if (existingApplication) {
+        if (!INTERVIEW_STAGE_KEYS.has(existingApplication.current_stage)) {
+          msg.info('该投递尚未进入面试，请先在候选人详情完成筛选并推进阶段');
+          return;
+        }
         applicationId = existingApplication.id;
       } else {
         const application = await assignJob(candidateId, jobId, 'interview_arrangement');
@@ -311,6 +346,10 @@ export function InterviewsPage() {
 
   async function openFeedback(record: Interview) {
     const detail = await fetchInterview(record.id);
+    if (detail.application_archived) {
+      msg.info('原投递已因更换职位归档，面试评价仅保留查看');
+      return;
+    }
     setFeedbackTarget(detail);
     feedbackForm.setFieldsValue({
       version: detail.feedback?.version,
@@ -382,12 +421,12 @@ export function InterviewsPage() {
       title: '操作', width: 220, fixed: 'right' as const,
       render: (_: unknown, r: Interview) => (
         <Space size={2}>
-          {r.status !== 'cancelled' && (canHrManage || user?.user_id === r.interviewer_id) && (
+          {!r.application_archived && r.status !== 'cancelled' && (canHrManage || user?.user_id === r.interviewer_id) && (
             <Button size="small" type="link" onClick={() => void openFeedback(r)}>
               {r.has_feedback ? '修改评价' : '提交评价'}
             </Button>
           )}
-          {canHrManage && r.status === 'completed' && r.has_feedback && (
+          {!r.application_archived && canHrManage && r.status === 'completed' && r.has_feedback && (
             <Button
               size="small" type="link"
               onClick={() => navigate(`/pipeline?job_id=${r.job_id}&application_id=${r.application_id}&adjust=1`)}
@@ -395,7 +434,7 @@ export function InterviewsPage() {
               进入下一阶段
             </Button>
           )}
-          {canHrManage && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}
+          {!r.application_archived && canHrManage && <Button size="small" type="link" onClick={() => void openEditor(r)}>编辑</Button>}
         </Space>
       ),
     },
@@ -508,7 +547,7 @@ export function InterviewsPage() {
           <Form.Item name="application_id" hidden><Input /></Form.Item>
           <Form.Item name="candidate_id" label="候选人" rules={[{ required: true, message: '必填' }]}>
             <Select
-              showSearch optionFilterProp="label" placeholder="选择候选人"
+              showSearch optionFilterProp="label" placeholder="选择候选人" disabled={Boolean(editingId)}
               options={candidates.map((c) => ({ value: c.id, label: c.name }))}
               onChange={(v) => {
                 form.setFieldsValue({ application_id: undefined, job_id: undefined });

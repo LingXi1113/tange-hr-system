@@ -29,12 +29,14 @@ def summary():
     application_candidate_ids = col("applications").distinct("candidate_id")
     unassigned_query = {"_id": {"$nin": application_candidate_ids}} if application_candidate_ids else {}
     active_interview_statuses = ["pending", "invited", "confirmed", "rescheduled"]
+    archived_app_ids = col("applications").distinct("_id", {"current_stage": "job_changed"})
     active_interview_app_ids = set(col("interviews").distinct(
         "application_id", {"status": {"$in": active_interview_statuses}},
     ))
     feedback_pending_interview_ids = {
         item["_id"] for item in col("interviews").find({
             "status": {"$in": active_interview_statuses + ["completed"]},
+            "application_id": {"$nin": archived_app_ids},
         })
         if interview_process_state(item).get("key") == "awaiting_interviewer_feedback"
     }

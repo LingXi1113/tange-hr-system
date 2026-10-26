@@ -9,6 +9,7 @@ export interface Interview {
   job_id: number;
   job_name: string;
   application_id: number;
+  application_archived?: boolean;
   round: string;
   type: string;
   start_at: string;

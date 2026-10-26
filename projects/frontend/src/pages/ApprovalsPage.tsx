@@ -10,7 +10,7 @@ import type { ApprovalRecord } from '@/services/approval';
 import { useCurrentUser } from '@/services/user';
 import { msg } from '@/utils/message';
 
-const statusText: Record<string, string> = { pending: '审批中', approved: '已通过', rejected: '已驳回' };
+const statusText: Record<string, string> = { pending: '审批中', approved: '已通过', rejected: '已驳回', cancelled: '已取消（更换职位）' };
 
 export function ApprovalsPage() {
   const [searchParams] = useSearchParams();

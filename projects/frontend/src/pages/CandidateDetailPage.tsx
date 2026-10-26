@@ -14,7 +14,7 @@ import { CandidateDeliveryAnalysis } from '@/components/CandidateDeliveryAnalysi
 import { applicationStatus, deliverySource } from '@/utils/applicationPresentation';
 import { useBusinessRefresh } from '@/utils/useBusinessRefresh';
 import {
-  assignBusinessScreener, assignJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
+  assignBusinessScreener, assignJob, changeCandidateJob, directInterview, enterNextInterview, fetchCandidate, fetchDeliveryAnalysis,
   fetchTransitions, parseResume,
   uploadResume,
 } from '@/services/candidate';
@@ -46,7 +46,7 @@ const STAGE_TEXT: Record<string, string> = {
   pending_interview: '待面试', interviewing: '面试中', interview_passed: '面试阶段',
   offer_pending: '录用通知', pending_onboard: '待入职', onboarded: '已入职',
   // 终态
-  eliminated: '淘汰', abandoned: '放弃', talent_pool: '人才库',
+  eliminated: '淘汰', abandoned: '放弃', talent_pool: '人才库', job_changed: '已更换职位（归档）',
   // v1.0 旧阶段（兼容历史数据）
   business_screen: '业务复筛', interview_1: '一面', interview_2: '二面',
   interview_3: '三面', hrbp_interview: 'HRBP确认', hr_interview: '人力面', offer_approval: '最终筛选', offer: '录用通知',
@@ -281,6 +281,10 @@ export function CandidateDetailPage() {
   const [offerJobOpen, setOfferJobOpen] = useState(false);
   const [offerJobId, setOfferJobId] = useState<number | null>(null);
   const [offerJobSaving, setOfferJobSaving] = useState(false);
+  const [changeJobOpen, setChangeJobOpen] = useState(false);
+  const [changeJobId, setChangeJobId] = useState<number | null>(null);
+  const [changeJobReason, setChangeJobReason] = useState('');
+  const [changeJobSaving, setChangeJobSaving] = useState(false);
   const [resumeEditOpen, setResumeEditOpen] = useState(false);
   const [deliveryAnalysisLoading, setDeliveryAnalysisLoading] = useState(false);
   const [deliveryAnalysisFailed, setDeliveryAnalysisFailed] = useState(false);
@@ -588,6 +592,20 @@ export function CandidateDetailPage() {
     { key: 'pending_onboard', label: '进入待入职', disabled: true },
     { key: 'onboarded', label: '进入入职', disabled: true },
   ];
+
+  async function handleChangeJob() {
+    if (!selectedApplication || !changeJobId || changeJobSaving) return;
+    setChangeJobSaving(true);
+    try {
+      const application = await changeCandidateJob(Number(id), selectedApplication, changeJobId, changeJobReason);
+      setChangeJobOpen(false);
+      await load();
+      selectApplication(application.id, true);
+      msg.success('已更换职位，新投递从简历初筛开始；原投递记录已保留');
+    } finally {
+      setChangeJobSaving(false);
+    }
+  }
 
   async function handleRunScreening() {
     if (!selectedApplication || screeningBusy) return;
@@ -913,11 +931,18 @@ export function CandidateDetailPage() {
                       {detail.applications.length} 次投递 · {selectedApplication?.job_name || '未关联职位'} <DownOutlined />
                     </Button>
                   </Dropdown>
+                  {canManage && selectedApplication && ['in_progress', 'pending_onboard'].includes(selectedApplication.status) && (
+                    <Button size="small" onClick={() => {
+                      setChangeJobId(null);
+                      setChangeJobReason('');
+                      setChangeJobOpen(true);
+                    }}>更换投递职位</Button>
+                  )}
                   <CandidateAiEvaluation
                     jobName={selectedApplication?.job_name}
                     result={screeningResult}
                     loading={screeningBusy}
-                    canEvaluate={canManage && Boolean(selectedApplication)}
+                    canEvaluate={canManage && selectedApplication?.status === 'in_progress'}
                     onEvaluate={handleRunScreening}
                     onChooseJob={() => {
                       setMatchTarget(
@@ -1095,7 +1120,7 @@ export function CandidateDetailPage() {
             title="智能简历匹配" size="small" style={{ marginBottom: 16 }}
             extra={canManage ? (
               <Space>
-                {selectedApplication && (
+                {selectedApplication?.status === 'in_progress' && (
                   <Button size="small" loading={screeningBusy} onClick={() => void handleRunScreening()}>
                     {screeningResult?.application_id === selectedApplication.id ? '重新分析' : '分析当前职位'}
                   </Button>
@@ -1190,7 +1215,7 @@ export function CandidateDetailPage() {
                     </ul>
                   </div>
                 )}
-                {canManage && selectedApplication && screeningResult.application_id === selectedApplication.id && (
+                {canManage && selectedApplication?.status === 'in_progress' && screeningResult.application_id === selectedApplication.id && (
                   <Space wrap style={{ marginTop: 16 }}>
                     <Button type="primary" loading={screeningBusy} onClick={() => void handleScreeningReview('pass')}>HR确认通过</Button>
                     <Button loading={screeningBusy} onClick={() => void handleScreeningReview('pending')}>设为待定</Button>
@@ -1269,7 +1294,7 @@ export function CandidateDetailPage() {
               </div>
             )}
             <StageProgress
-              currentStage={selectedApplication?.current_stage ?? 'pending_screen'}
+              currentStage={selectedApplication?.archived_from_stage || selectedApplication?.current_stage || 'pending_screen'}
               interviewRound={selectedApplication?.interview_round}
               transitions={transitions}
             />
@@ -1335,7 +1360,7 @@ export function CandidateDetailPage() {
                 {
                   title: '操作', width: 90,
                   render: (_: unknown, r: Interview) => (
-                    canManage && r.status !== 'cancelled' && !r.has_feedback
+                    !r.application_archived && canManage && r.status !== 'cancelled' && !r.has_feedback
                       ? (
                         <Button
                           size="small" type="link"
@@ -1343,7 +1368,7 @@ export function CandidateDetailPage() {
                         >
                           提交评价
                         </Button>
-                      ) : canManageFlow && r.status === 'completed' && r.has_feedback
+                      ) : !r.application_archived && canManageFlow && r.status === 'completed' && r.has_feedback
                         ? (
                           <Button
                             size="small" type="link"
@@ -1561,6 +1586,31 @@ export function CandidateDetailPage() {
             </Form.List>
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title="更换投递职位"
+        open={changeJobOpen}
+        onCancel={() => { if (!changeJobSaving) setChangeJobOpen(false); }}
+        onOk={() => void handleChangeJob()}
+        confirmLoading={changeJobSaving}
+        okButtonProps={{ disabled: !changeJobId }}
+        okText="更换并重新筛选" cancelText="取消"
+        maskClosable={!changeJobSaving} closable={!changeJobSaving}
+      >
+        <Typography.Paragraph>
+          当前投递：{selectedApplication?.job_name}。更换后，无论原来处于面试、审批还是待入职，新投递都从简历初筛重新开始，不继承旧职位的评价、匹配结果和审批结论。
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          原投递会归档，尚未完成的面试和审批任务将停止。历史投递、面试评价及审批记录不会删除，可通过上方投递下拉框和“投递分析”查看。
+        </Typography.Paragraph>
+        <Select
+          showSearch optionFilterProp="label" style={{ width: '100%', marginBottom: 16 }}
+          placeholder="请选择新的投递职位" value={changeJobId ?? undefined}
+          onChange={setChangeJobId}
+          options={jobs.filter((job) => job.id !== selectedApplication?.job_id).map((job) => ({ value: job.id, label: job.name }))}
+        />
+        <Input.TextArea placeholder="更换原因（选填）" maxLength={500} value={changeJobReason}
+          onChange={(event) => setChangeJobReason(event.target.value)} />
       </Modal>
       <Modal
         title="选择职位并进入录用审批"

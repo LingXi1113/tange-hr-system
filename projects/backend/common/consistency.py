@@ -24,6 +24,7 @@ from common.status import (
 
 ACTIVE_APPLICATION_STATUSES = (APP_IN_PROGRESS, APP_PENDING_ONBOARD)
 TERMINAL_APPLICATION_STAGES = {
+    "job_changed": APP_CLOSED,
     "eliminated": APP_ELIMINATED,
     "abandoned": APP_CLOSED,
     "talent_pool": APP_CLOSED,

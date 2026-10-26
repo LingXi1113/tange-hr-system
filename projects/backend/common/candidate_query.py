@@ -34,6 +34,8 @@ class CandidateQuery:
         self.jobs = {job["_id"]: job for job in col("jobs").find({}, {"name": 1, "dept_id": 1, "dept_name": 1})}
         self.apps = defaultdict(list)
         for application in col("applications").find({}).sort("_id", -1):
+            if application.get("current_stage") == "job_changed":
+                continue  # History belongs in delivery analysis, not active stage counts.
             self.apps[application["candidate_id"]].append(application)
         self._locks = {}
         self._states = {}
