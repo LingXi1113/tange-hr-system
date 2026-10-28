@@ -296,6 +296,8 @@ export function CandidateDetailPage() {
   const [screeningCategory, setScreeningCategory] = useState<'all' | 'recommendation' | 'interview' | 'offer'>('all');
   const [screeningResult, setScreeningResult] = useState<ScreeningResult | null>(null);
   const [screeningBusy, setScreeningBusy] = useState(false);
+  const [screeningRouteAppId, setScreeningRouteAppId] = useState<number | null>(null);
+  const [screeningRouteBusy, setScreeningRouteBusy] = useState(false);
   const [matchJobOpen, setMatchJobOpen] = useState(false);
   const [matchTarget, setMatchTarget] = useState('');
   const [matchProfiles, setMatchProfiles] = useState<ScreeningProfile[]>([]);
@@ -365,6 +367,7 @@ export function CandidateDetailPage() {
   useEffect(() => {
     let active = true;
     setScreeningResult(null);
+    setScreeningRouteAppId(null);
     if (selectedAppId) {
       void fetchScreeningResult(selectedAppId).then((result) => {
         if (active) setScreeningResult(result);
@@ -668,8 +671,36 @@ export function CandidateDetailPage() {
       setScreeningResult(result);
       msg.success('人工筛选结论已保存');
       await load();
+      if (decision === 'pass' && canArrangeFlow) {
+        setScreeningRouteAppId(selectedApplication.id);
+      }
+    } catch {
+      // The shared HTTP layer reports the error. Do not offer routing unless saved.
     } finally {
       setScreeningBusy(false);
+    }
+  }
+
+  async function handleScreeningRoute(route: 'business' | 'interview') {
+    if (screeningRouteBusy || !selectedApplication || screeningRouteAppId !== selectedApplication.id) return;
+    if (!canManage || !canArrangeFlow || selectedApplication.status !== 'in_progress') {
+      msg.warning('候选人当前状态已变化，请刷新后确认');
+      setScreeningRouteAppId(null);
+      return;
+    }
+    if (route === 'business') {
+      setScreeningRouteAppId(null);
+      openBusinessAssign();
+      return;
+    }
+    setScreeningRouteBusy(true);
+    try {
+      await handleDirectInterview();
+      setScreeningRouteAppId(null);
+    } catch {
+      // Keep the choice open after a failed transition so HR can retry or cancel.
+    } finally {
+      setScreeningRouteBusy(false);
     }
   }
 
@@ -1265,7 +1296,7 @@ export function CandidateDetailPage() {
                 )}
                 {canManage && selectedApplication?.status === 'in_progress' && screeningResult.application_id === selectedApplication.id && (
                   <Space wrap style={{ marginTop: 16 }}>
-                    <Button type="primary" loading={screeningBusy} onClick={() => void handleScreeningReview('pass')}>HR确认通过</Button>
+                    <Button type="primary" loading={screeningBusy} disabled={screeningRouteBusy} onClick={() => void handleScreeningReview('pass')}>HR确认通过</Button>
                     <Button loading={screeningBusy} onClick={() => void handleScreeningReview('pending')}>设为待定</Button>
                     <Button danger loading={screeningBusy} onClick={() => void handleScreeningReview('reject')}>不通过</Button>
                   </Space>
@@ -1740,6 +1771,30 @@ export function CandidateDetailPage() {
             },
           ]}
         />
+      </Modal>
+      <Modal
+        title="HR已确认通过，请选择下一步"
+        open={screeningRouteAppId !== null && screeningRouteAppId === selectedApplication?.id}
+        onCancel={() => { if (!screeningRouteBusy) setScreeningRouteAppId(null); }}
+        closable={!screeningRouteBusy}
+        maskClosable={!screeningRouteBusy}
+        keyboard={!screeningRouteBusy}
+        footer={null}
+      >
+        <Typography.Paragraph>
+          人工筛选通过结论已保存。请选择推给业务人员复筛，或跳过业务复筛直接进入一面。
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          关闭弹窗不会推进阶段，之后仍可通过阶段流转按钮继续操作。
+        </Typography.Paragraph>
+        <Space wrap>
+          <Button disabled={screeningRouteBusy} onClick={() => void handleScreeningRoute('business')}>
+            推给业务复筛
+          </Button>
+          <Button type="primary" loading={screeningRouteBusy} onClick={() => void handleScreeningRoute('interview')}>
+            直接进入面试
+          </Button>
+        </Space>
       </Modal>
       <Modal
         title="选择业务复筛人员"

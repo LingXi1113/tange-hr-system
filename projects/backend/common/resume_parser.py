@@ -88,7 +88,18 @@ NAME_BLOCKLIST_TERMS = {
     "投资", "战略", "销售", "运营", "市场", "商务", "产品", "技术", "研发", "开发",
     "工程师", "经理", "主管", "总监", "专员", "助理", "顾问", "实习", "应聘", "候选人",
     "简历", "招聘", "人力资源", "财务", "行政", "法务", "设计", "采购", "客服", "岗位",
+    "薪资", "面议", "经验", "工作年限", "上市", "领域", "求职", "手机", "电话", "邮箱",
 }
+# Exact location tokens only: do not reject real names merely ending in 州/江.
+NAME_LOCATION_TOKENS = set(
+    "北京 上海 天津 重庆 广州 深圳 杭州 南京 苏州 武汉 成都 西安 长沙 郑州 合肥 福州 厦门 "
+    "济南 青岛 宁波 无锡 佛山 东莞 珠海 惠州 中山 南宁 昆明 贵阳 南昌 海口 三亚 "
+    "太原 石家庄 沈阳 大连 长春 哈尔滨 呼和浩特 兰州 西宁 银川 乌鲁木齐 拉萨 "
+    "广东 浙江 江苏 山东 福建 安徽 湖北 湖南 河北 河南 四川 云南 贵州 陕西 山西 "
+    "江西 辽宁 吉林 黑龙江 海南 甘肃 青海 台湾 香港 澳门 广西 宁夏 新疆 内蒙古 西藏 "
+    "全国 异地 远程 不限 国内 海外".split()
+)
+NAME_LOCATION_TOKENS.update({"beijing", "shanghai", "guangzhou", "shenzhen", "hangzhou", "hong kong"})
 COMMON_CHINESE_SURNAMES = set(
     "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚程嵇邢滑裴陆荣翁荀羊甄曲封芮储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍桑桂濮牛寿通边扈燕冀浦尚农温别庄晏柴瞿阎慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公"
 )
@@ -555,6 +566,9 @@ def _name_candidate_score(value: str, position: int = 0) -> tuple[int, str]:
     if not candidate or candidate.lower() in SECTION_HEADINGS:
         return -100, ""
     lowered = candidate.lower()
+    location = lowered[:-1] if lowered.endswith(("市", "省")) else lowered
+    if location in NAME_LOCATION_TOKENS:
+        return -100, ""
     if any(term.lower() in lowered for term in NAME_BLOCKLIST_TERMS):
         return -100, ""
     if any(token in candidate for token in ("大学", "学院", "学校", "公司", "集团", "部门", "中心")):
@@ -577,10 +591,16 @@ def _name_candidate_score(value: str, position: int = 0) -> tuple[int, str]:
 def _name_from_filename(filename: str) -> str:
     if not filename:
         return ""
-    stem = os.path.splitext(os.path.basename(filename))[0]
-    stem = re.sub(r"\[(?:from)?[^\]]*\]", " ", stem, flags=re.I)
-    parts = [item for item in re.split(r"[_\-—–|｜\s（）()\[\]]+", stem) if item]
-    ranked = [_name_candidate_score(part, index) for index, part in enumerate(parts)]
+    stem = os.path.splitext(os.path.basename(filename.replace("\\", "/")))[0]
+    stem = re.sub(r"\[from\b[^\]]*\]", " ", stem, flags=re.I)
+    parts = [item for item in re.split(r"[_\-—–|｜\s（）()\[\]【】〔〕「」《》]+", stem) if item]
+    ranked = []
+    for index, part in enumerate(parts):
+        score, candidate = _name_candidate_score(part, index)
+        # A short filename token alone is weak evidence, not a license to guess.
+        if re.fullmatch(r"[\u4e00-\u9fff·]{2,5}", candidate or "") and candidate[0] not in COMMON_CHINESE_SURNAMES:
+            continue
+        ranked.append((score, candidate))
     score, candidate = max(ranked, default=(-100, ""), key=lambda item: item[0])
     return candidate if score > 0 else ""
 
@@ -591,10 +611,16 @@ def _name_from_header(text: str) -> str:
     for index, line in enumerate(line.strip() for line in text.splitlines() if line.strip()):
         if index >= 15:
             break
-        candidate = re.sub(r"\s+", " ", line).strip(" ：:，,;；|")
-        if len(candidate) > 40 or re.search(r"@|1[3-9]\d{9}", candidate):
-            continue
-        ranked.append(_name_candidate_score(candidate, index))
+        if _normalized_heading(re.split(r"[|｜]", line, maxsplit=1)[0]) in (
+            EDUCATION_SECTION_HEADINGS | WORK_SECTION_HEADINGS | {"项目经历", "专业技能", "自我评价"}
+        ):
+            break
+        # Coordinate-restored PDFs can put a name and contact in one visual row.
+        for fragment in re.split(r"[|｜]", line):
+            candidate = re.sub(r"\s+", " ", fragment).strip(" ：:，,;；|")
+            if len(candidate) > 40 or re.search(r"@|1[3-9]\d{9}", candidate):
+                continue
+            ranked.append(_name_candidate_score(candidate, index))
     score, candidate = max(ranked, default=(-100, ""), key=lambda item: item[0])
     # 无标签中文姓名必须具有姓氏证据；否则“手机”“最高学历”等短字段也会被误判。
     if re.fullmatch(r"[\u4e00-\u9fff·]{2,5}", candidate or ""):
@@ -726,7 +752,9 @@ def parse_resume_fields(text: str, filename: str = "") -> dict:
         name_value = re.sub(r"\s+", " ", name_value).strip(" ：:，,;；")
         name_match = re.match(r"[\u4e00-\u9fa5A-Za-z·][\u4e00-\u9fa5A-Za-z· .'-]{1,19}", name_value)
         if name_match:
-            fields["name"] = name_match.group(0).strip()
+            score, candidate = _name_candidate_score(name_match.group(0).strip())
+            if score > 0:
+                fields["name"] = candidate
 
     if not fields["name"]:
         fields["name"] = _name_from_header(text)
