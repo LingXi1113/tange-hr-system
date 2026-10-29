@@ -260,14 +260,36 @@ type ResumeFormValues = {
   work_experience: CandidateDetail['work_experience'];
 };
 
-export function CandidateDetailPage() {
-  const { id = '' } = useParams();
+type CandidateDetailPageProps = {
+  candidateId?: number;
+  initialApplicationId?: number;
+  embedded?: boolean;
+  onClose?: () => void;
+  onReviewBlockedChange?: (blocked: boolean) => void;
+};
+
+export function CandidateDetailPage({
+  candidateId, initialApplicationId, embedded = false, onClose, onReviewBlockedChange,
+}: CandidateDetailPageProps = {}) {
+  const { id: routeId = '' } = useParams();
+  const id = candidateId === undefined ? routeId : String(candidateId);
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [routeSearchParams, setRouteSearchParams] = useSearchParams();
+  const [embeddedSearchParams, setEmbeddedSearchParams] = useState(() => {
+    const params = new URLSearchParams();
+    if (initialApplicationId) params.set('application_id', String(initialApplicationId));
+    return params;
+  });
+  const searchParams = embedded ? embeddedSearchParams : routeSearchParams;
+  const setSearchParams = (params: URLSearchParams) => {
+    if (embedded) setEmbeddedSearchParams(params);
+    else setRouteSearchParams(params);
+  };
   const requestedApplicationId = Number(searchParams.get('application_id')) || null;
   const detailTab = searchParams.get('tab') === 'delivery-analysis' ? 'analysis' : 'resume';
   const { user } = useCurrentUser();
   const [detail, setDetail] = useState<CandidateDetail | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
   const [transitions, setTransitions] = useState<StageTransition[]>([]);
@@ -352,7 +374,12 @@ export function CandidateDetailPage() {
 
   useEffect(() => {
     setLoading(true);
-    load().finally(() => setLoading(false));
+    setLoadFailed(false);
+    let active = true;
+    void load().catch(() => { if (active) setLoadFailed(true); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; candidateRequest.current += 1; };
+
   }, [load]);
 
   useEffect(() => {
@@ -448,7 +475,21 @@ export function CandidateDetailPage() {
     };
   }, [previewAttachmentKey]);
 
+  const reviewBlocked = businessAssignOpen || offerJobOpen || changeJobOpen || resumeEditOpen
+    || matchJobOpen || abandonOpen || screeningRouteAppId !== null || screeningBusy
+    || matchJobBusy || parsingAttachmentId !== null;
+  useEffect(() => {
+    onReviewBlockedChange?.(reviewBlocked);
+    return () => onReviewBlockedChange?.(false);
+  }, [onReviewBlockedChange, reviewBlocked]);
+
   if (loading && !detail) return <PageLoading />;
+  if (loadFailed && !detail) return (
+    <Empty description="候选人资料加载失败，请重试或切换下一位">
+      <Button onClick={() => { setLoading(true); setLoadFailed(false);
+        void load().catch(() => setLoadFailed(true)).finally(() => setLoading(false)); }}>重试</Button>
+    </Empty>
+  );
   if (!detail) return <Empty description="候选人不存在" />;
 
   const lockOwnerId = detail.lock?.owner_id;
@@ -971,7 +1012,7 @@ export function CandidateDetailPage() {
             </Tag>
           )}
         </h2>
-        <Button onClick={() => navigate('/candidates')}>返回列表</Button>
+        <Button onClick={() => { if (embedded) onClose?.(); else navigate('/candidates'); }}>{embedded ? '关闭详情' : '返回列表'}</Button>
       </div>
       <Card size="small" style={{ marginBottom: 16 }}>
         <Row align="middle" justify="space-between" gutter={[16, 12]}>

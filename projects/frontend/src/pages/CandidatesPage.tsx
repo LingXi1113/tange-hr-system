@@ -4,8 +4,9 @@ import {
   Popconfirm, Select, Space, Tag, Tooltip, Upload,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
+import { CandidateReviewDrawer } from '@/components/CandidateReviewDrawer';
 import { PageLoading } from '@/components/PageLoading';
 import { saveCandidateWithReview } from '@/components/CandidateDuplicateReview';
 import {
@@ -103,7 +104,7 @@ function filtersFromSearch(searchParams: URLSearchParams) {
 }
 
 export function CandidatesPage() {
-  const navigate = useNavigate();
+  const [review, setReview] = useState<{ queue: CandidateRow[]; initialIndex: number } | null>(null);
   const [searchParams] = useSearchParams();
   const { user } = useCurrentUser();
   const canManage = user?.role === 'hr';
@@ -552,8 +553,16 @@ export function CandidatesPage() {
                 return (
                   <article
                     className="candidate-profile-card"
+                    tabIndex={0} role="button" aria-label={`查看候选人 ${record.name}`}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setReview({ queue: [...list], initialIndex: list.indexOf(record) });
+                      }
+                    }}
                     key={record.id}
-                    onClick={() => navigate(`/candidates/${record.id}${record.application_id ? `?application_id=${record.application_id}` : ''}`)}
+                    onClick={() => setReview({ queue: [...list], initialIndex: list.indexOf(record) })}
                   >
                     <div className="candidate-card-checkbox" onClick={(event) => event.stopPropagation()}>
                       <Checkbox
@@ -649,6 +658,9 @@ export function CandidatesPage() {
           </>
         )}
       </div>
+
+      {review && <CandidateReviewDrawer queue={review.queue} initialIndex={review.initialIndex}
+        onClose={() => { setReview(null); void load(true); }} />}
 
       <Drawer
         title="新增候选人" width={480} open={drawerOpen}

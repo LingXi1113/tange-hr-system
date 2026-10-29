@@ -24,7 +24,8 @@ from common.flow import (
     effective_interview_round, eliminate_application, expected_interview_round,
     interview_process_state, move_application,
 )
-from common.interview_guard import candidate_schedule_guard
+from common.interview_guard import candidate_schedule_guard, interviewer_schedule_guard
+from common.interview_schedule_query import conflict_query, calendar_range_query
 from common.logstore import write_log
 from common.response import BizCode, ok
 from common.roles import BUSINESS_SCREENER, HR, INTERVIEWER, SUPER_ADMIN
@@ -89,20 +90,13 @@ def _validate_time_window(start_at: datetime, end_at: datetime):
 
 
 def _check_conflict(candidate_id: int, start_at: datetime, end_at: datetime,
-                    exclude_id: int = None):
-    """同一候选人同一时间不能存在两场有效面试。"""
-    query = {
-        "candidate_id": candidate_id,
-        "status": {"$in": VALID_STATUSES},
-        "start_at": {"$lt": end_at},
-        "end_at": {"$gt": start_at},
-    }
-    if exclude_id:
-        query["_id"] = {"$ne": exclude_id}
+                    exclude_id: int = None, interviewer_id: str = None):
+    query = conflict_query(candidate_id, start_at, end_at, exclude_id, interviewer_id)
     conflict = col("interviews").find_one(query)
     if conflict:
+        participant = "候选人" if conflict.get("candidate_id") == candidate_id else "面试官"
         raise BizError(BizCode.DUPLICATED,
-                       f"该候选人在此时间段已有面试（{conflict['_id']}），请调整时间")
+                       f"该{participant}在此时间段已有面试，请调整时间或面试官")
 
 
 def _resolve_bindings(payload: dict):
@@ -278,10 +272,17 @@ def list_interviews():
         query["round"] = args["round"]
     if args.get("interviewer"):
         query["interviewer_name"] = {"$regex": args["interviewer"]}
-    if args.get("date_from"):
-        query.setdefault("start_at", {})["$gte"] = _parse_time(args["date_from"] + " 00:00", "date_from")
-    if args.get("date_to"):
-        query.setdefault("start_at", {})["$lte"] = _parse_time(args["date_to"] + " 23:59", "date_to")
+    if args.get("date_range_mode") == "overlap" and args.get("date_from") and args.get("date_to"):
+        start = _parse_time(args["date_from"] + " 00:00", "date_from")
+        end = _parse_time(args["date_to"] + " 00:00", "date_to") + timedelta(days=1)
+        if end <= start:
+            raise BizError(BizCode.PARAM_INVALID, "日历结束日期不能早于开始日期")
+        query.update(calendar_range_query(start, end))
+    else:
+        if args.get("date_from"):
+            query.setdefault("start_at", {})["$gte"] = _parse_time(args["date_from"] + " 00:00", "date_from")
+        if args.get("date_to"):
+            query.setdefault("start_at", {})["$lte"] = _parse_time(args["date_to"] + " 23:59", "date_to")
     items = col("interviews").find(query).sort("start_at", -1)
     page = max(int(args.get("page", 1)), 1)
     page_size = min(max(int(args.get("page_size", 10)), 1), 100)
@@ -370,7 +371,7 @@ def create_interview():
             raise BizError(BizCode.NOT_FOUND, "评价模板不存在")
         template_id = int(template_id)
 
-    with candidate_schedule_guard(candidate["_id"]):
+    with candidate_schedule_guard(candidate["_id"]), interviewer_schedule_guard(interviewer.user_id):
         # Bindings were read before acquiring the lease. A job change may have
         # archived the application while this scheduling request was waiting.
         app_doc = require_interview_application(get_by_id("applications", app_doc["_id"]))
@@ -380,7 +381,7 @@ def create_interview():
         })
         if existing:
             raise BizError(BizCode.DUPLICATED, "当前阶段已有对应面试，请使用编辑修改面试安排")
-        _check_conflict(candidate["_id"], start_at, end_at)
+        _check_conflict(candidate["_id"], start_at, end_at, interviewer_id=interviewer.user_id)
         doc = insert_doc("interviews", {
             "candidate_id": candidate["_id"],
             "job_id": job["_id"],
@@ -469,9 +470,10 @@ def update_interview(interview_id: int):
     except (TypeError, ValueError) as exc:
         raise BizError(BizCode.PARAM_INVALID, "version 必须为数字") from exc
     fields["updated_at"] = datetime.now()
-    with candidate_schedule_guard(doc["candidate_id"]):
-        if "start_at" in payload or "end_at" in payload:
-            _check_conflict(doc["candidate_id"], start_at, end_at, exclude_id=interview_id)
+    target_interviewer_id = fields.get("interviewer_id", doc.get("interviewer_id"))
+    with candidate_schedule_guard(doc["candidate_id"]), interviewer_schedule_guard(target_interviewer_id):
+        _check_conflict(doc["candidate_id"], start_at, end_at,
+                        exclude_id=interview_id, interviewer_id=target_interviewer_id)
         updated = col("interviews").find_one_and_update(
             {"_id": interview_id, "version": expected_version,
              "status": {"$nin": [IV_COMPLETED, IV_CANCELLED]}},
@@ -544,11 +546,12 @@ def reschedule(interview_id: int):
         expected_version = int(payload.get("version", doc.get("version", 1)))
     except (TypeError, ValueError) as exc:
         raise BizError(BizCode.PARAM_INVALID, "version 必须为数字") from exc
-    with candidate_schedule_guard(doc["candidate_id"]):
+    with candidate_schedule_guard(doc["candidate_id"]), interviewer_schedule_guard(doc.get("interviewer_id")):
         latest = _get_or_404(interview_id)
         if latest["status"] in (IV_COMPLETED, IV_CANCELLED):
             raise BizError(BizCode.STATE_INVALID, "面试已完成或已取消，不能改期")
-        _check_conflict(latest["candidate_id"], start_at, end_at, exclude_id=interview_id)
+        _check_conflict(latest["candidate_id"], start_at, end_at, exclude_id=interview_id,
+                        interviewer_id=latest.get("interviewer_id"))
         history = list(latest.get("reschedule_history", []))
         history.append({
             "from_start": dt(latest["start_at"])[:16],
