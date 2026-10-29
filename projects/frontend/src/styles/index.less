@@ -2863,3 +2863,22 @@ select {
   .workbench-priority-card { padding: 14px; }
 }
 @media (max-width: 420px) { .workbench-priority-grid { grid-template-columns: 1fr; } }
+
+/* Interview calendar */
+.interview-calendar-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin:8px 0 18px; }
+.interview-calendar-scroll { overflow-x:auto; border:1px solid #e4e7ec; border-radius:10px; background:white; }
+.interview-calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(155px,1fr)); min-width:1100px; &.is-day { grid-template-columns:1fr; min-width:0; } }
+.interview-calendar-day { min-height:380px; border-right:1px solid #e4e7ec; &:last-child {border-right:0;}
+ h3 { display:flex; justify-content:space-between; padding:14px; margin:0; font-size:14px; border-bottom:1px solid #e4e7ec; background:#f8fafc; }
+ &.is-today h3 { background:#eaf3ff; color:#1677ff; }
+}
+.interview-calendar-events { padding:10px; display:grid; align-content:start; gap:10px; }
+.interview-calendar-event { display:flex; flex-direction:column; gap:8px; padding:12px; width:100%; text-align:left; border:1px solid #cddffb; border-left:3px solid #1677ff; border-radius:8px; background:#f4f8ff; cursor:pointer; color:#182230;
+ span { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+ .ant-tag { align-self:flex-start; margin:0; }
+ &.is-muted {background:#f2f4f7; border-color:#d0d5dd; color:#667085;}
+ &:hover {box-shadow:0 2px 10px #1677ff20;}
+ &:focus-visible {outline:2px solid #1677ff;outline-offset:2px;}
+}
+.interview-calendar-no-events { text-align:center; padding:30px 0; font-size:12px; color:#98a2b3; }
+@media(max-width:760px){.interview-calendar-toolbar>.ant-space {flex-wrap:wrap;}.interview-calendar-grid {min-width:1100px;} }

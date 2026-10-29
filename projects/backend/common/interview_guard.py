@@ -1,4 +1,4 @@
-"""Short-lived distributed guards for candidate interview scheduling."""
+"""Short-lived distributed guards for candidate and interviewer scheduling."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from time import monotonic, sleep
@@ -14,7 +14,7 @@ from common.response import BizCode
 
 
 @contextmanager
-def candidate_schedule_guard(candidate_id: int, timeout_seconds: float = 2.0):
+def candidate_schedule_guard(candidate_id: int | str, timeout_seconds: float = 2.0):
     """Serialize conflict-check + write for one candidate across processes.
 
     A normal interval-overlap query cannot be made unique with a MongoDB
@@ -29,7 +29,7 @@ def candidate_schedule_guard(candidate_id: int, timeout_seconds: float = 2.0):
         try:
             guard = col("interview_guards").find_one_and_update(
                 {
-                    "_id": int(candidate_id),
+                    "_id": candidate_id,
                     "$or": [
                         {"lease_until": {"$lte": now}},
                         {"lease_until": {"$exists": False}},
@@ -60,10 +60,20 @@ def candidate_schedule_guard(candidate_id: int, timeout_seconds: float = 2.0):
     finally:
         try:
             col("interview_guards").update_one(
-                {"_id": int(candidate_id), "owner": owner},
+                {"_id": candidate_id, "owner": owner},
                 {"$set": {"lease_until": datetime.now(), "updated_at": datetime.now()}},
             )
         except Exception:
             current_app.logger.exception(
                 "释放面试排期保护失败 candidate_id=%s", candidate_id,
             )
+
+
+@contextmanager
+def interviewer_schedule_guard(interviewer_id):
+    """Serialize interviewer conflict-check + write across different candidates."""
+    if not interviewer_id:
+        yield
+        return
+    with candidate_schedule_guard(f"interviewer:{interviewer_id}"):
+        yield

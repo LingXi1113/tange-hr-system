@@ -1,12 +1,13 @@
 import { PlusOutlined } from '@ant-design/icons';
 import {
   Button, DatePicker, Drawer, Form, Input, InputNumber, Modal,
-  Select, Space, Table, Tabs, Tag, Typography,
+  Select, Segmented, Space, Table, Tabs, Tag, Typography,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
+import { InterviewCalendar } from '@/components/InterviewCalendar';
 import { PageLoading } from '@/components/PageLoading';
 import { assignJob, changeCandidateJob, directInterview, fetchCandidate, fetchCandidates } from '@/services/candidate';
 import type { Application } from '@/services/candidate';
@@ -48,6 +49,8 @@ export function InterviewsPage() {
   const canHrManage = Boolean(user && (user.role === 'hr' || user.role === 'super_admin'
     || user.roles?.some((role) => role === 'hr' || role === 'super_admin')));
   const [searchParams] = useSearchParams();
+  const [viewMode, setViewMode] = useState(() => searchParams.get('view') === 'list' || (!searchParams.get('view') && Boolean(searchParams.get('action_state')))
+    ? 'list' : 'calendar');
   const [list, setList] = useState<Interview[]>([]);
   const [total, setTotal] = useState(0);
   const [pendingApplications, setPendingApplications] = useState<Application[]>([]);
@@ -78,6 +81,7 @@ export function InterviewsPage() {
 
   const [rescheduleTarget, setRescheduleTarget] = useState<Interview | null>(null);
   const [rescheduleForm] = Form.useForm();
+  const [rescheduleSaving, setRescheduleSaving] = useState(false);
   const [feedbackTarget, setFeedbackTarget] = useState<Interview | null>(null);
   const [feedbackForm] = Form.useForm();
   const feedbackConclusion = Form.useWatch('conclusion', feedbackForm) as string | undefined;
@@ -99,6 +103,7 @@ export function InterviewsPage() {
   };
 
   const load = useCallback(async () => {
+    if (viewMode === 'calendar') { setLoading(false); return; }
     const requestId = ++listRequest.current;
     setLoading(true);
     try {
@@ -127,7 +132,7 @@ export function InterviewsPage() {
     } finally {
       if (requestId === listRequest.current) setLoading(false);
     }
-  }, [filters, pendingPage, canHrManage]);
+  }, [filters, pendingPage, canHrManage, viewMode]);
   useBusinessRefresh(load);
 
   useEffect(() => { setPendingPage(1); }, [filters]);
@@ -141,6 +146,7 @@ export function InterviewsPage() {
       status_group: searchParams.get('status_group') || '', page: 1,
     }));
     setListTab(searchParams.get('action_state') === 'awaiting_interview_schedule' ? 'pending' : 'all');
+    setViewMode(searchParams.get('view') === 'list' || (!searchParams.get('view') && Boolean(searchParams.get('action_state'))) ? 'list' : 'calendar');
   }, [searchParams]);
 
   useEffect(() => {
@@ -444,16 +450,19 @@ export function InterviewsPage() {
     <div>
       <div className="page-head">
         <h2 className="page-title">面试管理</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => void openEditor(null)}>
-          安排面试
-        </Button>
+        <Space>
+          <Segmented aria-label="面试显示方式" value={viewMode}
+            options={[{label:'日历',value:'calendar'},{label:'列表',value:'list'}]}
+            onChange={value=>setViewMode(String(value))} />
+          {canHrManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => void openEditor(null)}>安排面试</Button>}
+        </Space>
       </div>
       <div className="hrats-block">
-        <Tabs activeKey={listTab} onChange={setListTab} items={[
+        {viewMode === 'list' && <Tabs activeKey={listTab} onChange={setListTab} items={[
           { key: 'all', label: '全部面试' },
           ...(canHrManage ? [{ key: 'pending', label: `待安排面试（${pendingTotal}）` }] : []),
           { key: 'records', label: '面试记录' },
-        ]} />
+        ]} />}
         <Space style={{ marginBottom: 12 }} wrap>
           <Select
             placeholder="状态" allowClear style={{ width: 130 }}
@@ -498,7 +507,11 @@ export function InterviewsPage() {
             </Tag>
           )}
         </Space>
-        {loading ? <PageLoading /> : <>
+        {viewMode === 'calendar' ? <InterviewCalendar filters={filters} canManage={canHrManage} userId={user?.user_id}
+          onEdit={record=>void openEditor(record)} onFeedback={record=>void openFeedback(record)}
+          onReschedule={record=>{rescheduleForm.setFieldsValue({start_at:dayjs(record.start_at),end_at:dayjs(record.end_at),reason:''});setRescheduleTarget(record);}}
+          onCandidate={record=>navigate(`/candidates/${record.candidate_id}?application_id=${record.application_id}`)} />
+          : loading ? <PageLoading /> : <>
           {canHrManage && listTab !== 'records' && (
             <div style={{ marginBottom: 24 }}>
               <Typography.Title level={5}>待安排面试</Typography.Title>
@@ -633,10 +646,14 @@ export function InterviewsPage() {
       <Modal
         title={`改期：${rescheduleTarget?.candidate_name ?? ''} ${rescheduleTarget?.round ?? ''}`}
         open={!!rescheduleTarget}
-        onCancel={() => setRescheduleTarget(null)}
+        confirmLoading={rescheduleSaving} closable={!rescheduleSaving} maskClosable={!rescheduleSaving}
+        onCancel={() => { if (!rescheduleSaving) setRescheduleTarget(null); }}
         onOk={async () => {
+          if (rescheduleSaving) return;
           const values = await rescheduleForm.validateFields();
           if (!rescheduleTarget) return;
+          setRescheduleSaving(true);
+          try {
           await rescheduleInterview(rescheduleTarget.id, {
             start_at: (values.start_at as Dayjs).format(TIME_FMT),
             end_at: (values.end_at as Dayjs).format(TIME_FMT),
@@ -646,6 +663,7 @@ export function InterviewsPage() {
           msg.success('已改期，原记录保留');
           setRescheduleTarget(null);
           void load();
+          } finally { setRescheduleSaving(false); }
         }}
       >
         {rescheduleTarget && (

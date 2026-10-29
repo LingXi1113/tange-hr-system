@@ -31,6 +31,17 @@ const notices = [
 const interviewRows = [{id:201,candidate_id:3,candidate_name:rows[2].name,job_id:3,job_name:roles[2],application_id:103,
  round:'一面',type:'video',start_at:day+' 14:00',end_at:day+' 15:00',status:'confirmed',
  interviewer_id:'demo-interviewer',interviewer_name:'演示面试官',created_by:'hr-demo',version:1}];
+interviewRows[0] = {...interviewRows[0],location:'线上面试',meeting_link:'https://example.com/demo-meeting',
+ interviewer_contact:'演示联系方式',summary:'虚构日程，用于查看日历交互。',reschedule_history:[],feedback:null,template_id:null};
+const nextDay = new Date(Date.now()+86400000).toLocaleDateString('sv-SE');
+interviewRows.push(
+ {...interviewRows[0],id:202,candidate_id:2,candidate_name:rows[1].name,job_id:2,application_id:102,job_name:roles[1],
+ start_at:day+' 14:30',end_at:day+' 15:30',summary:'演示历史排期重叠，请在真实环境核查。'},
+ {...interviewRows[0],id:203,candidate_id:1,candidate_name:rows[0].name,job_id:1,application_id:101,job_name:roles[0],
+ interviewer_id:'demo-interviewer-2',interviewer_name:'演示面试官乙',start_at:nextDay+' 10:00',end_at:nextDay+' 11:00'},
+ {...interviewRows[0],id:204,candidate_id:2,candidate_name:rows[1].name,
+ interviewer_id:'demo-interviewer-3',interviewer_name:'演示面试官丙',start_at:day+' 23:30',end_at:nextDay+' 00:30'}
+);
 const workbenchSummary = () => ({
  todos:{},todo_items:[],overview:{},funnel:[],notification_unread:2,recent_activities:[],generated_at:generated(),
  workbench_metrics:[
@@ -80,10 +91,25 @@ const server = await createServer({
   else if(p==='/api/notifications')data={list:notices.slice(0,Number(url.searchParams.get('page_size'))||10),total:notices.length};
   else if(p==='/api/interviews'){
    const from=url.searchParams.get('date_from'),to=url.searchParams.get('date_to');
-   const items=url.searchParams.get('action_state')==='awaiting_interviewer_feedback'?[]:interviewRows.filter(r=>(!from||r.start_at.slice(0,10)>=from)&&(!to||r.start_at.slice(0,10)<=to));
-   data={list:items,total:items.length};
+   const items=url.searchParams.get('action_state')==='awaiting_interviewer_feedback'?[]:interviewRows.filter(r=>{
+    const overlap=url.searchParams.get('date_range_mode')==='overlap';
+    const range=overlap?(!from||r.end_at>from+' 00:00')&&(!to||r.start_at.slice(0,10)<=to):
+      (!from||r.start_at.slice(0,10)>=from)&&(!to||r.start_at.slice(0,10)<=to);
+    return range&&(!url.searchParams.get('status')||r.status===url.searchParams.get('status'))
+     &&(!url.searchParams.get('round')||r.round===url.searchParams.get('round'))
+     &&(!url.searchParams.get('job_id')||r.job_id===Number(url.searchParams.get('job_id')))
+     &&(!url.searchParams.get('interviewer')||r.interviewer_name.includes(url.searchParams.get('interviewer')));
+   });
+   const page=Number(url.searchParams.get('page'))||1,size=Number(url.searchParams.get('page_size'))||10;
+   data={list:items.slice((page-1)*size,page*size),total:items.length};
   }
-  else if(p==='/api/interviews/201')data=interviewRows[0];
+  else if(/^\/api\/interviews\/\d+$/.test(p))data=interviewRows.find(r=>r.id===Number(p.split('/').pop()));
+  else if(p==='/api/interviews/pending-applications')data={list:[],total:0};
+  else if(p==='/api/platform/users')data=[
+    {user_id:'demo-interviewer',name:'演示面试官',role:'interviewer',role_name:'面试官'},
+    {user_id:'demo-interviewer-2',name:'演示面试官乙',role:'interviewer',role_name:'面试官'}];
+  else if(p.includes('eval-template'))data={list:[],total:0};
+  else if(/^\/api\/candidates\/[123]\/applications$/.test(p))data=apps.filter(r=>r.candidate_id===Number(p.split('/')[3]));
   else if(p==='/api/approvals')data={list:[],total:0};
   else if(p==='/api/interviews'||p==='/api/offers')data={list:[],total:0};
   res.end(JSON.stringify({code:0,msg:'ok',data}));
