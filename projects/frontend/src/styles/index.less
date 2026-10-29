@@ -2809,3 +2809,15 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* Continuous candidate review */
+.candidate-profile-card:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 3px;
+}
+.candidate-review-drawer .ant-drawer-header { flex-shrink: 0; }
+@media (max-width: 640px) {
+  .candidate-review-drawer .ant-drawer-header-title { align-items: flex-start; }
+  .candidate-review-drawer .ant-drawer-header { flex-wrap: wrap; gap: 12px; padding: 16px; }
+  .candidate-review-drawer .ant-drawer-body { padding: 12px; }
+}

@@ -59,11 +59,13 @@ export function JobDetailPage() {
   );
 
   async function openRecommendations() {
+    const currentJob = job;
+    if (!currentJob) return;
     setRecommendOpen(true);
     setRecommendLoading(true);
     try {
       const data = await fetchCandidates({ page: 1, page_size: 100 });
-      setRecommendations(rankCandidatesForJob(data.list as CandidateRow[], job).slice(0, 20));
+      setRecommendations(rankCandidatesForJob(data.list as CandidateRow[], currentJob).slice(0, 20));
     } finally {
       setRecommendLoading(false);
     }
@@ -80,10 +82,12 @@ export function JobDetailPage() {
   }
 
   async function savePortrait() {
+    const currentJob = job;
+    if (!currentJob) return;
     const values = await portraitForm.validateFields();
     setPortraitSaving(true);
     try {
-      const updated = await saveJob(job.id, { ai_portrait: values });
+      const updated = await saveJob(currentJob.id, { ai_portrait: values });
       setJob(updated);
       setPortraitOpen(false);
       msg.success('岗位画像已保存');
