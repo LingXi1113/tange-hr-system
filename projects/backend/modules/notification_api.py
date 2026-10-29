@@ -8,6 +8,7 @@ from common.db import col
 from common.decorators import login_required
 from common.errors import BizError
 from common.notifier import generate_due_notifications
+from common.notification_query import notification_query
 from common.response import BizCode, ok, paged
 
 bp = Blueprint("notification_api", __name__, url_prefix="/api/notifications")
@@ -47,9 +48,7 @@ def _view(doc: dict) -> dict:
 def list_notifications():
     _safe_generate()
     args = request.args
-    query = {"receiver_id": g.current_user.user_id}
-    if args.get("status") == "unread":
-        query["read_at"] = None
+    query = notification_query(g.current_user.user_id, args.get("status"), args.get("scene_group"))
     page = max(int(args.get("page", 1)), 1)
     page_size = min(max(int(args.get("page_size", 10)), 1), 100)
     rows = list(col("notifications").find(query).sort("created_at", -1))

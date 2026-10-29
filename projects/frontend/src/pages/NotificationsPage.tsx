@@ -1,6 +1,6 @@
-import { Button, List, Radio, Tag } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Alert, Button, List, Radio, Tag } from 'antd';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { PageLoading } from '@/components/PageLoading';
 import {
@@ -11,25 +11,41 @@ import type { NotificationItem } from '@/services/notification';
 
 export function NotificationsPage() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<'all' | 'unread'>('all');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const status = searchParams.get('status') === 'unread' ? 'unread' : 'all';
+  const sceneGroup = searchParams.get('scene_group') === 'deadline' ? 'deadline' : '';
+  const setStatus = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === 'unread') next.set('status', value); else next.delete('status');
+    setSearchParams(next);
+  };
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
+    const currentRequest = ++requestId.current;
     setLoading(true);
+    setLoadError(false);
     try {
-      const data = await fetchNotifications({ status, page, page_size: 10 });
+      const data = await fetchNotifications({ status, scene_group: sceneGroup || undefined, page, page_size: 10 });
+      if (currentRequest !== requestId.current) return;
       setItems(data.list);
       setTotal(data.total);
+    } catch {
+      if (currentRequest === requestId.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (currentRequest === requestId.current) setLoading(false);
     }
-  }, [status, page]);
+  }, [status, sceneGroup, page]);
+  useEffect(() => { setPage(1); }, [status, sceneGroup]);
 
   useEffect(() => {
     void load();
+    return () => { requestId.current += 1; };
   }, [load]);
 
   async function handleClick(item: NotificationItem) {
@@ -47,6 +63,7 @@ export function NotificationsPage() {
       <div className="page-head">
         <h2 className="page-title">站内通知</h2>
         <Button
+          disabled={Boolean(sceneGroup)} title={sceneGroup ? "筛选视图请逐条阅读通知，避免将其他类型通知一并标记已读" : undefined}
           onClick={async () => {
             await markAllNotificationsRead().catch(() => undefined);
             void load();
@@ -55,6 +72,13 @@ export function NotificationsPage() {
           全部已读
         </Button>
       </div>
+      {sceneGroup === 'deadline' && <div style={{ marginBottom: 12 }}>
+        <Tag color="orange">到期与逾期提醒</Tag>
+        <Button type="link" onClick={() => { const next = new URLSearchParams(searchParams);
+          next.delete('scene_group'); setSearchParams(next); }}>查看全部类型</Button>
+      </div>}
+      {loadError && <Alert style={{ marginBottom: 12 }} type="warning" showIcon message="通知加载失败，请重试"
+        action={<Button onClick={() => void load()}>重试</Button>} />}
       <div className="hrats-block">
         <Radio.Group
           value={status}

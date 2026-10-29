@@ -3,12 +3,16 @@ import {
   LeftOutlined,
   RightOutlined,
   SearchOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Empty, Input, Spin, Tag } from 'antd';
+import { Alert, Avatar, Button, Empty, Input, Spin, Tag } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { WorkbenchPriorities } from '@/components/WorkbenchPriorities';
+import { fetchNotifications } from '@/services/notification';
+import type { NotificationItem } from '@/services/notification';
 import { PageLoading } from '@/components/PageLoading';
 import { fetchCandidates } from '@/services/candidate';
 import type { CandidateRow } from '@/services/candidate';
@@ -45,6 +49,14 @@ export function WorkbenchPage() {
   const { user } = useCurrentUser();
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState(false);
+  const [scheduleError, setScheduleError] = useState(false);
+  const [reminders, setReminders] = useState<NotificationItem[]>([]);
+  const [reminderTotal, setReminderTotal] = useState<number | null>(null);
+  const [reminderLoading, setReminderLoading] = useState(true);
+  const [reminderError, setReminderError] = useState(false);
+  const reminderRequestRef = useRef(0);
+  const canViewTeam = user?.role === 'hr' || user?.role === 'super_admin';
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
   const [searchResults, setSearchResults] = useState<CandidateRow[]>([]);
@@ -66,17 +78,37 @@ export function WorkbenchPage() {
     if (showLoading) setLoading(true);
     try {
       const data = await fetchDashboardSummary();
-      if (requestId === summaryRequestRef.current) setSummary(data);
+      if (requestId === summaryRequestRef.current) { setSummary(data); setSummaryError(false); }
     } catch {
-      if (showLoading && requestId === summaryRequestRef.current) setSummary(null);
+      if (requestId === summaryRequestRef.current) setSummaryError(true);
     } finally {
       if (requestId === summaryRequestRef.current) setLoading(false);
     }
   }, []);
 
+  const loadReminders = useCallback(async () => {
+    const requestId = ++reminderRequestRef.current;
+    setReminderLoading(true);
+    try {
+      const data = await fetchNotifications({ status: 'unread', scene_group: 'deadline', page: 1, page_size: 3 });
+      if (requestId === reminderRequestRef.current) {
+        setReminders(data.list); setReminderTotal(data.total); setReminderError(false);
+      }
+    } catch {
+      if (requestId === reminderRequestRef.current) setReminderError(true);
+    } finally {
+      if (requestId === reminderRequestRef.current) setReminderLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void loadReminders();
+    return () => { reminderRequestRef.current += 1; };
+  }, [loadReminders]);
+
   const loadSchedule = useCallback(async () => {
     const requestId = ++scheduleRequestRef.current;
     setScheduleLoading(true);
+    setScheduleError(false);
     try {
       const data = await fetchInterviews({
         date_from: weekStart.format('YYYY-MM-DD'),
@@ -88,7 +120,7 @@ export function WorkbenchPage() {
         setInterviews(data.list.filter((item) => ACTIVE_INTERVIEW_STATUSES.has(item.status)));
       }
     } catch {
-      if (requestId === scheduleRequestRef.current) setInterviews([]);
+      if (requestId === scheduleRequestRef.current) { setInterviews([]); setScheduleError(true); }
     } finally {
       if (requestId === scheduleRequestRef.current) setScheduleLoading(false);
     }
@@ -171,6 +203,7 @@ export function WorkbenchPage() {
     const refreshWorkbench = () => {
       void loadSummary();
       void loadSchedule();
+      void loadReminders();
       if (keyword.trim()) void search(keyword);
     };
     const queueRefresh = () => {
@@ -195,7 +228,7 @@ export function WorkbenchPage() {
       window.clearInterval(pollTimer);
       if (refreshTimer) window.clearTimeout(refreshTimer);
     };
-  }, [keyword, loadSchedule, loadSummary, search]);
+  }, [keyword, loadSchedule, loadSummary, loadReminders, search]);
 
   const toggleKind = (kind: ScheduleKind) => {
     setVisibleKinds((current) => {
@@ -210,6 +243,20 @@ export function WorkbenchPage() {
 
   return (
     <div className="workbench-page">
+      <div className="workbench-page-heading">
+        <div><h1>招聘工作台</h1><p>{user?.name}，先处理待办，再查看招聘进展与面试日程。</p></div>
+        <div><span>统计更新：{summary?.generated_at || '尚未更新'}</span>
+          <Button aria-label="刷新工作台" icon={<ReloadOutlined />} onClick={() => { void loadSummary(); void loadSchedule(); void loadReminders(); }}>刷新工作台</Button>
+        </div>
+      </div>
+      {summaryError && <Alert style={{ marginBottom: 16 }} type="warning" showIcon
+        message={summary ? '工作台刷新失败，当前显示上次成功的数据' : '工作台统计加载失败，请重试'}
+        action={<Button size="small" onClick={() => void loadSummary()}>重试</Button>} />}
+      {canViewTeam && <WorkbenchPriorities summary={summary} reminders={reminders}
+        reminderTotal={reminderTotal} reminderLoading={reminderLoading} reminderError={reminderError}
+        onNavigate={navigate} onRetry={() => void loadReminders()} />}
+      {!canViewTeam && <Alert style={{ marginBottom: 16 }} type="info" message="团队待办由招聘 HR 统一跟进"
+        action={<Button onClick={() => navigate('/tasks')}>查看我的任务</Button>} />}
       <div className="workbench-top-actions">
         <div className="workbench-search-box" ref={searchBoxRef}>
           <Input
@@ -288,6 +335,8 @@ export function WorkbenchPage() {
 
       {!summary ? <Empty description="工作台数据暂不可用" /> : (
         <>
+          {canViewTeam && <details className="workbench-overview">
+          <summary>招聘阶段概览 <span>查看初筛、业务推荐、面试和录用统计</span></summary>
           <div className="workbench-metric-grid">
             {(summary.workbench_metrics ?? []).map((group) => (
               <section className="workbench-metric-group" key={group.key}>
@@ -304,6 +353,7 @@ export function WorkbenchPage() {
             ))}
           </div>
 
+          </details>}
           <section className="workbench-schedule">
             <header className="workbench-schedule-head">
               <div className="workbench-schedule-title">
@@ -321,9 +371,14 @@ export function WorkbenchPage() {
                   ))}
                 </div>
               </div>
-              <Button icon={<CalendarOutlined />} onClick={() => navigate('/interviews')}>全部日程</Button>
+              <div className="workbench-schedule-controls">
+                <Button onClick={() => setWeekStart(mondayOf(dayjs()))}>回到本周</Button>
+                <Button icon={<CalendarOutlined />} onClick={() => navigate('/interviews')}>全部日程</Button>
+              </div>
             </header>
 
+            {scheduleError && <Alert type="warning" message="面试日程加载失败，请重试" showIcon
+              action={<Button size="small" onClick={() => void loadSchedule()}>重试</Button>} />}
             <Spin spinning={scheduleLoading}>
               <div className="workbench-week">
                 <button type="button" className="workbench-week-arrow" onClick={() => setWeekStart((value) => value.subtract(7, 'day'))} aria-label="上一周">
@@ -360,7 +415,7 @@ export function WorkbenchPage() {
                               className="workbench-interview-event"
                               key={interview.id}
                               style={{ borderLeftColor: color }}
-                              onClick={() => navigate('/interviews')}
+                              onClick={() => navigate(`/interviews?interview_id=${interview.id}`)}
                             >
                               <strong>{interview.start_at.slice(11, 16)} {interview.candidate_name}</strong>
                               <span>
@@ -374,7 +429,7 @@ export function WorkbenchPage() {
                   );
                 })}
                 <div />
-                {!scheduleLoading && visibleInterviews.length === 0 && (
+                {!scheduleLoading && !scheduleError && visibleInterviews.length === 0 && (
                   <div className="workbench-schedule-empty">
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无日程安排" />
                   </div>

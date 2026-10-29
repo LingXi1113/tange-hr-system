@@ -7,14 +7,14 @@ const rows = names.map((name, i) => ({
   major: ['计算机科学与技术', '信息管理', '统计学'][i],
   tags: ['Java,Spring Boot,项目经验', '需求分析,产品设计', 'Python,SQL,数据分析'][i],
   source: 'manual', owner_id: 'hr-demo', owner_name: '演示HR',
-  current_stage: 'pending_screen', created_at: '2026-10-29 10:00:00', version: 1,
+  current_stage: i ? 'interview_1' : 'pending_screen', created_at: '2026-10-29 10:00:00', version: 1,
   lock: null, latest_application: null,
   education_summary: { school: '演示大学', degree: '本科', major: ['计算机科学与技术', '信息管理', '统计学'][i] },
   work_summary: { company: '示例科技有限公司（虚构）', position: roles[i], start: '2023-07', end: '至今',
     desc: ['负责接口开发、服务性能优化及系统维护。', '负责用户需求分析、原型设计与项目协作。', '负责指标体系建设、SQL 分析与报表开发。'][i] },
 }));
 const apps = rows.map((r,i)=>({id:101+i,candidate_id:r.id,candidate_name:r.name,job_id:i+1,
- job_name:roles[i],source:'manual',owner_name:'演示HR',current_stage:'pending_screen',
+ job_name:roles[i],source:'manual',owner_name:'演示HR',current_stage:i ? 'interview_1' : 'pending_screen',
  status:'in_progress',stage_entered_at:'2026-10-29 10:00:00',created_at:'2026-10-29 10:00:00',
  eliminate_reason:'',expected_salary:'',onboard_time:'',version:1}));
 const jobs = roles.map((name,i)=>({id:i+1,name,code:'DEMO-'+(i+1),dept_name:'示例部门',
@@ -22,6 +22,29 @@ const jobs = roles.map((name,i)=>({id:i+1,name,code:'DEMO-'+(i+1),dept_name:'示
  qualification:'',skill_tags:'',interview_rounds:['一面'],screening_rules:{
  profile:'tech',profile_name:'技术',required_skills:[],preferred_skills:[],hard_skills:[],
  industry_tags:[],min_education:'本科',min_work_years:0,pass_score:75,pending_score:55,weights:{} }}));
+const generated = () => new Date().toLocaleString('sv-SE');
+const day = new Date().toLocaleDateString('sv-SE');
+const notices = [
+ {id:1,scene:'offer_expiring',title:'演示：Offer 即将到期',content:'虚构候选人的 Offer 将在 3 天内到期，请跟进意向。',route:'/offers?status=sent',created_at:generated(),unread:true},
+ {id:2,scene:'approval_due',title:'演示：审批即将到期',content:'请联系当前审批节点负责人，确认处理进度。',route:'/approvals?status=pending',created_at:generated(),unread:true},
+];
+const interviewRows = [{id:201,candidate_id:3,candidate_name:rows[2].name,job_id:3,job_name:roles[2],application_id:103,
+ round:'一面',type:'video',start_at:day+' 14:00',end_at:day+' 15:00',status:'confirmed',
+ interviewer_id:'demo-interviewer',interviewer_name:'演示面试官',created_by:'hr-demo',version:1}];
+const workbenchSummary = () => ({
+ todos:{},todo_items:[],overview:{},funnel:[],notification_unread:2,recent_activities:[],generated_at:generated(),
+ workbench_metrics:[
+  {key:'screening',title:'简历初筛',items:[{key:'unprocessed',label:'未处理',count:1,route:'/candidates?unprocessed=1'},
+   {key:'referral',label:'内推简历',count:0,route:'/candidates?source=referral'},
+   {key:'recommended',label:'人才推荐',count:0,route:'/candidates?source_group=talent_recommendation'},
+   {key:'unassigned',label:'待分配',count:0,route:'/candidates?unassigned=1'}]},
+  {key:'recommendation',title:'简历推荐',items:[{key:'pending_feedback',label:'推荐待反馈',count:0,route:'/candidates?recommendation_status=pending'}]},
+  {key:'interview',title:'面试',items:[{key:'waiting_schedule',label:'待约面',count:1,route:'/candidates?action_state=awaiting_interview_schedule'},
+   {key:'feedback',label:'面试待反馈',count:0,route:'/interviews?action_state=awaiting_interviewer_feedback'}]},
+  {key:'hiring',title:'录用',items:[{key:'pending_approval',label:'待审批 Offer',count:0,route:'/approvals?status=pending'},
+   {key:'pending_send',label:'待发 Offer',count:0,route:'/offers?status=pending_send&ready_to_send=1'},
+   {key:'pending_onboard',label:'待入职',count:0,route:'/onboarding?application_stage=pending_onboard'}]},
+ ]});
 const banner = '<div style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:9999;background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:9px 20px;box-shadow:0 3px 14px #0002;font:14px sans-serif;pointer-events:none">交互演示 · 全部为虚构数据 · 修改不会保存</div>';
 const server = await createServer({
  server:{host:'127.0.0.1',port:5183,strictPort:true},
@@ -36,7 +59,10 @@ const server = await createServer({
   if(p==='/api/auth/me')data={user_id:'hr-demo',name:'演示HR',role:'hr',role_name:'HR',roles:['hr'],
     dept_name:'演示环境',switchable_users:[],mock_mode:true};
   else if(p==='/api/candidates'){
-   let list=rows;const keyword=url.searchParams.get('keyword');
+   let list=rows;
+   if(url.searchParams.get('unprocessed')==='1')list=list.filter(r=>r.current_stage==='pending_screen');
+   if(url.searchParams.get('action_state')==='awaiting_interview_schedule')list=list.filter(r=>r.id===2);
+   const keyword=url.searchParams.get('keyword');
    if(keyword)list=list.filter(r=>(r.name+r.tags+r.major).includes(keyword));
    data={list,total:list.length};
   } else if(/^\/api\/candidates\/[123]$/.test(p)){
@@ -49,7 +75,16 @@ const server = await createServer({
   } else if(p.endsWith('/screening-result'))data=null;
   else if(p==='/api/jobs')data={list:jobs,total:jobs.length};
   else if(p==='/api/screening/profiles')data=[];
-  else if(p.includes('notification'))data={list:[],total:0,unread_count:0};
+  else if(p==='/api/dashboard/summary')data=workbenchSummary();
+  else if(p==='/api/notifications/unread-count')data={count:notices.length};
+  else if(p==='/api/notifications')data={list:notices.slice(0,Number(url.searchParams.get('page_size'))||10),total:notices.length};
+  else if(p==='/api/interviews'){
+   const from=url.searchParams.get('date_from'),to=url.searchParams.get('date_to');
+   const items=url.searchParams.get('action_state')==='awaiting_interviewer_feedback'?[]:interviewRows.filter(r=>(!from||r.start_at.slice(0,10)>=from)&&(!to||r.start_at.slice(0,10)<=to));
+   data={list:items,total:items.length};
+  }
+  else if(p==='/api/interviews/201')data=interviewRows[0];
+  else if(p==='/api/approvals')data={list:[],total:0};
   else if(p==='/api/interviews'||p==='/api/offers')data={list:[],total:0};
   res.end(JSON.stringify({code:0,msg:'ok',data}));
  });}}]

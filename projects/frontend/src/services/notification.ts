@@ -15,6 +15,9 @@ export interface NotificationItem {
 }
 
 export const NOTIFICATION_SCENE_TEXT: Record<string, string> = {
+  approval_due: '审批到期',
+  stage_rule_remind: '阶段到期提醒',
+  stage_rule_due: '阶段已到期',
   new_candidate: '新候选人',
   interview_remind: '面试提醒',
   feedback_pending: '反馈待填写',
